@@ -1,3 +1,7 @@
+/// Node index is used to quickly access node value by node id. It is stored on disk as an array of ponters to node records,
+/// node id value is represented by an offset of a given pointer in the node index storage file.
+/// When the new node is created the corresponding index record is just appended to the end of the file,
+/// resulting offset is the new node id.
 const std = @import("std");
 
 const DEFAULT_NODE_INDEX_FILE = "./node_index.store";
@@ -11,7 +15,7 @@ const StorageState = enum {
 
 const NodeIndexStorage = struct {
     path: []const u8 = (&DEFAULT_NODE_INDEX_FILE).*,
-    file: std.fs.File = undefined,
+    file: ?std.fs.File = null,
     next_id: u32 = 0,
     state: StorageState = StorageState.close,
 
@@ -20,16 +24,16 @@ const NodeIndexStorage = struct {
             .read = true,
             .truncate = false,
         });
-        const pos = try self.file.getEndPos();
+        const pos = try self.file.?.getEndPos();
         self.next_id = @intCast(pos / 4);
     }
 
     pub fn close(self: NodeIndexStorage) void {
-        self.file.close();
+        self.file.?.close();
     }
 
     pub fn allocate_next_id(self: *NodeIndexStorage) !u32 {
-        try self.file.seekFromEnd(0);
+        try self.file.?.seekFromEnd(0);
         try self.write(0);
         const current_id = self.next_id;
         self.next_id += 1;
@@ -37,23 +41,23 @@ const NodeIndexStorage = struct {
     }
 
     pub fn get_record(self: NodeIndexStorage, node_id: u32) !NodePointer {
-        try self.file.seekTo(@as(u64, node_id) * 4);
+        try self.file.?.seekTo(@as(u64, node_id) * 4);
 
         var buffer: [4]u8 = undefined;
-        _ = try self.file.read(buffer[0..]);
+        _ = try self.file.?.read(buffer[0..]);
 
         return std.mem.readInt(u32, &buffer, std.builtin.Endian.big);
     }
 
     pub fn update_record(self: NodeIndexStorage, node_id: u32, node_pointer: NodePointer) !void {
-        try self.file.seekTo(@as(u64, node_id) * 4);
+        try self.file.?.seekTo(@as(u64, node_id) * 4);
         try self.write(node_pointer);
     }
 
     fn write(self: NodeIndexStorage, node_pointer: NodePointer) !void {
         var buffer: [4]u8 = undefined;
         std.mem.writeInt(u32, &buffer, node_pointer, std.builtin.Endian.big);
-        try self.file.writeAll(&buffer);
+        try self.file.?.writeAll(&buffer);
     }
 };
 
@@ -106,7 +110,7 @@ test "NodeIndexStorage#allocate_next_id" {
     var i: u32 = 0;
     while (i < 5) {
         const current_id = try test_storage.allocate_next_id();
-        const pos = try test_storage.file.getEndPos();
+        const pos = try test_storage.file.?.getEndPos();
         try testing.expect(current_id == i);
         try testing.expect(test_storage.next_id == i + 1);
         try testing.expect(@as(u64, test_storage.next_id) * 4 == pos);
@@ -133,3 +137,5 @@ test "NodeIndexStorage update and get the record" {
 
     try clean_up(test_storage);
 }
+
+// TODO: test functions when file is null
