@@ -75,6 +75,9 @@ pub fn SkipListMemtable(comptime N: u8) type {
         }
 
         pub fn find(self: Self, key: MemtableKey) ?MemtableValue {
+            if (self.head == null) {
+                return null;
+            }
             const result = self.search(key, null) orelse return null;
             return result.*.value;
         }
@@ -241,6 +244,9 @@ test "SkipListMemtable#add and find" {
         .level_probability = 0.125,
     };
     defer memtable.destroy();
+
+    // Case: search in an empty memtable
+    try testing.expect(memtable.find(&keyFromIntData(u8, 1)) == null);
 
     // Case: a key is added succesfully to an empty memtable
     const test_vertex_data = test_value();
