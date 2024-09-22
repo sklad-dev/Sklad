@@ -1,36 +1,16 @@
 /// LSM tree implementation of nodes storage
 const std = @import("std");
-
-const ValueType = enum(u8) {
-    boolean, //bool
-    smallint, // i8
-    int, // i32
-    bigint, // i64
-    tinyserial, // u8
-    serial, // u32
-    bigserial, // u64
-    float, // f32
-    bigfloat, //f64
-    string, // variable length string
-};
-
-const MemtableKey = []const u8;
-
-pub fn keyFromIntData(comptime T: type, key_value: T) [@sizeOf(T)]u8 {
-    var buffer: [@sizeOf(T)]u8 = undefined;
-    std.mem.writeInt(T, &buffer, key_value, std.builtin.Endian.big);
-    return buffer;
-}
-
-const MemtableValue = struct {
-    node_id: u32,
-    first_relationship_pointer: usize,
-    value_type: ValueType,
-    value_size: u32,
-};
+const mt = @import("./memtable.zig");
+const data_types = @import("./data_types.zig");
+const ValueType = data_types.ValueType;
+const MemtableKey = mt.MemtableKey;
+const MemtableValue = mt.MemtableValue;
 
 pub fn SkipListMemtable(comptime N: u8) type {
     return struct {
+        const Self = @This();
+
+        memtable: mt.Memtable(Self),
         allocator: std.mem.Allocator,
         rng: std.Random,
         level_probability: f32,
@@ -38,13 +18,20 @@ pub fn SkipListMemtable(comptime N: u8) type {
         compare_fn: *const fn ([]const u8, []const u8) isize = compare_bitwise,
         head: ?*MemtableNode = null,
 
-        const Self = @This();
-
         const MemtableNode = struct {
             key: ?std.ArrayList(u8),
             value: ?MemtableValue,
             tower: [N]?*MemtableNode,
         };
+
+        pub fn init(allocator: std.mem.Allocator, random: std.Random, level_probability: f32) Self {
+            return Self{
+                .memtable = mt.Memtable(Self).implement(),
+                .allocator = allocator,
+                .rng = random,
+                .level_probability = level_probability,
+            };
+        }
 
         pub fn add(self: *Self, key: MemtableKey, value: MemtableValue) !void {
             if (self.head == null) {
@@ -156,7 +143,6 @@ const testing = std.testing;
 
 fn test_value() MemtableValue {
     return MemtableValue{
-        .node_id = 0,
         .first_relationship_pointer = 0,
         .value_size = 4,
         .value_type = ValueType.int,
@@ -238,39 +224,35 @@ test "SkipListMemtable#add and find" {
         try std.posix.getrandom(std.mem.asBytes(&seed));
         break :blk seed;
     });
-    var memtable = SkipListMemtable(8){
-        .allocator = testing.allocator,
-        .rng = rng.random(),
-        .level_probability = 0.125,
-    };
-    defer memtable.destroy();
+    var test_memtable = SkipListMemtable(8).init(testing.allocator, rng.random(), 0.125);
+    defer test_memtable.destroy();
 
     // Case: search in an empty memtable
-    try testing.expect(memtable.find(&keyFromIntData(u8, 1)) == null);
+    try testing.expect(test_memtable.find(&mt.keyFromIntData(u8, 1)) == null);
 
     // Case: a key is added succesfully to an empty memtable
     const test_vertex_data = test_value();
-    const test_vertex0 = keyFromIntData(u8, 0);
-    try memtable.add(&test_vertex0, test_vertex_data);
-    try testing.expect(memtable.head != null);
-    try testing.expect(std.mem.eql(u8, memtable.head.?.tower[0].?.key.?.items, &test_vertex0));
-    try testing.expect(size(8, memtable) == 1);
+    const test_vertex0 = mt.keyFromIntData(u8, 0);
+    try test_memtable.add(&test_vertex0, test_vertex_data);
+    try testing.expect(test_memtable.head != null);
+    try testing.expect(std.mem.eql(u8, test_memtable.head.?.tower[0].?.key.?.items, &test_vertex0));
+    try testing.expect(size(8, test_memtable) == 1);
 
     // Case: same key won't be added twice, no duplicates are allowed
-    const test_vertex1 = keyFromIntData(u8, 0);
-    try memtable.add(&test_vertex1, test_vertex_data);
-    try testing.expect(size(8, memtable) == 1);
+    const test_vertex1 = mt.keyFromIntData(u8, 0);
+    try test_memtable.add(&test_vertex1, test_vertex_data);
+    try testing.expect(size(8, test_memtable) == 1);
 
     // Case: adding more keys
     var table_size: u8 = 1;
     for (0..16) |_| {
-        try memtable.add(&keyFromIntData(u8, table_size), test_vertex_data);
+        try test_memtable.add(&mt.keyFromIntData(u8, table_size), test_vertex_data);
         table_size += 1;
-        try testing.expect(size(8, memtable) == table_size);
+        try testing.expect(size(8, test_memtable) == table_size);
     }
 
     // Case: find
-    try testing.expect(memtable.find(&keyFromIntData(u8, 0)) != null);
-    try testing.expect(memtable.find(&keyFromIntData(u8, table_size / 2)) != null);
-    try testing.expect(memtable.find(&keyFromIntData(u8, table_size + 1)) == null);
+    try testing.expect(test_memtable.find(&mt.keyFromIntData(u8, 0)) != null);
+    try testing.expect(test_memtable.find(&mt.keyFromIntData(u8, table_size / 2)) != null);
+    try testing.expect(test_memtable.find(&mt.keyFromIntData(u8, table_size + 1)) == null);
 }
