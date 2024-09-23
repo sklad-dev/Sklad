@@ -8,3 +8,8 @@ const NodeRecord = struct {
     value_size: u32,
     value: []u8,
 };
+
+pub const SSTable = struct {
+    path: []const u8,
+    file: std.fs.File,
+};
