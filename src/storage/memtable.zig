@@ -107,7 +107,7 @@ pub fn Memtable(comptime N: u8) type {
             return null;
         }
 
-        fn pick_level(self: *Self) u8 {
+        inline fn pick_level(self: *Self) u8 {
             var level: u8 = 1;
             while (level < N and self.rng.float(f32) > (1 - self.level_probability)) {
                 level += 1;
@@ -116,9 +116,8 @@ pub fn Memtable(comptime N: u8) type {
         }
 
         fn create_head(self: *Self) !void {
-            if (self.head != null) {
-                return;
-            }
+            if (self.head != null) return;
+
             const head = try self.allocator.create(MemtableNode);
             head.* = .{
                 .key = null,
