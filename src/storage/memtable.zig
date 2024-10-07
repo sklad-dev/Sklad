@@ -34,6 +34,19 @@ pub fn Memtable(comptime N: u8) type {
             tower: [N]?*MemtableNode,
         };
 
+        const MemtableIterator = struct {
+            current: ?*MemtableNode,
+
+            pub inline fn next(self: *MemtableIterator) ?*MemtableNode {
+                if (self.current) |c| {
+                    self.current = c.tower[0];
+                    return self.current;
+                } else {
+                    return null;
+                }
+            }
+        };
+
         pub fn init(allocator: std.mem.Allocator, random: std.Random, level_probability: f32) Self {
             return Self{
                 .allocator = allocator,
@@ -87,6 +100,10 @@ pub fn Memtable(comptime N: u8) type {
                 self.allocator.destroy(current.?);
                 current = next;
             }
+        }
+
+        pub fn interator(self: Self) MemtableIterator {
+            return MemtableIterator{ .current = self.head };
         }
 
         fn search(self: Self, key: MemtableKey, path: ?[]?*MemtableNode) ?*MemtableNode {
@@ -145,7 +162,7 @@ fn compare_bitwise(v1: []const u8, v2: []const u8) isize {
 // Tests
 const testing = std.testing;
 
-fn test_value() MemtableValue {
+inline fn test_value() MemtableValue {
     return MemtableValue{
         .first_relationship_pointer = 0,
         .value_size = 4,
