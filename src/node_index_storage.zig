@@ -8,16 +8,10 @@ const DEFAULT_NODE_INDEX_FILE = "./node_index.store";
 
 const NodePointer = u32;
 
-const StorageState = enum {
-    open,
-    close,
-};
-
 const NodeIndexStorage = struct {
     path: []const u8 = (&DEFAULT_NODE_INDEX_FILE).*,
     file: ?std.fs.File = null,
     next_id: u32 = 0,
-    state: StorageState = StorageState.close,
 
     pub fn open(self: *NodeIndexStorage) !void {
         self.file = try std.fs.cwd().createFile(self.path, .{
@@ -28,7 +22,7 @@ const NodeIndexStorage = struct {
         self.next_id = @intCast(pos / 4);
     }
 
-    pub fn close(self: NodeIndexStorage) void {
+    pub inline fn close(self: NodeIndexStorage) void {
         self.file.?.close();
     }
 
