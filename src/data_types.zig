@@ -11,9 +11,21 @@ pub const ValueType = enum(u8) {
     string, // variable length string
 };
 
-const NodeRecord = struct {
+pub const NodePointer = u32;
+
+pub const NodeRecord = struct {
     first_relationship_pointer: usize,
     value_type: ValueType,
     value_size: u32,
     value: []u8,
+};
+
+pub const LinkRecord = struct {
+    src_node_id: u64,
+    dst_node_id: u64,
+    src_node_prev_link_ptr: u64,
+    src_node_next_link_ptr: u64,
+    dst_node_prev_link_ptr: u64,
+    dst_node_next_link_ptr: u64,
+    link_label: ?u64,
 };

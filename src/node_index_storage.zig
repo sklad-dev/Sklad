@@ -3,10 +3,10 @@
 /// When the new node is created the corresponding index record is just appended to the end of the file,
 /// resulting offset is the new node id.
 const std = @import("std");
+const data_types = @import("./data_types.zig");
+const NodePointer = data_types.NodePointer;
 
 const DEFAULT_NODE_INDEX_FILE = "./node_index.store";
-
-const NodePointer = u32;
 
 const NodeIndexStorage = struct {
     path: []const u8 = (&DEFAULT_NODE_INDEX_FILE).*,
@@ -22,7 +22,7 @@ const NodeIndexStorage = struct {
         self.next_id = @intCast(pos / 4);
     }
 
-    pub inline fn close(self: NodeIndexStorage) void {
+    pub inline fn close(self: *NodeIndexStorage) void {
         self.file.?.close();
         self.file = null;
     }
