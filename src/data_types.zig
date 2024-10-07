@@ -10,3 +10,10 @@ pub const ValueType = enum(u8) {
     bigfloat, //f64
     string, // variable length string
 };
+
+const NodeRecord = struct {
+    first_relationship_pointer: usize,
+    value_type: ValueType,
+    value_size: u32,
+    value: []u8,
+};

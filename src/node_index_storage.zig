@@ -24,6 +24,7 @@ const NodeIndexStorage = struct {
 
     pub inline fn close(self: NodeIndexStorage) void {
         self.file.?.close();
+        self.file = null;
     }
 
     pub fn allocate_next_id(self: *NodeIndexStorage) !u32 {
