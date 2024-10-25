@@ -7,7 +7,7 @@ pub const SSTable = struct {
     path: []const u8,
     file: std.fs.File,
 
-    pub fn create(comptime N: u8, memtable: m.Memtable(N), path: []const u8) !SSTable {
+    pub fn create(comptime N: u8, memtable: *m.Memtable(N), path: []const u8) !SSTable {
         const file = try std.fs.cwd().createFile(path, .{
             .read = true,
             .truncate = false,
@@ -18,7 +18,7 @@ pub const SSTable = struct {
             .file = file,
         };
 
-        var it = memtable.interator();
+        var it = memtable.*.interator();
         while (it.next()) |node| {
             try sstable.write(@TypeOf(node.value.?.first_relationship_pointer), node.value.?.first_relationship_pointer);
             const value_type = @intFromEnum(node.value.?.value_type);
@@ -72,10 +72,10 @@ test "SSTable#create" {
 
     const test_vertex_data = test_value();
     for (254..264) |i| {
-        try test_memtable.add(&m.keyFromIntData(usize, i), test_vertex_data);
+        try test_memtable.add(&m.key_from_int_data(usize, i), test_vertex_data);
     }
 
-    const test_sstable = try SSTable.create(8, test_memtable, TEST_SSTABLE_PATH);
+    const test_sstable = try SSTable.create(8, &test_memtable, TEST_SSTABLE_PATH);
     test_sstable.close();
     try clean_up(test_sstable);
 }

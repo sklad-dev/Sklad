@@ -3,7 +3,7 @@ pub const ValueType = enum(u8) {
     smallint, // i8
     int, // i32
     bigint, // i64
-    tinyserial, // u8
+    smallserial, // u8
     serial, // u32
     bigserial, // u64
     float, // f32
@@ -14,10 +14,9 @@ pub const ValueType = enum(u8) {
 pub const NodePointer = u32;
 
 pub const NodeRecord = struct {
-    first_relationship_pointer: usize,
     value_type: ValueType,
     value_size: u32,
-    value: []u8,
+    value: []const u8,
 };
 
 pub const LinkRecord = struct {

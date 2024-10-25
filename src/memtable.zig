@@ -11,7 +11,7 @@ pub const MemtableValue = struct {
     value_size: u32,
 };
 
-pub fn keyFromIntData(comptime T: type, key_value: T) [@sizeOf(T)]u8 {
+pub fn key_from_int_data(comptime T: type, key_value: T) [@sizeOf(T)]u8 {
     var buffer: [@sizeOf(T)]u8 = undefined;
     std.mem.writeInt(T, &buffer, key_value, std.builtin.Endian.big);
     return buffer;
@@ -27,6 +27,7 @@ pub fn Memtable(comptime N: u8) type {
         level: u8 = 1,
         compare_fn: *const fn ([]const u8, []const u8) isize = compare_bitwise,
         head: ?*MemtableNode = null,
+        size: u16 = 0,
 
         const MemtableNode = struct {
             key: ?std.ArrayList(u8),
@@ -79,17 +80,18 @@ pub fn Memtable(comptime N: u8) type {
                         self.head.?.tower[i] = new_node;
                     }
                 }
+                self.size += 1;
             }
         }
 
-        pub fn find(self: Self, key: MemtableKey) ?MemtableValue {
+        pub fn find(self: *const Self, key: MemtableKey) ?MemtableValue {
             if (self.head == null) return null;
 
             const result = self.search(key, null) orelse return null;
             return result.*.value;
         }
 
-        pub fn destroy(self: Self) void {
+        pub fn destroy(self: *const Self) void {
             var current = self.head;
             var next = current;
             while (current != null) {
@@ -102,11 +104,11 @@ pub fn Memtable(comptime N: u8) type {
             }
         }
 
-        pub fn interator(self: Self) MemtableIterator {
+        pub fn interator(self: *const Self) MemtableIterator {
             return MemtableIterator{ .current = self.head };
         }
 
-        fn search(self: Self, key: MemtableKey, path: ?[]?*MemtableNode) ?*MemtableNode {
+        fn search(self: *const Self, key: MemtableKey, path: ?[]?*MemtableNode) ?*MemtableNode {
             var cursor = self.head.?;
             var l = self.level;
             while (l > 0) {
@@ -186,7 +188,7 @@ fn visualize_memtable(comptime N: usize, table: Memtable(N)) !void {
     defer representation.deinit();
 
     var l = table.level;
-    std.debug.print("Memtable, heights = {d}\n", .{l});
+    std.debug.print("Memtable, heights = {d}, size = {d}\n", .{ l, table.size });
     while (l > 0) {
         l -= 1;
         var empty = true;
@@ -249,31 +251,34 @@ test "Memtable#add and find" {
     defer test_memtable.destroy();
 
     // Case: search in an empty memtable
-    try testing.expect(test_memtable.find(&keyFromIntData(u8, 1)) == null);
+    try testing.expect(test_memtable.find(&key_from_int_data(u8, 1)) == null);
 
     // Case: a key is added succesfully to an empty memtable
     const test_vertex_data = test_value();
-    const test_vertex0 = keyFromIntData(u8, 0);
+    const test_vertex0 = key_from_int_data(u8, 0);
     try test_memtable.add(&test_vertex0, test_vertex_data);
     try testing.expect(test_memtable.head != null);
     try testing.expect(std.mem.eql(u8, test_memtable.head.?.tower[0].?.key.?.items, &test_vertex0));
     try testing.expect(size(8, test_memtable) == 1);
+    try testing.expect(test_memtable.size == 1);
 
     // Case: same key won't be added twice, no duplicates are allowed
-    const test_vertex1 = keyFromIntData(u8, 0);
+    const test_vertex1 = key_from_int_data(u8, 0);
     try test_memtable.add(&test_vertex1, test_vertex_data);
     try testing.expect(size(8, test_memtable) == 1);
+    try testing.expect(test_memtable.size == 1);
 
     // Case: adding more keys
     var table_size: u8 = 1;
     for (0..16) |_| {
-        try test_memtable.add(&keyFromIntData(u8, table_size), test_vertex_data);
+        try test_memtable.add(&key_from_int_data(u8, table_size), test_vertex_data);
         table_size += 1;
         try testing.expect(size(8, test_memtable) == table_size);
+        try testing.expect(test_memtable.size == table_size);
     }
 
     // Case: find
-    try testing.expect(test_memtable.find(&keyFromIntData(u8, 0)) != null);
-    try testing.expect(test_memtable.find(&keyFromIntData(u8, table_size / 2)) != null);
-    try testing.expect(test_memtable.find(&keyFromIntData(u8, table_size + 1)) == null);
+    try testing.expect(test_memtable.find(&key_from_int_data(u8, 0)) != null);
+    try testing.expect(test_memtable.find(&key_from_int_data(u8, table_size / 2)) != null);
+    try testing.expect(test_memtable.find(&key_from_int_data(u8, table_size + 1)) == null);
 }

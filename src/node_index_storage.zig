@@ -8,7 +8,7 @@ const NodePointer = data_types.NodePointer;
 
 const DEFAULT_NODE_INDEX_FILE = "./node_index.store";
 
-const NodeIndexStorage = struct {
+pub const NodeIndexStorage = struct {
     path: []const u8 = (&DEFAULT_NODE_INDEX_FILE).*,
     file: ?std.fs.File = null,
     next_id: u32 = 0,
@@ -22,9 +22,11 @@ const NodeIndexStorage = struct {
         self.next_id = @intCast(pos / 4);
     }
 
-    pub inline fn close(self: *NodeIndexStorage) void {
-        self.file.?.close();
-        self.file = null;
+    pub fn close(self: *NodeIndexStorage) void {
+        if (self.file) |file| {
+            file.close();
+            self.file = null;
+        }
     }
 
     pub fn allocate_next_id(self: *NodeIndexStorage) !u32 {

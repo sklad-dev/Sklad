@@ -5,7 +5,7 @@ const NodeRecord = data_types.NodeRecord;
 
 const DEFAULT_WAL_FILE = "./.wal";
 
-const Wal = struct {
+pub const Wal = struct {
     path: []const u8 = (&DEFAULT_WAL_FILE).*,
     file: ?std.fs.File = null,
 
@@ -16,16 +16,26 @@ const Wal = struct {
         });
     }
 
-    pub inline fn close(self: Wal) void {
-        self.file.?.close();
-        self.file = null;
+    pub fn close(self: *Wal) void {
+        if (self.file) |file| {
+            file.close();
+            self.file = null;
+        }
     }
 
-    pub fn write(self: Wal, record: NodeRecord) !void {
+    pub inline fn is_empty(self: Wal) !bool {
+        if (self.file) |file| {
+            const info = try file.stat();
+            return info.size == 0;
+        }
+        return false;
+    }
+
+    pub fn write(self: Wal, record: *const NodeRecord) !void {
         try self.file.?.seekFromEnd(0);
-        try self.writeItem(@TypeOf(record.first_relationship_pointer), record.first_relationship_pointer);
         const value_type = @intFromEnum(record.value_type);
         try self.writeItem(@TypeOf(value_type), value_type);
+        try self.writeItem(@TypeOf(record.value_size), record.value_size);
         try self.file.?.writeAll(record.value);
     }
 
