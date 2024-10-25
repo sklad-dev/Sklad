@@ -70,7 +70,7 @@ pub fn Storage(comptime N: u8) type {
             defer self.allocator.destroy(record);
 
             try self.wal.write(record);
-            _ = try self.node_index_storage.allocate_next_id(); // TODO: use the node_id value
+            const node_id = try self.node_index_storage.allocate_next_id(); // TODO: use the node_id value
 
             if (self.memtables == null) {
                 self.memtables = try ArrayList(*mt.Memtable(N)).initCapacity(self.allocator, 2);
@@ -99,7 +99,7 @@ pub fn Storage(comptime N: u8) type {
             try current_memtable.*.add(
                 record.value,
                 mt.MemtableValue{
-                    .first_relationship_pointer = 0,
+                    .node_id = node_id,
                     .value_type = record.value_type,
                     .value_size = record.value_size,
                 },

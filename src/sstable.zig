@@ -20,7 +20,7 @@ pub const SSTable = struct {
 
         var it = memtable.*.interator();
         while (it.next()) |node| {
-            try sstable.write(@TypeOf(node.value.?.first_relationship_pointer), node.value.?.first_relationship_pointer);
+            try sstable.write(@TypeOf(node.value.?.node_id), node.value.?.node_id);
             const value_type = @intFromEnum(node.value.?.value_type);
             try sstable.write(@TypeOf(value_type), value_type);
             try sstable.write(@TypeOf(node.value.?.value_size), node.value.?.value_size);
@@ -48,7 +48,7 @@ const TEST_SSTABLE_PATH = "./node_store.store";
 
 inline fn test_value() m.MemtableValue {
     return m.MemtableValue{
-        .first_relationship_pointer = 0,
+        .node_id = 0,
         .value_size = 8,
         .value_type = ValueType.bigserial,
     };

@@ -11,7 +11,7 @@ pub const ValueType = enum(u8) {
     string, // variable length string
 };
 
-pub const NodePointer = u32;
+pub const NodePointer = u64;
 
 pub const NodeRecord = struct {
     value_type: ValueType,

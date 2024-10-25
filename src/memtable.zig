@@ -6,7 +6,7 @@ const ValueType = data_types.ValueType;
 pub const MemtableKey = []const u8;
 
 pub const MemtableValue = struct {
-    first_relationship_pointer: usize,
+    node_id: u64,
     value_type: data_types.ValueType,
     value_size: u32,
 };
@@ -166,7 +166,7 @@ const testing = std.testing;
 
 inline fn test_value() MemtableValue {
     return MemtableValue{
-        .first_relationship_pointer = 0,
+        .node_id = 0,
         .value_size = 4,
         .value_type = ValueType.int,
     };
