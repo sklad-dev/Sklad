@@ -90,6 +90,7 @@ pub fn Storage(comptime N: u8) type {
                 );
                 sstable.close();
                 filled_memtable.destroy();
+                self.allocator.destroy(filled_memtable);
 
                 try self.add_memtable();
             }
