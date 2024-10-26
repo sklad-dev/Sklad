@@ -146,10 +146,12 @@ pub fn Storage(comptime N: u8) type {
                     const first_dot = std.mem.indexOfScalar(u8, file_name, '.').?; // TODO: handle return value correctly
                     const second_dot = std.mem.indexOfScalar(u8, file_name[first_dot + 1 ..], '.').? + first_dot + 1;
                     const second_number_str = file_name[first_dot + 1 .. second_dot];
-                    last_index = try std.fmt.parseInt(i32, second_number_str, 10);
+                    const parsed_index = try std.fmt.parseInt(i32, second_number_str, 10);
+                    if (parsed_index > last_index) {
+                        last_index = parsed_index;
+                    }
                 }
             }
-
             return last_index + 1;
         }
 
@@ -175,6 +177,8 @@ const testing = std.testing;
 
 test "Add value" {
     var test_storage = try Storage(8).init("./", 8, testing.allocator);
-    try test_storage.write(u64, 1);
+    for (0..26) |i| {
+        try test_storage.write(u64, i);
+    }
     test_storage.destroy();
 }
