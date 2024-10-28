@@ -22,9 +22,5 @@ pub const NodeRecord = struct {
 pub const LinkRecord = struct {
     src_node_id: u64,
     dst_node_id: u64,
-    src_node_prev_link_ptr: u64,
-    src_node_next_link_ptr: u64,
-    dst_node_prev_link_ptr: u64,
-    dst_node_next_link_ptr: u64,
     link_label: ?u64,
 };
