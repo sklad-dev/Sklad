@@ -15,7 +15,7 @@ pub const NodePointer = u64;
 
 pub const NodeRecord = struct {
     value_type: ValueType,
-    value_size: u32,
+    value_size: u16,
     value: []const u8,
 };
 

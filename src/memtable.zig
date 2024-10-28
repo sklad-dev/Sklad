@@ -8,7 +8,7 @@ pub const MemtableKey = []const u8;
 pub const MemtableValue = struct {
     node_id: u64,
     value_type: data_types.ValueType,
-    value_size: u32,
+    value_size: u16,
 };
 
 pub fn key_from_int_data(comptime T: type, key_value: T) [@sizeOf(T)]u8 {
