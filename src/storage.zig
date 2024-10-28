@@ -23,7 +23,7 @@ pub fn Storage(comptime N: u8) type {
         node_index_storage: nis.NodeIndexStorage,
         memtables: ?ArrayList(*mt.Memtable(N)),
 
-        pub fn init(path: []const u8, max_memtable_size: u16, allocator: std.mem.Allocator) !Self {
+        pub fn start(path: []const u8, max_memtable_size: u16, allocator: std.mem.Allocator) !Self {
             var wal = w.Wal{};
             try wal.open();
 
@@ -47,7 +47,7 @@ pub fn Storage(comptime N: u8) type {
             return storage;
         }
 
-        pub fn destroy(self: *Self) void {
+        pub fn stop(self: *Self) void {
             self.wal.close();
             self.node_index_storage.close();
             if (self.memtables) |ts| {
@@ -176,9 +176,17 @@ pub fn Storage(comptime N: u8) type {
 const testing = std.testing;
 
 test "Add value" {
-    var test_storage = try Storage(8).init("./", 8, testing.allocator);
-    for (0..26) |i| {
-        try test_storage.write(u64, i);
-    }
-    test_storage.destroy();
+    var test_storage = try Storage(8).start("./", 8, testing.allocator);
+
+    try test_storage.write(u64, 412);
+    try test_storage.write(u64, 1);
+    try test_storage.write(u64, 18);
+    try test_storage.write(u64, 20);
+    try test_storage.write(u64, 120);
+    try test_storage.write(u64, 96);
+    try test_storage.write(u64, 5);
+    try test_storage.write(u64, 11);
+    try test_storage.write(u64, 387);
+
+    test_storage.stop();
 }
