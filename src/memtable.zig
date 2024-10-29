@@ -54,7 +54,7 @@ pub fn Memtable(comptime N: u8) type {
 
         pub fn init(allocator: std.mem.Allocator, random: std.Random, level_probability: f32) !Self {
             const wal_name = try allocator.alloc(u8, 8);
-            const wal_id = generate_memtable_id(random);
+            const wal_id = generate_id(random);
 
             var wal = w.Wal{ .path = try std.fmt.bufPrint(
                 wal_name,
@@ -179,7 +179,7 @@ fn compare_bitwise(v1: []const u8, v2: []const u8) isize {
     return @as(isize, @intCast(v1.len)) - @as(isize, @intCast(v2.len));
 }
 
-inline fn generate_memtable_id(rng: std.Random) [2]u8 {
+inline fn generate_id(rng: std.Random) [2]u8 {
     var buf: [2]u8 = undefined;
     rng.bytes(&buf);
     return buf;
@@ -306,8 +306,5 @@ test "Memtable#add and find" {
     try testing.expect(test_memtable.find(&key_from_int_data(u8, table_size / 2)) != null);
     try testing.expect(test_memtable.find(&key_from_int_data(u8, table_size + 1)) == null);
 
-    std.fs.cwd().deleteFile(test_memtable.wal.path) catch {
-        const out = std.io.getStdOut().writer();
-        try std.fmt.format(out, "{s}", .{"failed to clean up after the test\n"});
-    };
+    try test_memtable.wal.delete_file();
 }

@@ -59,10 +59,7 @@ fn clean_up(comptime N: u8, storage: SSTable, memtable: m.Memtable(N)) !void {
         const out = std.io.getStdOut().writer();
         try std.fmt.format(out, "failed to clean up after the test\n", .{});
     };
-    std.fs.cwd().deleteFile(memtable.wal_name) catch {
-        const out = std.io.getStdOut().writer();
-        try std.fmt.format(out, "failed to clean up after the test\n", .{});
-    };
+    try memtable.wal.delete_file();
 }
 
 test "SSTable#create" {

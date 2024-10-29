@@ -39,6 +39,13 @@ pub const Wal = struct {
         try self.file.?.writeAll(record.value);
     }
 
+    pub fn delete_file(self: Wal) !void {
+        std.fs.cwd().deleteFile(self.path) catch {
+            const out = std.io.getStdOut().writer();
+            try std.fmt.format(out, "failed to clean up after the test\n", .{});
+        };
+    }
+
     inline fn writeItem(self: Wal, comptime T: type, item: T) !void {
         var buffer: [@sizeOf(T)]u8 = undefined;
         std.mem.writeInt(T, &buffer, item, std.builtin.Endian.big);

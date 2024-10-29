@@ -77,10 +77,7 @@ pub fn Storage(comptime N: u8) type {
                     file_name,
                 );
                 sstable.close();
-                std.fs.cwd().deleteFile(filled_memtable.wal_name) catch {
-                    const out = std.io.getStdOut().writer();
-                    try std.fmt.format(out, "failed to delete wal file: {s}\n", .{filled_memtable.wal_name});
-                };
+                try filled_memtable.wal.delete_file();
                 filled_memtable.destroy();
                 self.allocator.destroy(filled_memtable);
 
@@ -170,16 +167,9 @@ const testing = std.testing;
 
 test "Add value" {
     var test_storage = try Storage(8).start("./", 8, testing.allocator);
-
-    try test_storage.write(u64, 412);
     try test_storage.write(u64, 1);
-    try test_storage.write(u64, 18);
-    try test_storage.write(u64, 20);
-    try test_storage.write(u64, 120);
-    try test_storage.write(u64, 96);
-    try test_storage.write(u64, 5);
-    try test_storage.write(u64, 11);
-    try test_storage.write(u64, 387);
-
+    for (test_storage.memtables.?.items) |t| {
+        try t.wal.delete_file();
+    }
     test_storage.stop();
 }
