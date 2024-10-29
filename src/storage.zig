@@ -6,7 +6,6 @@ const data_types = @import("./data_types.zig");
 const ValueType = data_types.ValueType;
 const NodeRecord = data_types.NodeRecord;
 
-const w = @import("./wal.zig");
 const nis = @import("./node_index_storage.zig");
 const mt = @import("./memtable.zig");
 const st = @import("./sstable.zig");
@@ -19,36 +18,26 @@ pub fn Storage(comptime N: u8) type {
         max_memtable_size: u16,
         memtable_level_probability: f32,
         allocator: std.mem.Allocator,
-        wal: w.Wal,
         node_index_storage: nis.NodeIndexStorage,
         memtables: ?ArrayList(*mt.Memtable(N)),
 
         pub fn start(path: []const u8, max_memtable_size: u16, allocator: std.mem.Allocator) !Self {
-            var wal = w.Wal{};
-            try wal.open();
-
             var node_index_storage = nis.NodeIndexStorage{};
             try node_index_storage.open();
 
-            var storage = Self{
+            const storage = Self{
                 .path = path,
                 .max_memtable_size = max_memtable_size,
                 .memtable_level_probability = 0.125,
                 .allocator = allocator,
-                .wal = wal,
                 .node_index_storage = node_index_storage,
                 .memtables = null,
             };
-
-            if (try storage.wal.is_empty() == true) {
-                // TODO: create memtable from wal
-            }
 
             return storage;
         }
 
         pub fn stop(self: *Self) void {
-            self.wal.close();
             self.node_index_storage.close();
             if (self.memtables) |ts| {
                 for (ts.items) |t| {
@@ -69,7 +58,6 @@ pub fn Storage(comptime N: u8) type {
             };
             defer self.allocator.destroy(record);
 
-            try self.wal.write(record);
             const node_id = try self.node_index_storage.allocate_next_id(); // TODO: use the node_id value
 
             if (self.memtables == null) {
@@ -89,6 +77,10 @@ pub fn Storage(comptime N: u8) type {
                     file_name,
                 );
                 sstable.close();
+                std.fs.cwd().deleteFile(filled_memtable.wal_name) catch {
+                    const out = std.io.getStdOut().writer();
+                    try std.fmt.format(out, "failed to delete wal file: {s}\n", .{filled_memtable.wal_name});
+                };
                 filled_memtable.destroy();
                 self.allocator.destroy(filled_memtable);
 
@@ -96,6 +88,7 @@ pub fn Storage(comptime N: u8) type {
             }
 
             const current_memtable = self.memtables.?.getLast();
+            try current_memtable.wal.write(record);
             try current_memtable.*.add(
                 record.value,
                 mt.MemtableValue{
@@ -119,7 +112,7 @@ pub fn Storage(comptime N: u8) type {
                 break :blk seed;
             });
             const memtable = try self.allocator.create(mt.Memtable(N));
-            memtable.* = mt.Memtable(N).init(
+            memtable.* = try mt.Memtable(N).init(
                 self.allocator,
                 rng.random(),
                 self.memtable_level_probability,

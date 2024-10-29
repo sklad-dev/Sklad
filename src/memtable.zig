@@ -1,6 +1,8 @@
 /// Skiplist implementation of a memtable for graph nodes
 const std = @import("std");
 const data_types = @import("./data_types.zig");
+const w = @import("./wal.zig");
+
 const ValueType = data_types.ValueType;
 
 pub const MemtableKey = []const u8;
@@ -25,6 +27,8 @@ pub fn Memtable(comptime N: u8) type {
         rng: std.Random,
         level_probability: f32,
         level: u8 = 1,
+        wal_name: []u8,
+        wal: w.Wal,
         compare_fn: *const fn ([]const u8, []const u8) isize = compare_bitwise,
         head: ?*MemtableNode = null,
         size: u16 = 0,
@@ -48,11 +52,23 @@ pub fn Memtable(comptime N: u8) type {
             }
         };
 
-        pub fn init(allocator: std.mem.Allocator, random: std.Random, level_probability: f32) Self {
+        pub fn init(allocator: std.mem.Allocator, random: std.Random, level_probability: f32) !Self {
+            const wal_name = try allocator.alloc(u8, 8);
+            const wal_id = generate_memtable_id(random);
+
+            var wal = w.Wal{ .path = try std.fmt.bufPrint(
+                wal_name,
+                "{x:0>2}{x:0>2}.wal",
+                .{ wal_id[0], wal_id[1] },
+            ) };
+            try wal.open();
+
             return Self{
                 .allocator = allocator,
                 .rng = random,
                 .level_probability = level_probability,
+                .wal_name = wal_name,
+                .wal = wal,
             };
         }
 
@@ -91,7 +107,7 @@ pub fn Memtable(comptime N: u8) type {
             return result.*.value;
         }
 
-        pub fn destroy(self: *const Self) void {
+        pub fn destroy(self: *Self) void {
             var current = self.head;
             var next = current;
             while (current != null) {
@@ -102,6 +118,8 @@ pub fn Memtable(comptime N: u8) type {
                 self.allocator.destroy(current.?);
                 current = next;
             }
+            self.wal.close();
+            self.allocator.free(self.wal_name);
         }
 
         pub fn interator(self: *const Self) MemtableIterator {
@@ -159,6 +177,12 @@ fn compare_bitwise(v1: []const u8, v2: []const u8) isize {
     }
 
     return @as(isize, @intCast(v1.len)) - @as(isize, @intCast(v2.len));
+}
+
+inline fn generate_memtable_id(rng: std.Random) [2]u8 {
+    var buf: [2]u8 = undefined;
+    rng.bytes(&buf);
+    return buf;
 }
 
 // Tests
@@ -247,7 +271,7 @@ test "Memtable#add and find" {
         try std.posix.getrandom(std.mem.asBytes(&seed));
         break :blk seed;
     });
-    var test_memtable = Memtable(8).init(testing.allocator, rng.random(), 0.125);
+    var test_memtable = try Memtable(8).init(testing.allocator, rng.random(), 0.125);
     defer test_memtable.destroy();
 
     // Case: search in an empty memtable
@@ -281,4 +305,9 @@ test "Memtable#add and find" {
     try testing.expect(test_memtable.find(&key_from_int_data(u8, 0)) != null);
     try testing.expect(test_memtable.find(&key_from_int_data(u8, table_size / 2)) != null);
     try testing.expect(test_memtable.find(&key_from_int_data(u8, table_size + 1)) == null);
+
+    std.fs.cwd().deleteFile(test_memtable.wal.path) catch {
+        const out = std.io.getStdOut().writer();
+        try std.fmt.format(out, "{s}", .{"failed to clean up after the test\n"});
+    };
 }

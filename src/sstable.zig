@@ -54,10 +54,14 @@ inline fn test_value() m.MemtableValue {
     };
 }
 
-fn clean_up(storage: SSTable) !void {
+fn clean_up(comptime N: u8, storage: SSTable, memtable: m.Memtable(N)) !void {
     std.fs.cwd().deleteFile(storage.path) catch {
         const out = std.io.getStdOut().writer();
-        try std.fmt.format(out, "{s}", .{"failed to clean up after the test\n"});
+        try std.fmt.format(out, "failed to clean up after the test\n", .{});
+    };
+    std.fs.cwd().deleteFile(memtable.wal_name) catch {
+        const out = std.io.getStdOut().writer();
+        try std.fmt.format(out, "failed to clean up after the test\n", .{});
     };
 }
 
@@ -67,7 +71,7 @@ test "SSTable#create" {
         try std.posix.getrandom(std.mem.asBytes(&seed));
         break :blk seed;
     });
-    var test_memtable = m.Memtable(8).init(testing.allocator, rng.random(), 0.125);
+    var test_memtable = try m.Memtable(8).init(testing.allocator, rng.random(), 0.125);
     defer test_memtable.destroy();
 
     const test_vertex_data = test_value();
@@ -77,5 +81,5 @@ test "SSTable#create" {
 
     const test_sstable = try SSTable.create(8, &test_memtable, TEST_SSTABLE_PATH);
     test_sstable.close();
-    try clean_up(test_sstable);
+    try clean_up(8, test_sstable, test_memtable);
 }
