@@ -14,6 +14,7 @@ pub const ValueType = enum(u8) {
 pub const NodePointer = u64;
 
 pub const NodeRecord = struct {
+    node_id: u64,
     value_type: ValueType,
     value_size: u16,
     value: []const u8,

@@ -33,6 +33,7 @@ pub const Wal = struct {
 
     pub fn write(self: Wal, record: *const NodeRecord) !void {
         try self.file.?.seekFromEnd(0);
+        try self.writeItem(@TypeOf(record.node_id), record.node_id);
         const value_type = @intFromEnum(record.value_type);
         try self.writeItem(@TypeOf(value_type), value_type);
         try self.writeItem(@TypeOf(record.value_size), record.value_size);
@@ -44,6 +45,11 @@ pub const Wal = struct {
             const out = std.io.getStdOut().writer();
             try std.fmt.format(out, "failed to clean up after the test\n", .{});
         };
+    }
+
+    pub fn read_record(self: Wal, buffer: []u8) !usize {
+        const bytes_read = try self.file.?.read(buffer[0..]);
+        return bytes_read;
     }
 
     inline fn writeItem(self: Wal, comptime T: type, item: T) !void {

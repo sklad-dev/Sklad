@@ -19,6 +19,25 @@ pub fn key_from_int_data(comptime T: type, key_value: T) [@sizeOf(T)]u8 {
     return buffer;
 }
 
+fn compare_bitwise(v1: []const u8, v2: []const u8) isize {
+    if (v1.len == v2.len and std.mem.eql(u8, v1, v2)) return 0;
+
+    const min_length = @min(v1.len, v2.len);
+    for (0..min_length) |i| {
+        if (v1[i] != v2[i]) {
+            return @as(isize, @intCast(v1[i])) - @as(isize, @intCast(v2[i]));
+        }
+    }
+
+    return @as(isize, @intCast(v1.len)) - @as(isize, @intCast(v2.len));
+}
+
+inline fn generate_id(rng: std.Random) [2]u8 {
+    var buf: [2]u8 = undefined;
+    rng.bytes(&buf);
+    return buf;
+}
+
 pub fn Memtable(comptime N: u8) type {
     return struct {
         const Self = @This();
@@ -27,14 +46,14 @@ pub fn Memtable(comptime N: u8) type {
         rng: std.Random,
         level_probability: f32,
         level: u8 = 1,
-        wal_name: []u8,
+        wal_name: []const u8,
         wal: w.Wal,
         compare_fn: *const fn ([]const u8, []const u8) isize = compare_bitwise,
         head: ?*MemtableNode = null,
         size: u16 = 0,
 
         const MemtableNode = struct {
-            key: ?std.ArrayList(u8),
+            key: ?[]u8,
             value: ?MemtableValue,
             tower: [N]?*MemtableNode,
         };
@@ -72,6 +91,36 @@ pub fn Memtable(comptime N: u8) type {
             };
         }
 
+        pub fn from_wal(wal: w.Wal, allocator: std.mem.Allocator, random: std.Random, level_probability: f32) !Self {
+            var memtable = Self{
+                .allocator = allocator,
+                .rng = random,
+                .level_probability = level_probability,
+                .wal_name = wal.path,
+                .wal = wal,
+            };
+            try memtable.wal.open();
+
+            const record_buffer = try allocator.alloc(u8, 11);
+            defer allocator.free(record_buffer);
+
+            while (try memtable.wal.read_record(record_buffer) == 11) {
+                const node_id: u64 = std.mem.readInt(u64, record_buffer[0..8], std.builtin.Endian.big);
+                const value_type: u8 = std.mem.readInt(u8, record_buffer[8..9], std.builtin.Endian.big);
+                const value_size: u16 = std.mem.readInt(u16, record_buffer[9..11], std.builtin.Endian.big);
+                const value_buffer = try allocator.alloc(u8, value_size);
+                _ = try memtable.wal.file.?.readAll(value_buffer);
+                try memtable.add(value_buffer, MemtableValue{
+                    .node_id = node_id,
+                    .value_type = @enumFromInt(value_type),
+                    .value_size = value_size,
+                });
+                allocator.free(value_buffer);
+            }
+
+            return memtable;
+        }
+
         pub fn add(self: *Self, key: MemtableKey, value: MemtableValue) !void {
             if (self.head == null) try self.create_head();
 
@@ -83,11 +132,11 @@ pub fn Memtable(comptime N: u8) type {
                 self.level = @max(self.level, new_node_level);
                 const new_node = try self.allocator.create(MemtableNode);
                 new_node.* = .{
-                    .key = try std.ArrayList(u8).initCapacity(self.allocator, key.len),
+                    .key = try self.allocator.alloc(u8, key.len),
                     .value = value,
                     .tower = [_]?*MemtableNode{null} ** N,
                 };
-                try new_node.*.key.?.appendSlice(key);
+                @memcpy(new_node.*.key.?, key);
                 for (path, 0..) |node, i| {
                     if (node) |n| {
                         new_node.tower[i] = n.tower[i];
@@ -113,7 +162,7 @@ pub fn Memtable(comptime N: u8) type {
             while (current != null) {
                 next = current.?.tower[0];
                 if (current.?.key) |key| {
-                    key.deinit();
+                    self.allocator.free(key);
                 }
                 self.allocator.destroy(current.?);
                 current = next;
@@ -131,13 +180,13 @@ pub fn Memtable(comptime N: u8) type {
             var l = self.level;
             while (l > 0) {
                 l -= 1;
-                while (cursor.tower[l] != null and self.compare_fn(cursor.tower[l].?.*.key.?.items, key) < 0) {
+                while (cursor.tower[l] != null and self.compare_fn(cursor.tower[l].?.*.key.?, key) < 0) {
                     cursor = cursor.tower[l].?;
                 }
                 if (path) |p| {
                     p[l] = cursor;
                 }
-                if (cursor.tower[l] != null and self.compare_fn(cursor.tower[l].?.*.key.?.items, key) == 0) {
+                if (cursor.tower[l] != null and self.compare_fn(cursor.tower[l].?.*.key.?, key) == 0) {
                     return cursor.tower[l];
                 }
             }
@@ -164,25 +213,6 @@ pub fn Memtable(comptime N: u8) type {
             self.head = head;
         }
     };
-}
-
-fn compare_bitwise(v1: []const u8, v2: []const u8) isize {
-    if (v1.len == v2.len and std.mem.eql(u8, v1, v2)) return 0;
-
-    const min_length = @min(v1.len, v2.len);
-    for (0..min_length) |i| {
-        if (v1[i] != v2[i]) {
-            return @as(isize, @intCast(v1[i])) - @as(isize, @intCast(v2[i]));
-        }
-    }
-
-    return @as(isize, @intCast(v1.len)) - @as(isize, @intCast(v2.len));
-}
-
-inline fn generate_id(rng: std.Random) [2]u8 {
-    var buf: [2]u8 = undefined;
-    rng.bytes(&buf);
-    return buf;
 }
 
 // Tests
@@ -282,7 +312,7 @@ test "Memtable#add and find" {
     const test_vertex0 = key_from_int_data(u8, 0);
     try test_memtable.add(&test_vertex0, test_vertex_data);
     try testing.expect(test_memtable.head != null);
-    try testing.expect(std.mem.eql(u8, test_memtable.head.?.tower[0].?.key.?.items, &test_vertex0));
+    try testing.expect(std.mem.eql(u8, test_memtable.head.?.tower[0].?.key.?, &test_vertex0));
     try testing.expect(size(8, test_memtable) == 1);
     try testing.expect(test_memtable.size == 1);
 

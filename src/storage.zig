@@ -9,6 +9,7 @@ const NodeRecord = data_types.NodeRecord;
 const nis = @import("./node_index_storage.zig");
 const mt = @import("./memtable.zig");
 const st = @import("./sstable.zig");
+const w = @import("./wal.zig");
 
 pub fn Storage(comptime N: u8) type {
     return struct {
@@ -25,7 +26,7 @@ pub fn Storage(comptime N: u8) type {
             var node_index_storage = nis.NodeIndexStorage{};
             try node_index_storage.open();
 
-            const storage = Self{
+            var storage = Self{
                 .path = path,
                 .max_memtable_size = max_memtable_size,
                 .memtable_level_probability = 0.125,
@@ -33,6 +34,8 @@ pub fn Storage(comptime N: u8) type {
                 .node_index_storage = node_index_storage,
                 .memtables = null,
             };
+
+            try storage.restore_memtables();
 
             return storage;
         }
@@ -50,15 +53,16 @@ pub fn Storage(comptime N: u8) type {
         }
 
         pub fn write(self: *Self, comptime T: type, value: T) !void {
+            const node_id = try self.node_index_storage.allocate_next_id();
+
             const record = try self.allocator.create(NodeRecord);
             record.* = .{
+                .node_id = node_id,
                 .value_type = try value_type_from_type(T),
                 .value_size = @sizeOf(T),
                 .value = &mt.key_from_int_data(T, value),
             };
             defer self.allocator.destroy(record);
-
-            const node_id = try self.node_index_storage.allocate_next_id(); // TODO: use the node_id value
 
             if (self.memtables == null) {
                 self.memtables = try ArrayList(*mt.Memtable(N)).initCapacity(self.allocator, 2);
@@ -117,6 +121,45 @@ pub fn Storage(comptime N: u8) type {
             try self.memtables.?.append(memtable);
         }
 
+        fn restore_memtables(self: *Self) !void {
+            var dir = try std.fs.cwd().openDir(self.path, .{
+                .access_sub_paths = false,
+                .iterate = true,
+                .no_follow = true,
+            });
+            defer dir.close();
+
+            var it = dir.iterate();
+            while (try it.next()) |entry| {
+                if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".wal")) {
+                    const wal_name = try self.allocator.alloc(u8, 8);
+                    @memcpy(wal_name, entry.name);
+                    const wal = w.Wal{ .path = wal_name };
+                    try self.restore_memtable(wal);
+                }
+            }
+        }
+
+        fn restore_memtable(self: *Self, wal: w.Wal) !void {
+            var rng = std.rand.DefaultPrng.init(blk: {
+                var seed: u64 = undefined;
+                try std.posix.getrandom(std.mem.asBytes(&seed));
+                break :blk seed;
+            });
+            const memtable = try self.allocator.create(mt.Memtable(N));
+            memtable.* = try mt.Memtable(N).from_wal(
+                wal,
+                self.allocator,
+                rng.random(),
+                self.memtable_level_probability,
+            );
+
+            if (self.memtables == null) {
+                self.memtables = try ArrayList(*mt.Memtable(N)).initCapacity(self.allocator, 2);
+            }
+            try self.memtables.?.append(memtable);
+        }
+
         fn next_sstable_index(self: Self, level: u8) !i32 {
             var dir = try std.fs.cwd().openDir(self.path, .{
                 .access_sub_paths = false,
@@ -166,10 +209,27 @@ pub fn Storage(comptime N: u8) type {
 const testing = std.testing;
 
 test "Add value" {
-    var test_storage = try Storage(8).start("./", 8, testing.allocator);
-    try test_storage.write(u64, 1);
+    var test_storage = try Storage(8).start("./", 4, testing.allocator);
+    try test_storage.write(u8, 1);
+    try testing.expect(test_storage.memtables.?.items.len == 1);
+    try testing.expect(test_storage.memtables.?.getLast().find(&mt.key_from_int_data(u8, 1)) != null);
+
     for (test_storage.memtables.?.items) |t| {
         try t.wal.delete_file();
     }
     test_storage.stop();
+}
+
+test "Restore memtable from wal" {
+    var storage1 = try Storage(8).start("./", 4, testing.allocator);
+    try storage1.write(u8, 1);
+    storage1.stop();
+
+    var storage2 = try Storage(8).start("./", 4, testing.allocator);
+    try testing.expect(storage2.memtables.?.items.len == 1);
+    try testing.expect(storage2.memtables.?.getLast().find(&mt.key_from_int_data(u8, 1)) != null);
+    for (storage2.memtables.?.items) |t| {
+        try t.wal.delete_file();
+    }
+    storage2.stop();
 }

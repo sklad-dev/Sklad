@@ -24,7 +24,7 @@ pub const SSTable = struct {
             const value_type = @intFromEnum(node.value.?.value_type);
             try sstable.write(@TypeOf(value_type), value_type);
             try sstable.write(@TypeOf(node.value.?.value_size), node.value.?.value_size);
-            try file.writeAll(node.key.?.items);
+            try file.writeAll(node.key.?);
         }
 
         return sstable;
