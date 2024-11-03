@@ -13,6 +13,14 @@ pub const ValueType = enum(u8) {
 
 pub const NodePointer = u64;
 
+// A pointer to a node record stored on disk
+pub const FsNodePointer = struct {
+    padding: u8,
+    level_id: u8,
+    file_id: u8,
+    offset: u32,
+};
+
 pub const NodeRecord = struct {
     node_id: u64,
     value_type: ValueType,
