@@ -33,27 +33,17 @@ pub const BloomFilter = struct {
         return true;
     }
 
-    pub fn create(records: []*const NodeRecord, bits_per_key: u8, allocator: std.mem.Allocator) !Self {
+    pub fn init(num_records: u32, bits_per_key: u8, allocator: std.mem.Allocator) !Self {
         const float_bpk: f32 = @floatFromInt(bits_per_key);
         var num_hashes: u8 = @intFromFloat(float_bpk * 0.69); // 0.69 is approximately ln(2)
         num_hashes = @min(30, @max(1, num_hashes));
 
-        var filter_size_bits: u32 = @max(64, @as(u32, @intCast(records.len)) * bits_per_key);
-        const filter_size_byts: u32 = ((filter_size_bits + 7) / 8);
-        filter_size_bits = filter_size_byts * 8;
+        var filter_size_bits: u32 = @max(64, num_records * bits_per_key);
+        const filter_size_bytes: u32 = ((filter_size_bits + 7) / 8);
+        filter_size_bits = filter_size_bytes * 8;
 
-        const buf = try allocator.alloc(u8, filter_size_byts + 1);
+        const buf = try allocator.alloc(u8, filter_size_bytes + 1);
         @memset(buf, 0);
-
-        for (records) |record| {
-            var hash = std.hash.XxHash32.hash(SEED, record.*.value);
-            const delta = (hash >> 17) | (hash << 15);
-            for (0..num_hashes) |_| {
-                const position = hash % filter_size_bits;
-                buf[position / 8] |= @as(u8, 1) << @intCast((position % 8));
-                hash = (hash & delta) << 1;
-            }
-        }
         buf[buf.len - 1] = num_hashes;
 
         return Self{
@@ -62,7 +52,19 @@ pub const BloomFilter = struct {
         };
     }
 
-    pub fn delete(self: *Self) void {
+    pub fn add(self: Self, record: *const NodeRecord) void {
+        const num_hashes = self.filter[self.filter.len - 1];
+        const filter_size_bits: u32 = (@as(u32, @intCast(self.filter.len)) - 1) * 8;
+        var hash = std.hash.XxHash32.hash(SEED, record.*.value);
+        const delta = (hash >> 17) | (hash << 15);
+        for (0..num_hashes) |_| {
+            const position = hash % filter_size_bits;
+            self.filter[position / 8] |= @as(u8, 1) << @intCast((position % 8));
+            hash = (hash & delta) << 1;
+        }
+    }
+
+    pub inline fn deinit(self: *Self) void {
         self.allocator.free(self.filter);
     }
 };
@@ -94,15 +96,13 @@ test "test" {
         .value = &key_from_int_data(u64, val2),
     };
 
-    const records = try testing.allocator.alloc(*const NodeRecord, 2);
-    defer testing.allocator.free(records);
-    records[0] = &record1;
-    records[1] = &record2;
-
     const val3: u64 = 3;
 
-    var filter = try BloomFilter.create(records, 10, testing.allocator);
-    defer filter.delete();
+    var filter = try BloomFilter.init(2, 10, testing.allocator);
+    defer filter.deinit();
+
+    filter.add(&record1);
+    filter.add(&record2);
 
     try testing.expect(filter.may_contain(&key_from_int_data(u64, val1)) == true);
     try testing.expect(filter.may_contain(&key_from_int_data(u64, val3)) == false);

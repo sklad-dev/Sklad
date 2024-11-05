@@ -10,6 +10,7 @@ const nis = @import("./node_index_storage.zig");
 const mt = @import("./memtable.zig");
 const st = @import("./sstable.zig");
 const w = @import("./wal.zig");
+const constants = @import("./constants.zig");
 
 pub fn Storage(comptime N: u8) type {
     return struct {
@@ -79,6 +80,8 @@ pub fn Storage(comptime N: u8) type {
                     N,
                     filled_memtable,
                     file_name,
+                    constants.PAGE_SIZE,
+                    self.allocator,
                 );
                 sstable.close();
                 try filled_memtable.wal.delete_file();
