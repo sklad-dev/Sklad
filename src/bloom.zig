@@ -72,12 +72,7 @@ pub const BloomFilter = struct {
 // Tests
 const testing = std.testing;
 const ValueType = data_types.ValueType;
-
-pub fn key_from_int_data(comptime T: type, key_value: T) [@sizeOf(T)]u8 {
-    var buffer: [@sizeOf(T)]u8 = undefined;
-    std.mem.writeInt(T, &buffer, key_value, std.builtin.Endian.big);
-    return buffer;
-}
+const utils = @import("./utils.zig");
 
 test "test" {
     const val1: u64 = 1;
@@ -85,7 +80,7 @@ test "test" {
         .node_id = 1,
         .value_type = ValueType.bigserial,
         .value_size = @sizeOf(u64),
-        .value = &key_from_int_data(u64, val1),
+        .value = &utils.key_from_int_data(u64, val1),
     };
 
     const val2: u64 = 2;
@@ -93,7 +88,7 @@ test "test" {
         .node_id = 1,
         .value_type = ValueType.bigserial,
         .value_size = @sizeOf(u64),
-        .value = &key_from_int_data(u64, val2),
+        .value = &utils.key_from_int_data(u64, val2),
     };
 
     const val3: u64 = 3;
@@ -104,6 +99,6 @@ test "test" {
     filter.add(&record1);
     filter.add(&record2);
 
-    try testing.expect(filter.may_contain(&key_from_int_data(u64, val1)) == true);
-    try testing.expect(filter.may_contain(&key_from_int_data(u64, val3)) == false);
+    try testing.expect(filter.may_contain(&utils.key_from_int_data(u64, val1)) == true);
+    try testing.expect(filter.may_contain(&utils.key_from_int_data(u64, val3)) == false);
 }

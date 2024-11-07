@@ -1,11 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ArrayList = std.ArrayList;
+const AutoHashMap = std.AutoHashMap;
 
 const data_types = @import("./data_types.zig");
 const ValueType = data_types.ValueType;
 const NodeRecord = data_types.NodeRecord;
 
+const utils = @import("./utils.zig");
 const nis = @import("./node_index_storage.zig");
 const mt = @import("./memtable.zig");
 const st = @import("./sstable.zig");
@@ -22,6 +24,7 @@ pub fn Storage(comptime N: u8) type {
         allocator: std.mem.Allocator,
         node_index_storage: nis.NodeIndexStorage,
         memtables: ?ArrayList(*mt.Memtable(N)),
+        disk_files: ?AutoHashMap(u8, ArrayList([]u8)),
 
         pub fn start(path: []const u8, max_memtable_size: u16, allocator: std.mem.Allocator) !Self {
             var node_index_storage = nis.NodeIndexStorage{};
@@ -34,8 +37,10 @@ pub fn Storage(comptime N: u8) type {
                 .allocator = allocator,
                 .node_index_storage = node_index_storage,
                 .memtables = null,
+                .disk_files = null,
             };
 
+            try storage.map_sstable_files();
             try storage.restore_memtables();
 
             return storage;
@@ -51,6 +56,17 @@ pub fn Storage(comptime N: u8) type {
                 ts.deinit();
                 self.memtables = null;
             }
+            if (self.disk_files) |disk_files| {
+                var it = disk_files.valueIterator();
+                while (it.next()) |value| {
+                    for (value.*.items) |item| {
+                        self.allocator.free(item);
+                    }
+                    value.deinit();
+                }
+                self.disk_files.?.deinit();
+                self.disk_files = null;
+            }
         }
 
         pub fn write(self: *Self, comptime T: type, value: T) !void {
@@ -61,7 +77,7 @@ pub fn Storage(comptime N: u8) type {
                 .node_id = node_id,
                 .value_type = try value_type_from_type(T),
                 .value_size = @sizeOf(T),
-                .value = &mt.key_from_int_data(T, value),
+                .value = &utils.key_from_int_data(T, value),
             };
             defer self.allocator.destroy(record);
 
@@ -70,11 +86,13 @@ pub fn Storage(comptime N: u8) type {
                 try self.add_memtable();
             } else if (self.memtables.?.getLast().size >= self.max_memtable_size) {
                 const filled_memtable = self.memtables.?.pop();
+                const wal_id = utils.generate_id(filled_memtable.rng);
+
                 var file_name_buf: [24]u8 = undefined;
                 const file_name = try std.fmt.bufPrint(
                     &file_name_buf,
-                    "0.{d}.sstable",
-                    .{try self.next_sstable_index(0)},
+                    "0.{x:0>2}{x:0>2}.sstable",
+                    .{ wal_id[0], wal_id[1] },
                 );
                 const sstable = try st.SSTable.create(
                     N,
@@ -163,34 +181,6 @@ pub fn Storage(comptime N: u8) type {
             try self.memtables.?.append(memtable);
         }
 
-        fn next_sstable_index(self: Self, level: u8) !i32 {
-            var dir = try std.fs.cwd().openDir(self.path, .{
-                .access_sub_paths = false,
-                .iterate = true,
-                .no_follow = true,
-            });
-            defer dir.close();
-
-            var buf: [4]u8 = undefined;
-            const level_str = try std.fmt.bufPrint(&buf, "{}", .{level});
-
-            var last_index: i32 = -1;
-            var it = dir.iterate();
-            while (try it.next()) |entry| {
-                if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".sstable") and std.mem.startsWith(u8, entry.name, level_str)) {
-                    const file_name = entry.name;
-                    const first_dot = std.mem.indexOfScalar(u8, file_name, '.').?; // TODO: handle return value correctly
-                    const second_dot = std.mem.indexOfScalar(u8, file_name[first_dot + 1 ..], '.').? + first_dot + 1;
-                    const second_number_str = file_name[first_dot + 1 .. second_dot];
-                    const parsed_index = try std.fmt.parseInt(i32, second_number_str, 10);
-                    if (parsed_index > last_index) {
-                        last_index = parsed_index;
-                    }
-                }
-            }
-            return last_index + 1;
-        }
-
         fn value_type_from_type(T: type) !ValueType {
             return switch (T) {
                 bool => ValueType.boolean,
@@ -205,6 +195,35 @@ pub fn Storage(comptime N: u8) type {
                 else => error.DataError,
             };
         }
+
+        fn map_sstable_files(self: *Self) !void {
+            if (self.disk_files == null) {
+                self.disk_files = AutoHashMap(u8, ArrayList([]u8)).init(self.allocator);
+            }
+
+            var dir = try std.fs.cwd().openDir(self.path, .{
+                .access_sub_paths = false,
+                .iterate = true,
+                .no_follow = true,
+            });
+            defer dir.close();
+
+            var it = dir.iterate();
+            while (try it.next()) |entry| {
+                if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".sstable")) {
+                    const file_name = entry.name;
+                    const first_dot = std.mem.indexOfScalar(u8, file_name, '.').?; // TODO: handle return value correctly
+                    const level_id: u8 = try std.fmt.parseInt(u8, file_name[0..first_dot], 10);
+                    const file_name_copy = try self.allocator.alloc(u8, 14);
+                    @memcpy(file_name_copy, file_name);
+                    if (self.disk_files.?.contains(level_id) == false) {
+                        try self.disk_files.?.put(level_id, ArrayList([]u8).init(self.allocator));
+                    }
+                    var level_files = self.disk_files.?.get(level_id).?;
+                    try level_files.append(file_name_copy);
+                }
+            }
+        }
     };
 }
 
@@ -215,7 +234,7 @@ test "Add value" {
     var test_storage = try Storage(8).start("./", 4, testing.allocator);
     try test_storage.write(u8, 1);
     try testing.expect(test_storage.memtables.?.items.len == 1);
-    try testing.expect(test_storage.memtables.?.getLast().find(&mt.key_from_int_data(u8, 1)) != null);
+    try testing.expect(test_storage.memtables.?.getLast().find(&utils.key_from_int_data(u8, 1)) != null);
 
     for (test_storage.memtables.?.items) |t| {
         try t.wal.delete_file();
@@ -230,7 +249,7 @@ test "Restore memtable from wal" {
 
     var storage2 = try Storage(8).start("./", 4, testing.allocator);
     try testing.expect(storage2.memtables.?.items.len == 1);
-    try testing.expect(storage2.memtables.?.getLast().find(&mt.key_from_int_data(u8, 1)) != null);
+    try testing.expect(storage2.memtables.?.getLast().find(&utils.key_from_int_data(u8, 1)) != null);
     for (storage2.memtables.?.items) |t| {
         try t.wal.delete_file();
     }

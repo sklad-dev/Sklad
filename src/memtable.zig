@@ -13,12 +13,6 @@ pub const MemtableValue = struct {
     value_size: u16,
 };
 
-pub fn key_from_int_data(comptime T: type, key_value: T) [@sizeOf(T)]u8 {
-    var buffer: [@sizeOf(T)]u8 = undefined;
-    std.mem.writeInt(T, &buffer, key_value, std.builtin.Endian.big);
-    return buffer;
-}
-
 fn compare_bitwise(v1: []const u8, v2: []const u8) isize {
     if (v1.len == v2.len and std.mem.eql(u8, v1, v2)) return 0;
 
@@ -30,12 +24,6 @@ fn compare_bitwise(v1: []const u8, v2: []const u8) isize {
     }
 
     return @as(isize, @intCast(v1.len)) - @as(isize, @intCast(v2.len));
-}
-
-inline fn generate_id(rng: std.Random) [2]u8 {
-    var buf: [2]u8 = undefined;
-    rng.bytes(&buf);
-    return buf;
 }
 
 pub fn Memtable(comptime N: u8) type {
@@ -73,7 +61,7 @@ pub fn Memtable(comptime N: u8) type {
 
         pub fn init(allocator: std.mem.Allocator, random: std.Random, level_probability: f32) !Self {
             const wal_name = try allocator.alloc(u8, 8);
-            const wal_id = generate_id(random);
+            const wal_id = utils.generate_id(random);
 
             var wal = w.Wal{ .path = try std.fmt.bufPrint(
                 wal_name,
@@ -171,7 +159,7 @@ pub fn Memtable(comptime N: u8) type {
             self.allocator.free(self.wal_name);
         }
 
-        pub fn interator(self: *const Self) MemtableIterator {
+        pub fn iterator(self: *const Self) MemtableIterator {
             return MemtableIterator{ .current = self.head };
         }
 
@@ -217,6 +205,7 @@ pub fn Memtable(comptime N: u8) type {
 
 // Tests
 const testing = std.testing;
+const utils = @import("./utils.zig");
 
 inline fn test_value() MemtableValue {
     return MemtableValue{
@@ -305,11 +294,11 @@ test "Memtable#add and find" {
     defer test_memtable.destroy();
 
     // Case: search in an empty memtable
-    try testing.expect(test_memtable.find(&key_from_int_data(u8, 1)) == null);
+    try testing.expect(test_memtable.find(&utils.key_from_int_data(u8, 1)) == null);
 
     // Case: a key is added succesfully to an empty memtable
     const test_vertex_data = test_value();
-    const test_vertex0 = key_from_int_data(u8, 0);
+    const test_vertex0 = utils.key_from_int_data(u8, 0);
     try test_memtable.add(&test_vertex0, test_vertex_data);
     try testing.expect(test_memtable.head != null);
     try testing.expect(std.mem.eql(u8, test_memtable.head.?.tower[0].?.key.?, &test_vertex0));
@@ -317,7 +306,7 @@ test "Memtable#add and find" {
     try testing.expect(test_memtable.size == 1);
 
     // Case: same key won't be added twice, no duplicates are allowed
-    const test_vertex1 = key_from_int_data(u8, 0);
+    const test_vertex1 = utils.key_from_int_data(u8, 0);
     try test_memtable.add(&test_vertex1, test_vertex_data);
     try testing.expect(size(8, test_memtable) == 1);
     try testing.expect(test_memtable.size == 1);
@@ -325,16 +314,16 @@ test "Memtable#add and find" {
     // Case: adding more keys
     var table_size: u8 = 1;
     for (0..16) |_| {
-        try test_memtable.add(&key_from_int_data(u8, table_size), test_vertex_data);
+        try test_memtable.add(&utils.key_from_int_data(u8, table_size), test_vertex_data);
         table_size += 1;
         try testing.expect(size(8, test_memtable) == table_size);
         try testing.expect(test_memtable.size == table_size);
     }
 
     // Case: find
-    try testing.expect(test_memtable.find(&key_from_int_data(u8, 0)) != null);
-    try testing.expect(test_memtable.find(&key_from_int_data(u8, table_size / 2)) != null);
-    try testing.expect(test_memtable.find(&key_from_int_data(u8, table_size + 1)) == null);
+    try testing.expect(test_memtable.find(&utils.key_from_int_data(u8, 0)) != null);
+    try testing.expect(test_memtable.find(&utils.key_from_int_data(u8, table_size / 2)) != null);
+    try testing.expect(test_memtable.find(&utils.key_from_int_data(u8, table_size + 1)) == null);
 
     try test_memtable.wal.delete_file();
 }

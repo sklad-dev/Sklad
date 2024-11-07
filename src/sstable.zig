@@ -29,7 +29,7 @@ pub const SSTable = struct {
         defer bloom_filter.deinit();
 
         var i: u16 = 0;
-        var it = memtable.*.interator();
+        var it = memtable.*.iterator();
         var min_key: []u8 = undefined;
         var max_key: []u8 = undefined;
         while (it.next()) |node| {
@@ -92,6 +92,7 @@ pub const SSTable = struct {
 
 // Tests
 const testing = std.testing;
+const utils = @import("./utils.zig");
 
 const TEST_SSTABLE_PATH = "./test.sstable";
 
@@ -122,7 +123,7 @@ test "SSTable#create" {
 
     const test_vertex_data = test_value();
     for (254..264) |i| {
-        try test_memtable.add(&m.key_from_int_data(usize, i), test_vertex_data);
+        try test_memtable.add(&utils.key_from_int_data(usize, i), test_vertex_data);
     }
 
     const test_sstable = try SSTable.create(8, &test_memtable, TEST_SSTABLE_PATH, 76, testing.allocator);
