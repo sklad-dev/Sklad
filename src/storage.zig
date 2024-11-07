@@ -24,7 +24,8 @@ pub fn Storage(comptime N: u8) type {
         allocator: std.mem.Allocator,
         node_index_storage: nis.NodeIndexStorage,
         memtables: ?ArrayList(*mt.Memtable(N)),
-        disk_files: ?AutoHashMap(u8, ArrayList([]u8)),
+        table_files: ?AutoHashMap(u8, ArrayList([]u8)),
+        table_levels: ?AutoHashMap(u8, ArrayList(*st.SSTable)),
 
         pub fn start(path: []const u8, max_memtable_size: u16, allocator: std.mem.Allocator) !Self {
             var node_index_storage = nis.NodeIndexStorage{};
@@ -37,7 +38,8 @@ pub fn Storage(comptime N: u8) type {
                 .allocator = allocator,
                 .node_index_storage = node_index_storage,
                 .memtables = null,
-                .disk_files = null,
+                .table_files = null,
+                .table_levels = null,
             };
 
             try storage.map_sstable_files();
@@ -48,25 +50,9 @@ pub fn Storage(comptime N: u8) type {
 
         pub fn stop(self: *Self) void {
             self.node_index_storage.close();
-            if (self.memtables) |ts| {
-                for (ts.items) |t| {
-                    t.destroy();
-                    self.allocator.destroy(t);
-                }
-                ts.deinit();
-                self.memtables = null;
-            }
-            if (self.disk_files) |disk_files| {
-                var it = disk_files.valueIterator();
-                while (it.next()) |value| {
-                    for (value.*.items) |item| {
-                        self.allocator.free(item);
-                    }
-                    value.deinit();
-                }
-                self.disk_files.?.deinit();
-                self.disk_files = null;
-            }
+            self.deinit_memtables();
+            self.deinit_table_files();
+            self.deinit_table_levels();
         }
 
         pub fn write(self: *Self, comptime T: type, value: T) !void {
@@ -197,8 +183,8 @@ pub fn Storage(comptime N: u8) type {
         }
 
         fn map_sstable_files(self: *Self) !void {
-            if (self.disk_files == null) {
-                self.disk_files = AutoHashMap(u8, ArrayList([]u8)).init(self.allocator);
+            if (self.table_files == null) {
+                self.table_files = AutoHashMap(u8, ArrayList([]u8)).init(self.allocator);
             }
 
             var dir = try std.fs.cwd().openDir(self.path, .{
@@ -216,12 +202,51 @@ pub fn Storage(comptime N: u8) type {
                     const level_id: u8 = try std.fmt.parseInt(u8, file_name[0..first_dot], 10);
                     const file_name_copy = try self.allocator.alloc(u8, 14);
                     @memcpy(file_name_copy, file_name);
-                    if (self.disk_files.?.contains(level_id) == false) {
-                        try self.disk_files.?.put(level_id, ArrayList([]u8).init(self.allocator));
+                    if (self.table_files.?.contains(level_id) == false) {
+                        try self.table_files.?.put(level_id, ArrayList([]u8).init(self.allocator));
                     }
-                    var level_files = self.disk_files.?.get(level_id).?;
+                    var level_files = self.table_files.?.get(level_id).?;
                     try level_files.append(file_name_copy);
                 }
+            }
+        }
+
+        fn deinit_memtables(self: *Self) void {
+            if (self.memtables) |ts| {
+                for (ts.items) |t| {
+                    t.destroy();
+                    self.allocator.destroy(t);
+                }
+                ts.deinit();
+                self.memtables = null;
+            }
+        }
+
+        fn deinit_table_files(self: *Self) void {
+            if (self.table_files) |table_files| {
+                var it = table_files.valueIterator();
+                while (it.next()) |value| {
+                    for (value.*.items) |file_name| {
+                        self.allocator.free(file_name);
+                    }
+                    value.deinit();
+                }
+                self.table_files.?.deinit();
+                self.table_files = null;
+            }
+        }
+
+        fn deinit_table_levels(self: *Self) void {
+            if (self.table_levels) |table_levels| {
+                var it = table_levels.valueIterator();
+                while (it.next()) |level| {
+                    for (level.*.items) |sstable| {
+                        sstable.close();
+                    }
+                    level.deinit();
+                }
+                self.table_levels.?.deinit();
+                self.table_levels = null;
             }
         }
     };
