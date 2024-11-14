@@ -61,7 +61,7 @@ pub fn Storage(comptime N: u8) type {
             const record = try self.allocator.create(NodeRecord);
             record.* = .{
                 .node_id = node_id,
-                .value_type = try value_type_from_type(T),
+                .value_type = try data_types.value_type_from_type(T),
                 .value_size = @sizeOf(T),
                 .value = &utils.key_from_int_data(T, value),
             };
@@ -80,7 +80,7 @@ pub fn Storage(comptime N: u8) type {
                     "0.{x:0>2}{x:0>2}.sstable",
                     .{ wal_id[0], wal_id[1] },
                 );
-                const sstable = try st.SSTable.create(
+                var sstable = try st.SSTable.create(
                     N,
                     filled_memtable,
                     file_name,
@@ -165,21 +165,6 @@ pub fn Storage(comptime N: u8) type {
                 self.memtables = try ArrayList(*mt.Memtable(N)).initCapacity(self.allocator, 2);
             }
             try self.memtables.?.append(memtable);
-        }
-
-        fn value_type_from_type(T: type) !ValueType {
-            return switch (T) {
-                bool => ValueType.boolean,
-                i8 => ValueType.smallint,
-                i16, i32 => ValueType.int,
-                i64 => ValueType.bigint,
-                u8 => ValueType.smallserial,
-                u16, u32 => ValueType.serial,
-                u64 => ValueType.bigserial,
-                f32 => ValueType.float,
-                f64 => ValueType.bigfloat,
-                else => error.DataError,
-            };
         }
 
         fn map_sstable_files(self: *Self) !void {

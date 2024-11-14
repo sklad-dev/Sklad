@@ -11,6 +11,21 @@ pub const ValueType = enum(u8) {
     string, // variable length string
 };
 
+pub fn value_type_from_type(T: type) !ValueType {
+    return switch (T) {
+        bool => ValueType.boolean,
+        i8 => ValueType.smallint,
+        i16, i32 => ValueType.int,
+        i64 => ValueType.bigint,
+        u8 => ValueType.smallserial,
+        u16, u32 => ValueType.serial,
+        u64 => ValueType.bigserial,
+        f32 => ValueType.float,
+        f64 => ValueType.bigfloat,
+        else => error.DataError,
+    };
+}
+
 pub const NodePointer = u64;
 
 // A pointer to a node record stored on disk

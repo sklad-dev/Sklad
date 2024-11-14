@@ -2,6 +2,7 @@
 const std = @import("std");
 const data_types = @import("./data_types.zig");
 const w = @import("./wal.zig");
+const utils = @import("./utils.zig");
 
 const ValueType = data_types.ValueType;
 
@@ -13,19 +14,6 @@ pub const MemtableValue = struct {
     value_size: u16,
 };
 
-fn compare_bitwise(v1: []const u8, v2: []const u8) isize {
-    if (v1.len == v2.len and std.mem.eql(u8, v1, v2)) return 0;
-
-    const min_length = @min(v1.len, v2.len);
-    for (0..min_length) |i| {
-        if (v1[i] != v2[i]) {
-            return @as(isize, @intCast(v1[i])) - @as(isize, @intCast(v2[i]));
-        }
-    }
-
-    return @as(isize, @intCast(v1.len)) - @as(isize, @intCast(v2.len));
-}
-
 pub fn Memtable(comptime N: u8) type {
     return struct {
         const Self = @This();
@@ -36,7 +24,7 @@ pub fn Memtable(comptime N: u8) type {
         level: u8 = 1,
         wal_name: []const u8,
         wal: w.Wal,
-        compare_fn: *const fn ([]const u8, []const u8) isize = compare_bitwise,
+        compare_fn: *const fn ([]const u8, []const u8) isize = utils.compare_bitwise,
         head: ?*MemtableNode = null,
         size: u16 = 0,
 
@@ -205,7 +193,6 @@ pub fn Memtable(comptime N: u8) type {
 
 // Tests
 const testing = std.testing;
-const utils = @import("./utils.zig");
 
 inline fn test_value() MemtableValue {
     return MemtableValue{
@@ -256,32 +243,32 @@ test "compare_bitwise" {
     // Case 1: empty arrays
     const a1 = [_]u8{};
     const a2 = [_]u8{};
-    try testing.expect(compare_bitwise(&a1, &a2) == 0);
+    try testing.expect(utils.compare_bitwise(&a1, &a2) == 0);
 
     // Case 2: arrays of zero of different size
     const a3 = [1]u8{0};
     const a4 = [2]u8{ 0, 0 };
-    try testing.expect(compare_bitwise(&a3, &a4) < 0);
-    try testing.expect(compare_bitwise(&a4, &a3) > 0);
+    try testing.expect(utils.compare_bitwise(&a3, &a4) < 0);
+    try testing.expect(utils.compare_bitwise(&a4, &a3) > 0);
 
     // Case 3: empty array vs array of zero
-    try testing.expect(compare_bitwise(&a1, &a3) < 0);
+    try testing.expect(utils.compare_bitwise(&a1, &a3) < 0);
 
     // Case 4: arrays of zero of the same size
     const a5 = [2]u8{ 0, 0 };
-    try testing.expect(compare_bitwise(&a4, &a5) == 0);
+    try testing.expect(utils.compare_bitwise(&a4, &a5) == 0);
 
     // Case 5: arrays of the same size
     const a6 = [4]u8{ 0, 0, 0, 0 };
     const a7 = [4]u8{ 0, 0, 0, 1 };
     const a8 = [4]u8{ 0, 0, 0, 2 };
-    try testing.expect(compare_bitwise(&a6, &a7) < 0);
-    try testing.expect(compare_bitwise(&a7, &a8) < 0);
+    try testing.expect(utils.compare_bitwise(&a6, &a7) < 0);
+    try testing.expect(utils.compare_bitwise(&a7, &a8) < 0);
 
     // Case 6: arrays of different size
     const a9 = [2]u8{ 0, 1 };
-    try testing.expect(compare_bitwise(&a9, &a6) > 0);
-    try testing.expect(compare_bitwise(&a4, &a7) < 0);
+    try testing.expect(utils.compare_bitwise(&a9, &a6) > 0);
+    try testing.expect(utils.compare_bitwise(&a4, &a7) < 0);
 }
 
 test "Memtable#add and find" {
