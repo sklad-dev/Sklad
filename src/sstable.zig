@@ -22,8 +22,6 @@ pub const SSTable = struct {
             .truncate = false,
         });
 
-        const fixed_record_length: u32 = 64 + 8 + 16;
-
         var offsets = std.ArrayList(u32).init(allocator);
         defer offsets.deinit();
 
@@ -48,10 +46,8 @@ pub const SSTable = struct {
             if (i == 0) min_key = node.key.?;
             if (i == memtable.size - 1) max_key = node.key.?;
 
-            const prev_offset: u32 = if (offsets.getLastOrNull() != null) offsets.getLast() else 0;
             const current_offset: u32 = @intCast(try file.getPos());
-            const record_size: u32 = (fixed_record_length + node.value.?.value_size) / 8;
-            if ((current_offset - prev_offset) + record_size > sparse_index_step) {
+            if (current_offset % sparse_index_step == 0) {
                 try offsets.append(current_offset);
             }
             try sstable.write(@TypeOf(node.value.?.node_id), node.value.?.node_id);
@@ -155,65 +151,67 @@ pub const SSTable = struct {
         self.file.close();
     }
 
-    pub fn find(self: *const SSTable, key: []const u8) !bool {
-        if (self.bloom_filter.?.may_contain(key) == false) return false;
-        if (utils.compare_bitwise(key, self.min_value.?) < 0) return false;
-        if (utils.compare_bitwise(key, self.max_value.?) > 0) return false;
+    pub fn find(self: *const SSTable, key: []const u8) !?u64 {
+        if (self.bloom_filter.?.may_contain(key) == false) return null;
+        if (utils.compare_bitwise(key, self.min_value.?) < 0) return null;
+        if (utils.compare_bitwise(key, self.max_value.?) > 0) return null;
 
         const search_result = try self.find_block_offset(key);
-        if (search_result < 0) return false;
+        if (search_result < 0) return null;
 
         const offset: u32 = @as(u32, @intCast(search_result));
-        return !(try self.find_in_block(key, offset));
+        return try self.find_in_block(key, offset);
     }
 
     fn find_block_offset(self: *const SSTable, key: []const u8) !i64 {
         var low: u32 = 0;
-        var high: u32 = (self.index_end_offset - self.index_start_offset) / 4;
+        var high: u32 = ((self.index_end_offset - self.index_start_offset) / 4 - 1);
         while (low <= high) {
-            const mid = low + (high - low) / 2;
-            if (mid == low) return @as(i64, @intCast(self.index_start_offset + mid * 4));
+            const high_block_offset: u32 = try self.read_block_offset_from_index(high);
+            const high_record = try self.read_record(high_block_offset);
+            defer self.free_record(high_record);
 
-            const mid_offset = self.index_start_offset + mid * 4;
-            try self.file.seekTo(@intCast(mid_offset));
-            const block_offset: u32 = try read(u32, self.file);
-            try self.file.seekTo(@intCast(block_offset));
-            const record = try self.read_record();
+            if (utils.compare_bitwise(key, high_record.value) > 0) {
+                return @as(i64, @intCast(high_block_offset));
+            }
+
+            const mid = low + (high - low) / 2;
+            const block_offset: u32 = try self.read_block_offset_from_index(mid);
+
+            if (mid == low) return @as(i64, @intCast(block_offset));
+
+            const record = try self.read_record(block_offset);
+            defer self.free_record(record);
 
             if (utils.compare_bitwise(key, record.value) == 0) {
-                self.free_record(record);
-                return @as(i64, @intCast(mid_offset));
+                return @as(i64, @intCast(block_offset));
             } else if (utils.compare_bitwise(key, record.value) < 0) {
                 high = mid;
             } else {
                 low = mid;
             }
-
-            self.free_record(record);
         }
         return -1;
     }
 
-    fn find_in_block(self: *const SSTable, key: []const u8, block_offset: u32) !bool {
-        try self.file.seekTo(@as(u64, @intCast(self.index_start_offset)));
+    fn find_in_block(self: *const SSTable, key: []const u8, block_offset: u32) !?u64 {
+        try self.file.seekTo(@as(u64, @intCast(self.index_start_offset + 4)));
         const block_size = try read(u32, self.file);
-        try self.file.seekTo(@as(u64, @intCast(block_offset)));
         var offset = block_offset;
         while (offset < block_offset + block_size) {
-            const record = try self.read_record();
+            const record = try self.read_record(offset);
+            defer self.free_record(record);
+
             if (utils.compare_bitwise(key, record.value) < 0) {
-                self.free_record(record);
-                return false;
+                return null;
             } else if (utils.compare_bitwise(key, record.value) == 0) {
-                self.free_record(record);
-                return true;
+                const node_id = record.node_id;
+                return node_id;
             }
             offset = @as(u32, @intCast(try self.file.getPos()));
-
-            self.free_record(record);
         }
 
-        return false;
+        return null;
     }
 
     inline fn write(self: *const SSTable, comptime T: type, data: T) !void {
@@ -229,7 +227,14 @@ pub const SSTable = struct {
         return value;
     }
 
-    fn read_record(self: *const SSTable) !*NodeRecord {
+    fn read_block_offset_from_index(self: *const SSTable, index_offset: u32) !u32 {
+        try self.file.seekTo(@intCast(self.index_start_offset + index_offset * 4));
+        const block_offset: u32 = try read(u32, self.file);
+        return block_offset;
+    }
+
+    fn read_record(self: *const SSTable, offset: u32) !*NodeRecord {
+        try self.file.seekTo(@intCast(offset));
         const result = try self.allocator.create(NodeRecord);
         const node_id = try read(u64, self.file);
         const value_type: ValueType = @enumFromInt(try read(u8, self.file));
@@ -335,10 +340,17 @@ test "SSTable#find" {
     test_sstable.close();
 
     test_sstable = try SSTable.open(TEST_SSTABLE_PATH, testing.allocator);
+    defer test_sstable.close();
 
-    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 254)) == true);
-    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 300)) == false);
+    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 254)) != null);
+    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 256)) != null);
+    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 257)) != null);
+    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 258)) != null);
+    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 259)) != null);
+    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 261)) != null);
+    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 263)) != null);
+    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 200)) == null);
+    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 300)) == null);
 
-    test_sstable.close();
     try clean_up(8, test_sstable, test_memtable);
 }
