@@ -57,6 +57,10 @@ pub fn Storage(comptime N: u8) type {
         }
 
         pub fn write(self: *Self, comptime T: type, value: T) !void {
+            const key = utils.key_from_int_data(T, value);
+            const key_id = try self.find(&key);
+            if (key_id != null) return;
+
             const node_id = try self.node_index_storage.allocate_next_id();
 
             const record = try self.allocator.create(NodeRecord);
@@ -140,10 +144,6 @@ pub fn Storage(comptime N: u8) type {
             }
             return null;
         }
-
-        pub fn delete() void {}
-
-        const DataError = error{UnknownType};
 
         fn add_memtable(self: *Self) !void {
             var rng = std.rand.DefaultPrng.init(blk: {
@@ -342,4 +342,18 @@ test "Finding values" {
     try testing.expect(search_result == null);
 
     try clean_up(8, &storage);
+}
+
+test "Add value twice" {
+    var test_storage = try Storage(8).start("./", 4, testing.allocator);
+    defer test_storage.stop();
+
+    for (1..10) |i| {
+        try test_storage.write(u8, @as(u8, @intCast(i)));
+    }
+    const initial_memtable_size = test_storage.memtables.getLast().size;
+    try test_storage.write(u8, @as(u8, @intCast(5)));
+    try testing.expect(initial_memtable_size == test_storage.memtables.getLast().size);
+
+    try clean_up(8, &test_storage);
 }
