@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const ArrayList = std.ArrayList;
 const AutoHashMap = std.AutoHashMap;
+const StringHashMap = std.StringHashMap;
 
 const data_types = @import("./data_types.zig");
 const ValueType = data_types.ValueType;
@@ -23,9 +24,9 @@ pub fn Storage(comptime N: u8) type {
         memtable_level_probability: f32,
         allocator: std.mem.Allocator,
         node_index_storage: nis.NodeIndexStorage,
-        memtables: ?ArrayList(*mt.Memtable(N)),
-        table_files: ?AutoHashMap(u8, ArrayList([]u8)),
-        table_levels: ?AutoHashMap(u8, ArrayList(*st.SSTable)),
+        memtables: ArrayList(*mt.Memtable(N)),
+        table_files: AutoHashMap(u8, ArrayList([]u8)),
+        tables: StringHashMap(*st.SSTable),
 
         pub fn start(path: []const u8, max_memtable_size: u16, allocator: std.mem.Allocator) !Self {
             var node_index_storage = nis.NodeIndexStorage{};
@@ -37,9 +38,9 @@ pub fn Storage(comptime N: u8) type {
                 .memtable_level_probability = 0.125,
                 .allocator = allocator,
                 .node_index_storage = node_index_storage,
-                .memtables = null,
-                .table_files = null,
-                .table_levels = null,
+                .memtables = try ArrayList(*mt.Memtable(N)).initCapacity(allocator, 2),
+                .table_files = AutoHashMap(u8, ArrayList([]u8)).init(allocator),
+                .tables = StringHashMap(*st.SSTable).init(allocator),
             };
 
             try storage.map_sstable_files();
@@ -67,11 +68,10 @@ pub fn Storage(comptime N: u8) type {
             };
             defer self.allocator.destroy(record);
 
-            if (self.memtables == null) {
-                self.memtables = try ArrayList(*mt.Memtable(N)).initCapacity(self.allocator, 2);
+            if (self.memtables.items.len == 0) {
                 try self.add_memtable();
-            } else if (self.memtables.?.getLast().size >= self.max_memtable_size) {
-                const filled_memtable = self.memtables.?.pop();
+            } else if (self.memtables.getLast().size >= self.max_memtable_size) {
+                const filled_memtable = self.memtables.pop();
                 const wal_id = utils.generate_id(filled_memtable.rng);
 
                 var file_name_buf: [24]u8 = undefined;
@@ -95,7 +95,7 @@ pub fn Storage(comptime N: u8) type {
                 try self.add_memtable();
             }
 
-            const current_memtable = self.memtables.?.getLast();
+            const current_memtable = self.memtables.getLast();
             try current_memtable.wal.write(record);
             try current_memtable.*.add(
                 record.value,
@@ -107,7 +107,15 @@ pub fn Storage(comptime N: u8) type {
             );
         }
 
-        pub fn find() void {}
+        // pub fn find(self: *const Self) !?u64 {
+        //     if (self.table_files) |table_files| {
+        //         var it = table_files.iterator();
+        //         while (it.next()) |entry| {
+        //             const level: u8 = entry.key_ptr.*;
+        //             for (entry.value_ptr.*.items) |file_name| {}
+        //         }
+        //     }
+        // }
 
         pub fn delete() void {}
 
@@ -125,7 +133,7 @@ pub fn Storage(comptime N: u8) type {
                 rng.random(),
                 self.memtable_level_probability,
             );
-            try self.memtables.?.append(memtable);
+            try self.memtables.append(memtable);
         }
 
         fn restore_memtables(self: *Self) !void {
@@ -161,17 +169,10 @@ pub fn Storage(comptime N: u8) type {
                 self.memtable_level_probability,
             );
 
-            if (self.memtables == null) {
-                self.memtables = try ArrayList(*mt.Memtable(N)).initCapacity(self.allocator, 2);
-            }
-            try self.memtables.?.append(memtable);
+            try self.memtables.append(memtable);
         }
 
         fn map_sstable_files(self: *Self) !void {
-            if (self.table_files == null) {
-                self.table_files = AutoHashMap(u8, ArrayList([]u8)).init(self.allocator);
-            }
-
             var dir = try std.fs.cwd().openDir(self.path, .{
                 .access_sub_paths = false,
                 .iterate = true,
@@ -187,52 +188,40 @@ pub fn Storage(comptime N: u8) type {
                     const level_id: u8 = try std.fmt.parseInt(u8, file_name[0..first_dot], 10);
                     const file_name_copy = try self.allocator.alloc(u8, 14);
                     @memcpy(file_name_copy, file_name);
-                    if (self.table_files.?.contains(level_id) == false) {
-                        try self.table_files.?.put(level_id, ArrayList([]u8).init(self.allocator));
+                    if (self.table_files.contains(level_id) == false) {
+                        try self.table_files.put(level_id, ArrayList([]u8).init(self.allocator));
                     }
-                    var level_files = self.table_files.?.get(level_id).?;
+                    var level_files = self.table_files.get(level_id).?;
                     try level_files.append(file_name_copy);
                 }
             }
         }
 
         fn deinit_memtables(self: *Self) void {
-            if (self.memtables) |ts| {
-                for (ts.items) |t| {
-                    t.destroy();
-                    self.allocator.destroy(t);
-                }
-                ts.deinit();
-                self.memtables = null;
+            for (self.memtables.items) |t| {
+                t.destroy();
+                self.allocator.destroy(t);
             }
+            self.memtables.deinit();
         }
 
         fn deinit_table_files(self: *Self) void {
-            if (self.table_files) |table_files| {
-                var it = table_files.valueIterator();
-                while (it.next()) |value| {
-                    for (value.*.items) |file_name| {
-                        self.allocator.free(file_name);
-                    }
-                    value.deinit();
+            var it = self.table_files.valueIterator();
+            while (it.next()) |value| {
+                for (value.*.items) |file_name| {
+                    self.allocator.free(file_name);
                 }
-                self.table_files.?.deinit();
-                self.table_files = null;
+                value.deinit();
             }
+            self.table_files.deinit();
         }
 
         fn deinit_table_levels(self: *Self) void {
-            if (self.table_levels) |table_levels| {
-                var it = table_levels.valueIterator();
-                while (it.next()) |level| {
-                    for (level.*.items) |sstable| {
-                        sstable.close();
-                    }
-                    level.deinit();
-                }
-                self.table_levels.?.deinit();
-                self.table_levels = null;
+            var it = self.tables.valueIterator();
+            while (it.next()) |table_ptr| {
+                table_ptr.*.*.close();
             }
+            self.tables.deinit();
         }
     };
 }
@@ -243,10 +232,10 @@ const testing = std.testing;
 test "Add value" {
     var test_storage = try Storage(8).start("./", 4, testing.allocator);
     try test_storage.write(u8, 1);
-    try testing.expect(test_storage.memtables.?.items.len == 1);
-    try testing.expect(test_storage.memtables.?.getLast().find(&utils.key_from_int_data(u8, 1)) != null);
+    try testing.expect(test_storage.memtables.items.len == 1);
+    try testing.expect(test_storage.memtables.getLast().find(&utils.key_from_int_data(u8, 1)) != null);
 
-    for (test_storage.memtables.?.items) |t| {
+    for (test_storage.memtables.items) |t| {
         try t.wal.delete_file();
     }
     test_storage.stop();
@@ -258,9 +247,9 @@ test "Restore memtable from wal" {
     storage1.stop();
 
     var storage2 = try Storage(8).start("./", 4, testing.allocator);
-    try testing.expect(storage2.memtables.?.items.len == 1);
-    try testing.expect(storage2.memtables.?.getLast().find(&utils.key_from_int_data(u8, 1)) != null);
-    for (storage2.memtables.?.items) |t| {
+    try testing.expect(storage2.memtables.items.len == 1);
+    try testing.expect(storage2.memtables.getLast().find(&utils.key_from_int_data(u8, 1)) != null);
+    for (storage2.memtables.items) |t| {
         try t.wal.delete_file();
     }
     storage2.stop();
