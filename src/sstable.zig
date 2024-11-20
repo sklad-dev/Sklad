@@ -16,7 +16,7 @@ pub const SSTable = struct {
     index_start_offset: u32,
     index_end_offset: u32,
 
-    pub fn create(comptime N: u8, memtable: *m.Memtable(N), path: []const u8, sparse_index_step: u32, allocator: std.mem.Allocator) !SSTable {
+    pub fn create(memtable: *m.Memtable, path: []const u8, sparse_index_step: u32, allocator: std.mem.Allocator) !SSTable {
         const file = try std.fs.cwd().createFile(path, .{
             .read = true,
             .truncate = false,
@@ -269,7 +269,7 @@ inline fn test_value() m.MemtableValue {
     };
 }
 
-fn clean_up(comptime N: u8, storage: SSTable, memtable: m.Memtable(N)) !void {
+fn clean_up(storage: SSTable, memtable: m.Memtable) !void {
     std.fs.cwd().deleteFile(storage.path) catch {
         const out = std.io.getStdOut().writer();
         try std.fmt.format(out, "failed to clean up after the test\n", .{});
@@ -283,7 +283,7 @@ test "SSTable#create" {
         try std.posix.getrandom(std.mem.asBytes(&seed));
         break :blk seed;
     });
-    var test_memtable = try m.Memtable(8).init(testing.allocator, rng.random(), 0.125);
+    var test_memtable = try m.Memtable.init(testing.allocator, rng.random(), 8, 0.125);
     defer test_memtable.destroy();
 
     const test_vertex_data = test_value();
@@ -291,9 +291,9 @@ test "SSTable#create" {
         try test_memtable.add(&utils.key_from_int_data(usize, i), test_vertex_data);
     }
 
-    var test_sstable = try SSTable.create(8, &test_memtable, TEST_SSTABLE_PATH, 76, testing.allocator);
+    var test_sstable = try SSTable.create(&test_memtable, TEST_SSTABLE_PATH, 76, testing.allocator);
     test_sstable.close();
-    try clean_up(8, test_sstable, test_memtable);
+    try clean_up(test_sstable, test_memtable);
 }
 
 test "SSTable#open" {
@@ -302,7 +302,7 @@ test "SSTable#open" {
         try std.posix.getrandom(std.mem.asBytes(&seed));
         break :blk seed;
     });
-    var test_memtable = try m.Memtable(8).init(testing.allocator, rng.random(), 0.125);
+    var test_memtable = try m.Memtable.init(testing.allocator, rng.random(), 8, 0.125);
     defer test_memtable.destroy();
 
     const test_vertex_data = test_value();
@@ -310,7 +310,7 @@ test "SSTable#open" {
         try test_memtable.add(&utils.key_from_int_data(usize, i), test_vertex_data);
     }
 
-    var test_sstable = try SSTable.create(8, &test_memtable, TEST_SSTABLE_PATH, 76, testing.allocator);
+    var test_sstable = try SSTable.create(&test_memtable, TEST_SSTABLE_PATH, 76, testing.allocator);
     test_sstable.close();
 
     test_sstable = try SSTable.open(TEST_SSTABLE_PATH, testing.allocator);
@@ -319,7 +319,7 @@ test "SSTable#open" {
     try testing.expect(utils.compare_bitwise(test_sstable.max_value.?, &utils.key_from_int_data(usize, 263)) == 0);
 
     test_sstable.close();
-    try clean_up(8, test_sstable, test_memtable);
+    try clean_up(test_sstable, test_memtable);
 }
 
 test "SSTable#find" {
@@ -328,7 +328,7 @@ test "SSTable#find" {
         try std.posix.getrandom(std.mem.asBytes(&seed));
         break :blk seed;
     });
-    var test_memtable = try m.Memtable(8).init(testing.allocator, rng.random(), 0.125);
+    var test_memtable = try m.Memtable.init(testing.allocator, rng.random(), 8, 0.125);
     defer test_memtable.destroy();
 
     const test_vertex_data = test_value();
@@ -336,7 +336,7 @@ test "SSTable#find" {
         try test_memtable.add(&utils.key_from_int_data(usize, i), test_vertex_data);
     }
 
-    var test_sstable = try SSTable.create(8, &test_memtable, TEST_SSTABLE_PATH, 76, testing.allocator);
+    var test_sstable = try SSTable.create(&test_memtable, TEST_SSTABLE_PATH, 76, testing.allocator);
     test_sstable.close();
 
     test_sstable = try SSTable.open(TEST_SSTABLE_PATH, testing.allocator);
@@ -352,5 +352,5 @@ test "SSTable#find" {
     try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 200)) == null);
     try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 300)) == null);
 
-    try clean_up(8, test_sstable, test_memtable);
+    try clean_up(test_sstable, test_memtable);
 }
