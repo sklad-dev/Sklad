@@ -104,6 +104,13 @@ pub fn Storage(comptime V: type) type {
         }
 
         pub fn find(self: *Self, key: []const u8) !?V {
+            if (self.active_memtable) |memtable| {
+                const value = memtable.find(key);
+                if (value != null) {
+                    return value;
+                }
+            }
+
             for (self.memtables.items) |memtable| {
                 const value = memtable.find(key);
                 if (value != null) {
