@@ -105,17 +105,11 @@ pub fn Storage(comptime V: type) type {
 
         pub fn find(self: *Self, key: []const u8) !?V {
             if (self.active_memtable) |memtable| {
-                const value = memtable.find(key);
-                if (value != null) {
-                    return value;
-                }
+                if (memtable.find(key)) |value| return value;
             }
 
             for (self.memtables.items) |memtable| {
-                const value = memtable.find(key);
-                if (value != null) {
-                    return value;
-                }
+                if (memtable.find(key)) |value| return value;
             }
             const value = try self.find_in_tables(key);
             return value;
@@ -134,10 +128,7 @@ pub fn Storage(comptime V: type) type {
                         );
                     }
 
-                    const value = try self.tables.get(file_name).?.find(key);
-                    if (value != null) {
-                        return value.?;
-                    }
+                    if (try self.tables.get(file_name).?.find(key)) |value| return value;
                 }
             }
             return null;
