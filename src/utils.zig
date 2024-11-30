@@ -6,6 +6,15 @@ pub inline fn generate_id(rng: std.Random) [2]u8 {
     return buf;
 }
 
+pub inline fn write_number(comptime T: type, file: std.fs.File, number: T) !void {
+    try file.writer().writeInt(T, number, std.builtin.Endian.big);
+}
+
+pub inline fn read_number(comptime T: type, file: std.fs.File) !T {
+    const value: T = try file.reader().readInt(T, std.builtin.Endian.big);
+    return value;
+}
+
 pub inline fn key_from_int_data(comptime T: type, key_value: T) [@sizeOf(T)]u8 {
     var buffer: [@sizeOf(T)]u8 = undefined;
     std.mem.writeInt(T, &buffer, key_value, std.builtin.Endian.big);
@@ -23,4 +32,39 @@ pub fn compare_bitwise(v1: []const u8, v2: []const u8) isize {
     }
 
     return @as(isize, @intCast(v1.len)) - @as(isize, @intCast(v2.len));
+}
+
+// Tests
+const testing = std.testing;
+
+test "compare_bitwise" {
+    // Case 1: empty arrays
+    const a1 = [_]u8{};
+    const a2 = [_]u8{};
+    try testing.expect(compare_bitwise(&a1, &a2) == 0);
+
+    // Case 2: arrays of zero of different size
+    const a3 = [1]u8{0};
+    const a4 = [2]u8{ 0, 0 };
+    try testing.expect(compare_bitwise(&a3, &a4) < 0);
+    try testing.expect(compare_bitwise(&a4, &a3) > 0);
+
+    // Case 3: empty array vs array of zero
+    try testing.expect(compare_bitwise(&a1, &a3) < 0);
+
+    // Case 4: arrays of zero of the same size
+    const a5 = [2]u8{ 0, 0 };
+    try testing.expect(compare_bitwise(&a4, &a5) == 0);
+
+    // Case 5: arrays of the same size
+    const a6 = [4]u8{ 0, 0, 0, 0 };
+    const a7 = [4]u8{ 0, 0, 0, 1 };
+    const a8 = [4]u8{ 0, 0, 0, 2 };
+    try testing.expect(compare_bitwise(&a6, &a7) < 0);
+    try testing.expect(compare_bitwise(&a7, &a8) < 0);
+
+    // Case 6: arrays of different size
+    const a9 = [2]u8{ 0, 1 };
+    try testing.expect(compare_bitwise(&a9, &a6) > 0);
+    try testing.expect(compare_bitwise(&a4, &a7) < 0);
 }

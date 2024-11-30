@@ -1,6 +1,5 @@
 const std = @import("std");
 const data_types = @import("./data_types.zig");
-const NodeRecord = data_types.NodeRecord;
 
 const SEED: u64 = 0;
 
@@ -8,9 +7,7 @@ pub const BloomFilter = struct {
     allocator: std.mem.Allocator,
     filter: []u8,
 
-    const Self = @This();
-
-    pub fn may_contain(self: Self, key: []const u8) bool {
+    pub fn may_contain(self: BloomFilter, key: []const u8) bool {
         if (self.filter.len < 2) {
             return false;
         }
@@ -33,7 +30,7 @@ pub const BloomFilter = struct {
         return true;
     }
 
-    pub fn init(num_records: u32, bits_per_key: u8, allocator: std.mem.Allocator) !Self {
+    pub fn init(num_records: u32, bits_per_key: u8, allocator: std.mem.Allocator) !BloomFilter {
         const float_bpk: f32 = @floatFromInt(bits_per_key);
         var num_hashes: u8 = @intFromFloat(float_bpk * 0.69); // 0.69 is approximately ln(2)
         num_hashes = @min(30, @max(1, num_hashes));
@@ -46,16 +43,16 @@ pub const BloomFilter = struct {
         @memset(buf, 0);
         buf[buf.len - 1] = num_hashes;
 
-        return Self{
+        return BloomFilter{
             .allocator = allocator,
             .filter = buf,
         };
     }
 
-    pub fn add(self: Self, record: *const NodeRecord) void {
+    pub fn add(self: BloomFilter, key: []const u8) void {
         const num_hashes = self.filter[self.filter.len - 1];
         const filter_size_bits: u32 = (@as(u32, @intCast(self.filter.len)) - 1) * 8;
-        var hash = std.hash.XxHash32.hash(SEED, record.*.value);
+        var hash = std.hash.XxHash32.hash(SEED, key);
         const delta = (hash >> 17) | (hash << 15);
         for (0..num_hashes) |_| {
             const position = hash % filter_size_bits;
@@ -64,7 +61,7 @@ pub const BloomFilter = struct {
         }
     }
 
-    pub inline fn deinit(self: *Self) void {
+    pub inline fn deinit(self: *BloomFilter) void {
         self.allocator.free(self.filter);
     }
 };
@@ -76,28 +73,14 @@ const utils = @import("./utils.zig");
 
 test "test" {
     const val1: u64 = 1;
-    const record1 = NodeRecord{
-        .node_id = 1,
-        .value_type = ValueType.bigserial,
-        .value_size = @sizeOf(u64),
-        .value = &utils.key_from_int_data(u64, val1),
-    };
-
     const val2: u64 = 2;
-    const record2 = NodeRecord{
-        .node_id = 1,
-        .value_type = ValueType.bigserial,
-        .value_size = @sizeOf(u64),
-        .value = &utils.key_from_int_data(u64, val2),
-    };
-
     const val3: u64 = 3;
 
     var filter = try BloomFilter.init(2, 10, testing.allocator);
     defer filter.deinit();
 
-    filter.add(&record1);
-    filter.add(&record2);
+    filter.add(&utils.key_from_int_data(u64, val1));
+    filter.add(&utils.key_from_int_data(u64, val2));
 
     try testing.expect(filter.may_contain(&utils.key_from_int_data(u64, val1)) == true);
     try testing.expect(filter.may_contain(&utils.key_from_int_data(u64, val3)) == false);
