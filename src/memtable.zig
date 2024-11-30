@@ -51,7 +51,7 @@ pub fn Memtable(comptime V: type) type {
             }
         };
 
-        pub fn init(allocator: std.mem.Allocator, random: std.Random, max_level: u8, level_probability: f32) !Self {
+        pub inline fn init(allocator: std.mem.Allocator, random: std.Random, max_level: u8, level_probability: f32) !Self {
             const wal_name = try allocator.alloc(u8, 8);
             const wal_id = utils.generate_id(random);
 
@@ -127,7 +127,7 @@ pub fn Memtable(comptime V: type) type {
             }
         }
 
-        pub fn find(self: *const Self, key: MemtableKey) ?V {
+        pub inline fn find(self: *const Self, key: MemtableKey) ?V {
             if (self.head == null) return null;
 
             const result = self.search(key, null) orelse return null;
@@ -150,7 +150,7 @@ pub fn Memtable(comptime V: type) type {
             self.allocator.free(self.wal_name);
         }
 
-        pub fn iterator(self: *const Self) MemtableIterator {
+        pub inline fn iterator(self: *const Self) MemtableIterator {
             return MemtableIterator{ .current = if (self.head != null) self.head.?.tower[0] else null };
         }
 

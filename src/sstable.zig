@@ -206,13 +206,13 @@ pub fn SSTable(comptime V: type) type {
             return null;
         }
 
-        fn read_block_offset_from_index(self: *const Self, index_offset: u32) !u32 {
+        inline fn read_block_offset_from_index(self: *const Self, index_offset: u32) !u32 {
             try self.file.seekTo(@intCast(self.index_start_offset + index_offset * 4));
             const block_offset: u32 = try utils.read_number(u32, self.file);
             return block_offset;
         }
 
-        fn free_record(self: *const Self, record: *StorageRecord(V)) void {
+        inline fn free_record(self: *const Self, record: *StorageRecord(V)) void {
             self.allocator.free(record.key);
             self.allocator.destroy(record);
         }

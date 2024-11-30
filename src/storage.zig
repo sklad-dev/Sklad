@@ -51,7 +51,7 @@ pub fn Storage(comptime V: type) type {
             return storage;
         }
 
-        pub fn stop(self: *Self) void {
+        pub inline fn stop(self: *Self) void {
             self.node_index_storage.close();
             self.deinit_memtables();
             self.deinit_table_files();
