@@ -4,7 +4,6 @@ const data_types = @import("./data_types.zig");
 const w = @import("./wal.zig");
 const utils = @import("./utils.zig");
 
-const ValueType = data_types.ValueType;
 const StorageRecord = data_types.StorageRecord;
 
 pub const MemtableKey = []const u8;

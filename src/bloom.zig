@@ -1,6 +1,4 @@
 const std = @import("std");
-const data_types = @import("./data_types.zig");
-
 const SEED: u64 = 0;
 
 pub const BloomFilter = struct {
@@ -68,7 +66,6 @@ pub const BloomFilter = struct {
 
 // Tests
 const testing = std.testing;
-const ValueType = data_types.ValueType;
 const utils = @import("./utils.zig");
 
 test "test" {

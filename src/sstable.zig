@@ -3,7 +3,7 @@ const data_types = @import("./data_types.zig");
 const m = @import("./memtable.zig");
 const b = @import("./bloom.zig");
 const utils = @import("./utils.zig");
-const ValueType = data_types.ValueType;
+
 const StorageRecord = data_types.StorageRecord;
 
 pub fn SSTable(comptime V: type) type {

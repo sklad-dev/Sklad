@@ -1,6 +1,6 @@
 const std = @import("std");
 const data_types = @import("./data_types.zig");
-const ValueType = data_types.ValueType;
+
 const StorageRecord = data_types.StorageRecord;
 
 const DEFAULT_WAL_FILE = "./.wal";

@@ -1,19 +1,19 @@
 const std = @import("std");
 const builtin = @import("builtin");
+
 const ArrayList = std.ArrayList;
 const AutoHashMap = std.AutoHashMap;
-const StringHashMap = std.StringHashMap;
 
 const data_types = @import("./data_types.zig");
-const ValueType = data_types.ValueType;
-const StorageRecord = data_types.StorageRecord;
-
 const utils = @import("./utils.zig");
 const nis = @import("./node_index_storage.zig");
 const mt = @import("./memtable.zig");
 const st = @import("./sstable.zig");
 const w = @import("./wal.zig");
 const constants = @import("./constants.zig");
+
+const StringHashMap = std.StringHashMap;
+const StorageRecord = data_types.StorageRecord;
 
 pub fn Storage(comptime V: type) type {
     return struct {
