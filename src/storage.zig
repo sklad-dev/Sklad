@@ -300,20 +300,3 @@ test "Finding values" {
 
     try clean_up(u8, &storage);
 }
-
-// test "Add value twice" {
-//     var test_storage = try Storage(u8).start("./", 4, testing.allocator);
-//     defer test_storage.stop();
-
-//     for (1..10) |i| {
-//         const v: u8 = @as(u8, @intCast(i));
-//         try test_storage.put(utils.key_from_int_data(u8, v), v);
-//     }
-//     const initial_memtable_size = test_storage.memtables.getLast().size;
-
-//     const v: u8 = @as(u8, @intCast(5));
-//     try test_storage.put(utils.key_from_int_data(u8, v), v);
-//     try testing.expect(initial_memtable_size == test_storage.memtables.getLast().size);
-
-//     try clean_up(u8, &test_storage);
-// }

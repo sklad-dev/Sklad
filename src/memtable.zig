@@ -98,31 +98,28 @@ pub fn Memtable(comptime V: type) type {
                 path[i] = null;
             }
 
-            if (self.search(key, path[0..])) |_| {
-                return;
-            } else {
-                const new_node_level = self.pick_level();
-                self.level = @max(self.level, new_node_level);
-                const new_node = try self.allocator.create(MemtableNode);
-                new_node.* = .{
-                    .key = try self.allocator.alloc(u8, key.len),
-                    .value = value,
-                    .tower = try self.allocator.alloc(?*MemtableNode, self.max_level),
-                };
-                for (0..self.max_level) |i| {
-                    new_node.*.tower[i] = null;
-                }
-                @memcpy(new_node.*.key.?, key);
-                for (path, 0..) |node, i| {
-                    if (node) |n| {
-                        new_node.tower[i] = n.tower[i];
-                        n.tower[i] = new_node;
-                    } else if (i < self.level) {
-                        self.head.?.tower[i] = new_node;
-                    }
-                }
-                self.size += 1;
+            _ = self.search(key, path[0..]);
+            const new_node_level = self.pick_level();
+            self.level = @max(self.level, new_node_level);
+            const new_node = try self.allocator.create(MemtableNode);
+            new_node.* = .{
+                .key = try self.allocator.alloc(u8, key.len),
+                .value = value,
+                .tower = try self.allocator.alloc(?*MemtableNode, self.max_level),
+            };
+            for (0..self.max_level) |i| {
+                new_node.*.tower[i] = null;
             }
+            @memcpy(new_node.*.key.?, key);
+            for (path, 0..) |node, i| {
+                if (node) |n| {
+                    new_node.tower[i] = n.tower[i];
+                    n.tower[i] = new_node;
+                } else if (i < self.level) {
+                    self.head.?.tower[i] = new_node;
+                }
+            }
+            self.size += 1;
         }
 
         pub inline fn find(self: *const Self, key: MemtableKey) ?V {
@@ -240,13 +237,13 @@ test "Memtable#add and find" {
     try testing.expect(std.mem.eql(u8, test_memtable.head.?.tower[0].?.key.?, &test_vertex0));
     try testing.expect(test_memtable.size == 1);
 
-    // Case: same key won't be added twice, no duplicates are allowed
-    // const test_vertex1 = utils.key_from_int_data(0);
-    // try test_memtable.add(test_vertex1, test_vertex_data);
-    // try testing.expect(test_memtable.size == 1);
+    // Case: adding the same key twice
+    const test_vertex1 = utils.key_from_int_data(u8, 0);
+    try test_memtable.add(&test_vertex1, test_vertex_data);
+    try testing.expect(test_memtable.size == 2);
 
     // Case: adding more keys
-    var table_size: u8 = 1;
+    var table_size: u8 = 2;
     for (0..16) |_| {
         try test_memtable.add(&utils.key_from_int_data(u8, table_size), test_vertex_data);
         table_size += 1;

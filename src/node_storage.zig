@@ -115,3 +115,19 @@ test "NodeStorage#put" {
 
     try node_storage.put("Hello, world!", ValueType.string);
 }
+
+test "Add value twice" {
+    var node_storage = try NodeStorage.init("./", 4, testing.allocator);
+    defer node_storage.stop();
+    defer clean_up(&node_storage);
+
+    for (1..10) |i| {
+        const v: u8 = @as(u8, @intCast(i));
+        try node_storage.put(&utils.key_from_int_data(u8, v), ValueType.smallserial);
+    }
+    const initial_memtable_size = node_storage.storage.memtables.getLast().size;
+
+    const v: u8 = @as(u8, @intCast(5));
+    try node_storage.put(&utils.key_from_int_data(u8, v), ValueType.smallserial);
+    try testing.expect(node_storage.storage.memtables.getLast().size == initial_memtable_size);
+}
