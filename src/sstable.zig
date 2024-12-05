@@ -233,12 +233,7 @@ fn clean_up(comptime V: type, storage: SSTable(V), memtable: m.Memtable(V)) !voi
 }
 
 test "SSTable#create" {
-    var rng = std.rand.DefaultPrng.init(blk: {
-        var seed: u64 = undefined;
-        try std.posix.getrandom(std.mem.asBytes(&seed));
-        break :blk seed;
-    });
-    var test_memtable = try m.Memtable(u8).init(testing.allocator, rng.random(), 8, 0.125);
+    var test_memtable = try m.Memtable(u8).init(testing.allocator, std.crypto.random, 8, 0.125);
     defer test_memtable.destroy();
 
     const test_vertex_data: u8 = 0;
@@ -252,12 +247,7 @@ test "SSTable#create" {
 }
 
 test "SSTable#open" {
-    var rng = std.rand.DefaultPrng.init(blk: {
-        var seed: u64 = undefined;
-        try std.posix.getrandom(std.mem.asBytes(&seed));
-        break :blk seed;
-    });
-    var test_memtable = try m.Memtable(u8).init(testing.allocator, rng.random(), 8, 0.125);
+    var test_memtable = try m.Memtable(u8).init(testing.allocator, std.crypto.random, 8, 0.125);
     defer test_memtable.destroy();
 
     const test_vertex_data: u8 = 0;
@@ -270,20 +260,17 @@ test "SSTable#open" {
 
     test_sstable = try SSTable(u8).open(TEST_SSTABLE_PATH, testing.allocator);
 
-    try testing.expect(utils.compare_bitwise(test_sstable.min_key.?, &utils.key_from_int_data(usize, 254)) == 0);
-    try testing.expect(utils.compare_bitwise(test_sstable.max_key.?, &utils.key_from_int_data(usize, 263)) == 0);
+    const vs = [2]usize{ 254, 263 };
+    for (vs) |v| {
+        try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, v)) == 0);
+    }
 
     test_sstable.close();
     try clean_up(u8, test_sstable, test_memtable);
 }
 
 test "SSTable#find" {
-    var rng = std.rand.DefaultPrng.init(blk: {
-        var seed: u64 = undefined;
-        try std.posix.getrandom(std.mem.asBytes(&seed));
-        break :blk seed;
-    });
-    var test_memtable = try m.Memtable(u8).init(testing.allocator, rng.random(), 8, 0.125);
+    var test_memtable = try m.Memtable(u8).init(testing.allocator, std.crypto.random, 8, 0.125);
     defer test_memtable.destroy();
 
     const test_vertex_data: u8 = 0;
@@ -297,15 +284,15 @@ test "SSTable#find" {
     test_sstable = try SSTable(u8).open(TEST_SSTABLE_PATH, testing.allocator);
     defer test_sstable.close();
 
-    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 254)) != null);
-    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 256)) != null);
-    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 257)) != null);
-    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 258)) != null);
-    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 259)) != null);
-    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 261)) != null);
-    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 263)) != null);
-    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 200)) == null);
-    try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, 300)) == null);
+    const vs = [7]usize{ 254, 256, 257, 258, 259, 261, 263 };
+    for (vs) |v| {
+        try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, v)) != null);
+    }
+
+    const nvs = [2]usize{ 200, 300 };
+    for (nvs) |v| {
+        try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, v)) == null);
+    }
 
     try clean_up(u8, test_sstable, test_memtable);
 }

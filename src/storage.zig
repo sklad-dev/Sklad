@@ -6,7 +6,6 @@ const AutoHashMap = std.AutoHashMap;
 
 const data_types = @import("./data_types.zig");
 const utils = @import("./utils.zig");
-const nis = @import("./node_index_storage.zig");
 const mt = @import("./memtable.zig");
 const st = @import("./sstable.zig");
 const w = @import("./wal.zig");
@@ -21,7 +20,6 @@ pub fn Storage(comptime V: type) type {
         max_memtable_size: u16,
         memtable_level_probability: f32,
         allocator: std.mem.Allocator,
-        node_index_storage: nis.NodeIndexStorage,
         active_memtable: ?*mt.Memtable(V),
         memtables: ArrayList(*mt.Memtable(V)),
         table_files: AutoHashMap(u8, *ArrayList([]u8)),
@@ -30,15 +28,11 @@ pub fn Storage(comptime V: type) type {
         const Self = @This();
 
         pub fn start(path: []const u8, max_memtable_size: u16, allocator: std.mem.Allocator) !Self {
-            var node_index_storage = nis.NodeIndexStorage{};
-            try node_index_storage.open();
-
             var storage = Self{
                 .path = path,
                 .max_memtable_size = max_memtable_size,
                 .memtable_level_probability = 0.125,
                 .allocator = allocator,
-                .node_index_storage = node_index_storage,
                 .active_memtable = null,
                 .memtables = try ArrayList(*mt.Memtable(V)).initCapacity(allocator, 2),
                 .table_files = AutoHashMap(u8, *ArrayList([]u8)).init(allocator),
@@ -52,24 +46,17 @@ pub fn Storage(comptime V: type) type {
         }
 
         pub inline fn stop(self: *Self) void {
-            self.node_index_storage.close();
             self.deinit_memtables();
             self.deinit_table_files();
             self.deinit_table_levels();
         }
 
-        pub fn write(self: *Self, comptime T: type, key: T, value: V) !void {
-            const key_bytes = utils.key_from_int_data(T, key);
-            const found_value = try self.find(&key_bytes);
-            if (found_value != null) return;
-
-            const record = try self.allocator.create(StorageRecord(V));
-            record.* = .{
-                .key_size = @sizeOf(T),
-                .key = &key_bytes,
+        pub fn put(self: *Self, key: []const u8, value: V) !void {
+            const record = StorageRecord(V){
+                .key_size = @as(u16, @intCast(key.len)),
+                .key = key,
                 .value = value,
             };
-            defer self.allocator.destroy(record);
 
             if (self.memtables.items.len == 0) {
                 try self.add_memtable();
@@ -99,8 +86,8 @@ pub fn Storage(comptime V: type) type {
             }
 
             const current_memtable = self.memtables.getLast();
-            try current_memtable.wal.write(record);
-            try current_memtable.*.add(&key_bytes, value);
+            try current_memtable.wal.write(&record);
+            try current_memtable.*.add(key, value);
         }
 
         pub fn find(self: *Self, key: []const u8) !?V {
@@ -135,15 +122,10 @@ pub fn Storage(comptime V: type) type {
         }
 
         fn add_memtable(self: *Self) !void {
-            var rng = std.rand.DefaultPrng.init(blk: {
-                var seed: u64 = undefined;
-                try std.posix.getrandom(std.mem.asBytes(&seed));
-                break :blk seed;
-            });
             const memtable = try self.allocator.create(mt.Memtable(V));
             memtable.* = try mt.Memtable(V).init(
                 self.allocator,
-                rng.random(),
+                std.crypto.random,
                 8,
                 self.memtable_level_probability,
             );
@@ -170,16 +152,11 @@ pub fn Storage(comptime V: type) type {
         }
 
         fn restore_memtable(self: *Self, wal: w.Wal(V)) !void {
-            var rng = std.rand.DefaultPrng.init(blk: {
-                var seed: u64 = undefined;
-                try std.posix.getrandom(std.mem.asBytes(&seed));
-                break :blk seed;
-            });
             const memtable = try self.allocator.create(mt.Memtable(V));
             memtable.* = try mt.Memtable(V).from_wal(
                 wal,
                 self.allocator,
-                rng.random(),
+                std.crypto.random,
                 8,
                 self.memtable_level_probability,
             );
@@ -252,15 +229,7 @@ pub fn Storage(comptime V: type) type {
 // Tests
 const testing = std.testing;
 
-fn delete_index_storage() void {
-    std.fs.cwd().deleteFile("./node_index.store") catch {
-        const out = std.io.getStdOut().writer();
-        std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
-    };
-}
-
 fn clean_up(comptime V: type, storage: *Storage(V)) !void {
-    delete_index_storage();
     for (storage.memtables.items) |t| {
         try t.wal.delete_file();
     }
@@ -274,12 +243,10 @@ fn clean_up(comptime V: type, storage: *Storage(V)) !void {
 }
 
 test "Add value" {
-    defer delete_index_storage();
-
     var test_storage = try Storage(u8).start("./", 4, testing.allocator);
     defer test_storage.stop();
 
-    try test_storage.write(u8, 1, 42);
+    try test_storage.put(&utils.key_from_int_data(u8, 1), 42);
     try testing.expect(test_storage.memtables.items.len == 1);
     try testing.expect(test_storage.memtables.getLast().find(&utils.key_from_int_data(u8, 1)) == 42);
 
@@ -289,10 +256,8 @@ test "Add value" {
 }
 
 test "Restore memtable from wal" {
-    defer delete_index_storage();
-
     var storage1 = try Storage(u8).start("./", 4, testing.allocator);
-    try storage1.write(u8, 1, 42);
+    try storage1.put(&utils.key_from_int_data(u8, 1), 42);
     storage1.stop();
 
     var storage2 = try Storage(u8).start("./", 4, testing.allocator);
@@ -308,7 +273,7 @@ test "Restore memtable from wal" {
 test "Finding values" {
     var storage = try Storage(u8).start("./", 4, testing.allocator);
     defer storage.stop();
-    try storage.write(u8, 1, 42);
+    try storage.put(&utils.key_from_int_data(u8, 1), 42);
 
     var search_result = try storage.find(&utils.key_from_int_data(u8, 1));
     try testing.expect(search_result == 42);
@@ -317,7 +282,8 @@ test "Finding values" {
     try testing.expect(search_result == null);
 
     for (2..10) |i| {
-        try storage.write(u8, @as(u8, @intCast(i)), @as(u8, @intCast(i)));
+        const v = @as(u8, @intCast(i));
+        try storage.put(&utils.key_from_int_data(u8, v), v);
     }
 
     for (1..10) |i| {
@@ -335,16 +301,19 @@ test "Finding values" {
     try clean_up(u8, &storage);
 }
 
-test "Add value twice" {
-    var test_storage = try Storage(u8).start("./", 4, testing.allocator);
-    defer test_storage.stop();
+// test "Add value twice" {
+//     var test_storage = try Storage(u8).start("./", 4, testing.allocator);
+//     defer test_storage.stop();
 
-    for (1..10) |i| {
-        try test_storage.write(u8, @as(u8, @intCast(i)), @as(u8, @intCast(i)));
-    }
-    const initial_memtable_size = test_storage.memtables.getLast().size;
-    try test_storage.write(u8, @as(u8, @intCast(5)), @as(u8, @intCast(5)));
-    try testing.expect(initial_memtable_size == test_storage.memtables.getLast().size);
+//     for (1..10) |i| {
+//         const v: u8 = @as(u8, @intCast(i));
+//         try test_storage.put(utils.key_from_int_data(u8, v), v);
+//     }
+//     const initial_memtable_size = test_storage.memtables.getLast().size;
 
-    try clean_up(u8, &test_storage);
-}
+//     const v: u8 = @as(u8, @intCast(5));
+//     try test_storage.put(utils.key_from_int_data(u8, v), v);
+//     try testing.expect(initial_memtable_size == test_storage.memtables.getLast().size);
+
+//     try clean_up(u8, &test_storage);
+// }

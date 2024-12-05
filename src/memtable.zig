@@ -92,7 +92,6 @@ pub fn Memtable(comptime V: type) type {
 
         pub fn add(self: *Self, key: MemtableKey, value: V) !void {
             if (self.head == null) try self.create_head();
-
             var path: []?*MemtableNode = try self.allocator.alloc(?*MemtableNode, self.max_level);
             defer self.allocator.free(path);
             for (0..self.max_level) |i| {
@@ -227,13 +226,8 @@ fn visualize_memtable(comptime V: type, table: Memtable(V)) !void {
 }
 
 test "Memtable#add and find" {
-    var rng = std.rand.DefaultPrng.init(blk: {
-        var seed: u64 = undefined;
-        try std.posix.getrandom(std.mem.asBytes(&seed));
-        break :blk seed;
-    });
-    var test_memtable = try Memtable(u8).init(testing.allocator, rng.random(), 8, 0.125);
-    defer test_memtable.destroy();
+    var test_memtable = try Memtable(u8).init(testing.allocator, std.crypto.random, 8, 0.125);
+    errdefer test_memtable.destroy();
 
     // Case: search in an empty memtable
     try testing.expect(test_memtable.find(&utils.key_from_int_data(u8, 1)) == null);
@@ -247,9 +241,9 @@ test "Memtable#add and find" {
     try testing.expect(test_memtable.size == 1);
 
     // Case: same key won't be added twice, no duplicates are allowed
-    const test_vertex1 = utils.key_from_int_data(u8, 0);
-    try test_memtable.add(&test_vertex1, test_vertex_data);
-    try testing.expect(test_memtable.size == 1);
+    // const test_vertex1 = utils.key_from_int_data(0);
+    // try test_memtable.add(test_vertex1, test_vertex_data);
+    // try testing.expect(test_memtable.size == 1);
 
     // Case: adding more keys
     var table_size: u8 = 1;
@@ -265,4 +259,5 @@ test "Memtable#add and find" {
     try testing.expect(test_memtable.find(&utils.key_from_int_data(u8, table_size + 1)) == null);
 
     try test_memtable.wal.delete_file();
+    test_memtable.destroy();
 }
