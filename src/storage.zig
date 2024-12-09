@@ -21,7 +21,6 @@ pub fn Storage(comptime V: type) type {
         path: []const u8,
         max_memtable_size: u16,
         memtable_level_probability: f32,
-        active_memtable: ?*Memtable(V),
         memtables: ArrayList(*Memtable(V)),
         table_file_manager: TableFileManager,
         tables: StringHashMap(*SSTable(V)),
@@ -34,7 +33,6 @@ pub fn Storage(comptime V: type) type {
                 .path = path,
                 .max_memtable_size = max_memtable_size,
                 .memtable_level_probability = 0.125,
-                .active_memtable = null,
                 .memtables = try ArrayList(*Memtable(V)).initCapacity(allocator, 2),
                 .table_file_manager = try TableFileManager.init(allocator, path),
                 .tables = StringHashMap(*SSTable(V)).init(allocator),
@@ -90,13 +88,11 @@ pub fn Storage(comptime V: type) type {
         }
 
         pub fn find(self: *Self, key: []const u8) !?V {
-            if (self.active_memtable) |memtable| {
-                if (memtable.find(key)) |value| return value;
-            }
-
+            var result: ?V = null;
             for (self.memtables.items) |memtable| {
-                if (memtable.find(key)) |value| return value;
+                if (memtable.find(key)) |value| result = value;
             }
+            if (result) |r| return r;
             const value = try self.find_in_tables(key);
             return value;
         }
@@ -175,10 +171,6 @@ pub fn Storage(comptime V: type) type {
         }
 
         fn deinit_memtables(self: *Self) void {
-            if (self.active_memtable) |memtable| {
-                memtable.destroy();
-                self.allocator.destroy(memtable);
-            }
             for (self.memtables.items) |t| {
                 t.destroy();
                 self.allocator.destroy(t);
