@@ -36,7 +36,7 @@ pub const NodeStorage = struct {
     }
 
     pub fn put(self: *NodeStorage, node_value: []const u8, node_type: ValueType) !void {
-        const node_key = try self.key_from_node(node_value, node_type);
+        const node_key = try self.build_key(node_value, node_type);
         defer self.allocator.free(node_key);
 
         const found_value = try self.storage.find(node_key);
@@ -47,13 +47,13 @@ pub const NodeStorage = struct {
     }
 
     pub fn find(self: *NodeStorage, node_value: []const u8, node_type: ValueType) !?u64 {
-        const node_key = try self.key_from_node(node_value, node_type);
+        const node_key = try self.build_key(node_value, node_type);
         defer self.allocator.free(node_key);
 
         return try self.storage.find(node_key);
     }
 
-    inline fn key_from_node(self: *const NodeStorage, node_bytes: []const u8, node_type: ValueType) ![]u8 {
+    inline fn build_key(self: *const NodeStorage, node_bytes: []const u8, node_type: ValueType) ![]u8 {
         const key_buffer = try self.allocator.alloc(u8, 1 + node_bytes.len);
         key_buffer[0] = @intFromEnum(node_type);
         @memcpy(key_buffer[1..], node_bytes);

@@ -59,10 +59,3 @@ pub fn StorageRecord(comptime V: type) type {
         }
     };
 }
-
-pub const LinkRecord = struct {
-    src_node_id: u64,
-    dst_node_id: u64,
-    link_label: ?u64,
-    deleted: bool,
-};
