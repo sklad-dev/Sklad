@@ -88,11 +88,11 @@ pub fn Storage(comptime V: type) type {
         }
 
         pub fn find(self: *Self, key: []const u8) !?V {
-            var result: ?V = null;
-            for (self.memtables.items) |memtable| {
-                if (memtable.find(key)) |value| result = value;
+            var i = self.memtables.items.len;
+            while (i > 0) {
+                i -= 1;
+                if (self.memtables.items[i].find(key)) |value| return value;
             }
-            if (result) |r| return r;
             const value = try self.find_in_tables(key);
             return value;
         }
