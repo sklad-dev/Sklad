@@ -8,10 +8,10 @@ const StorageRecord = data_types.StorageRecord;
 
 pub fn SSTable(comptime V: type) type {
     return struct {
+        allocator: std.mem.Allocator,
         path: []const u8,
         file: std.fs.File,
         bloom_filter: ?b.BloomFilter,
-        allocator: std.mem.Allocator,
         min_key: ?[]u8,
         max_key: ?[]u8,
         index_start_offset: u32,
@@ -19,7 +19,7 @@ pub fn SSTable(comptime V: type) type {
 
         const Self = @This();
 
-        pub fn create(memtable: *m.Memtable(V), path: []const u8, sparse_index_step: u32, allocator: std.mem.Allocator) !Self {
+        pub fn create(allocator: std.mem.Allocator, memtable: *m.Memtable(V), path: []const u8, sparse_index_step: u32) !Self {
             const file = try std.fs.cwd().createFile(path, .{
                 .read = true,
                 .truncate = false,
@@ -28,13 +28,13 @@ pub fn SSTable(comptime V: type) type {
             var offsets = std.ArrayList(u32).init(allocator);
             defer offsets.deinit();
 
-            var bloom_filter = try b.BloomFilter.init(@intCast(memtable.size), 20, allocator);
+            var bloom_filter = try b.BloomFilter.init(allocator, @intCast(memtable.size), 20);
 
             var sstable = Self{
+                .allocator = allocator,
                 .path = path,
                 .file = file,
                 .bloom_filter = bloom_filter,
-                .allocator = allocator,
                 .min_key = null,
                 .max_key = null,
                 .index_start_offset = 0,
@@ -241,7 +241,7 @@ test "SSTable#create" {
         try test_memtable.add(&utils.key_from_int_data(usize, i), test_vertex_data);
     }
 
-    var test_sstable = try SSTable(u8).create(&test_memtable, TEST_SSTABLE_PATH, 44, testing.allocator);
+    var test_sstable = try SSTable(u8).create(testing.allocator, &test_memtable, TEST_SSTABLE_PATH, 44);
     test_sstable.close();
     try clean_up(u8, test_sstable, test_memtable);
 }
@@ -255,7 +255,7 @@ test "SSTable#open" {
         try test_memtable.add(&utils.key_from_int_data(usize, i), test_vertex_data);
     }
 
-    var test_sstable = try SSTable(u8).create(&test_memtable, TEST_SSTABLE_PATH, 44, testing.allocator);
+    var test_sstable = try SSTable(u8).create(testing.allocator, &test_memtable, TEST_SSTABLE_PATH, 44);
     test_sstable.close();
 
     test_sstable = try SSTable(u8).open(TEST_SSTABLE_PATH, testing.allocator);
@@ -278,7 +278,7 @@ test "SSTable#find" {
         try test_memtable.add(&utils.key_from_int_data(usize, i), test_vertex_data);
     }
 
-    var test_sstable = try SSTable(u8).create(&test_memtable, TEST_SSTABLE_PATH, 44, testing.allocator);
+    var test_sstable = try SSTable(u8).create(testing.allocator, &test_memtable, TEST_SSTABLE_PATH, 44);
     test_sstable.close();
 
     test_sstable = try SSTable(u8).open(TEST_SSTABLE_PATH, testing.allocator);

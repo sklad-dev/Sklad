@@ -19,13 +19,13 @@ pub const NodeStorage = struct {
     storage: Storage(u64),
     node_index_storage: NodeIndexStorage,
 
-    pub fn init(path: []const u8, max_memtable_size: u16, allocator: std.mem.Allocator) !NodeStorage {
+    pub fn init(allocator: std.mem.Allocator, path: []const u8, max_memtable_size: u16) !NodeStorage {
         var node_index_storage = NodeIndexStorage{};
         try node_index_storage.open();
 
         return NodeStorage{
             .allocator = allocator,
-            .storage = try Storage(u64).start(path, max_memtable_size, allocator),
+            .storage = try Storage(u64).start(allocator, path, max_memtable_size),
             .node_index_storage = node_index_storage,
         };
     }
@@ -97,7 +97,7 @@ fn clean_up(node_storage: *NodeStorage) void {
 }
 
 test "NodeStorage#put" {
-    var node_storage = try NodeStorage.init("./", 4, testing.allocator);
+    var node_storage = try NodeStorage.init(testing.allocator, "./", 4);
     defer node_storage.stop();
     defer clean_up(&node_storage);
 
@@ -117,7 +117,7 @@ test "NodeStorage#put" {
 }
 
 test "Add value twice" {
-    var node_storage = try NodeStorage.init("./", 4, testing.allocator);
+    var node_storage = try NodeStorage.init(testing.allocator, "./", 4);
     defer node_storage.stop();
     defer clean_up(&node_storage);
 

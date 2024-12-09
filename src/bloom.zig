@@ -28,7 +28,7 @@ pub const BloomFilter = struct {
         return true;
     }
 
-    pub fn init(num_records: u32, bits_per_key: u8, allocator: std.mem.Allocator) !BloomFilter {
+    pub fn init(allocator: std.mem.Allocator, num_records: u32, bits_per_key: u8) !BloomFilter {
         const float_bpk: f32 = @floatFromInt(bits_per_key);
         var num_hashes: u8 = @intFromFloat(float_bpk * 0.69); // 0.69 is approximately ln(2)
         num_hashes = @min(30, @max(1, num_hashes));
@@ -73,7 +73,7 @@ test "test" {
     const val2: u64 = 2;
     const val3: u64 = 3;
 
-    var filter = try BloomFilter.init(2, 10, testing.allocator);
+    var filter = try BloomFilter.init(testing.allocator, 2, 10);
     defer filter.deinit();
 
     filter.add(&utils.key_from_int_data(u64, val1));

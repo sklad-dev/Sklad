@@ -15,10 +15,10 @@ pub const ConnectionStorage = struct {
     allocator: std.mem.Allocator,
     storage: Storage(u8),
 
-    pub fn init(path: []const u8, max_memtable_size: u16, allocator: std.mem.Allocator) !ConnectionStorage {
+    pub fn init(allocator: std.mem.Allocator, path: []const u8, max_memtable_size: u16) !ConnectionStorage {
         return ConnectionStorage{
             .allocator = allocator,
-            .storage = try Storage(u8).start(path, max_memtable_size, allocator),
+            .storage = try Storage(u8).start(allocator, path, max_memtable_size),
         };
     }
 
@@ -89,7 +89,7 @@ fn clean_up(node_storage: *ConnectionStorage) void {
 }
 
 test "ConnectionStorage" {
-    var node_storage = try ConnectionStorage.init("./", 4, testing.allocator);
+    var node_storage = try ConnectionStorage.init(testing.allocator, "./", 4);
     defer node_storage.stop();
     defer clean_up(&node_storage);
 

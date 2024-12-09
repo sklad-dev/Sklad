@@ -27,7 +27,7 @@ pub fn Storage(comptime V: type) type {
 
         const Self = @This();
 
-        pub fn start(path: []const u8, max_memtable_size: u16, allocator: std.mem.Allocator) !Self {
+        pub fn start(allocator: std.mem.Allocator, path: []const u8, max_memtable_size: u16) !Self {
             var storage = Self{
                 .allocator = allocator,
                 .path = path,
@@ -67,10 +67,10 @@ pub fn Storage(comptime V: type) type {
                     .{max_file_id + 1},
                 );
                 var sstable = try SSTable(V).create(
+                    self.allocator,
                     filled_memtable,
                     file_name,
                     constants.PAGE_SIZE,
-                    self.allocator,
                 );
                 try self.table_file_manager.add_file(0, file_name_buf);
 
@@ -206,7 +206,7 @@ fn clean_up(comptime V: type, storage: *Storage(V)) !void {
 }
 
 test "Add value" {
-    var test_storage = try Storage(u8).start("./", 4, testing.allocator);
+    var test_storage = try Storage(u8).start(testing.allocator, "./", 4);
     defer test_storage.stop();
 
     try test_storage.put(&utils.key_from_int_data(u8, 1), 42);
@@ -219,11 +219,11 @@ test "Add value" {
 }
 
 test "Restore memtable from wal" {
-    var storage1 = try Storage(u8).start("./", 4, testing.allocator);
+    var storage1 = try Storage(u8).start(testing.allocator, "./", 4);
     try storage1.put(&utils.key_from_int_data(u8, 1), 42);
     storage1.stop();
 
-    var storage2 = try Storage(u8).start("./", 4, testing.allocator);
+    var storage2 = try Storage(u8).start(testing.allocator, "./", 4);
     defer storage2.stop();
 
     try testing.expect(storage2.memtables.items.len == 1);
@@ -234,7 +234,7 @@ test "Restore memtable from wal" {
 }
 
 test "Finding values" {
-    var storage = try Storage(u8).start("./", 4, testing.allocator);
+    var storage = try Storage(u8).start(testing.allocator, "./", 4);
     defer storage.stop();
     try storage.put(&utils.key_from_int_data(u8, 1), 42);
 
@@ -265,7 +265,7 @@ test "Finding values" {
 }
 
 test "Finding values: return the newest value" {
-    var storage = try Storage(u8).start("./", 4, testing.allocator);
+    var storage = try Storage(u8).start(testing.allocator, "./", 4);
     defer storage.stop();
 
     for (0..8) |i| {
