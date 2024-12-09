@@ -34,6 +34,18 @@ pub fn compare_bitwise(v1: []const u8, v2: []const u8) isize {
     return @as(isize, @intCast(v1.len)) - @as(isize, @intCast(v2.len));
 }
 
+pub inline fn num_digits(comptime T: type, number: T) u8 {
+    if (number == 0) return 1;
+
+    var digits: u8 = 0;
+    var n = number;
+    while (n != 0) {
+        n = @divTrunc(n, 10);
+        digits += 1;
+    }
+    return digits;
+}
+
 // Tests
 const testing = std.testing;
 

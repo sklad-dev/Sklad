@@ -81,7 +81,7 @@ fn clean_up(node_storage: *NodeStorage) void {
             std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
         };
     }
-    var it = node_storage.storage.table_files.iterator();
+    var it = node_storage.storage.table_file_manager.files.iterator();
     while (it.next()) |entry| {
         for (entry.value_ptr.*.items) |file_name| {
             std.fs.cwd().deleteFile(file_name) catch {

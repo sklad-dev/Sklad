@@ -6,49 +6,47 @@ const AutoHashMap = std.AutoHashMap;
 
 const data_types = @import("./data_types.zig");
 const utils = @import("./utils.zig");
-const mt = @import("./memtable.zig");
-const st = @import("./sstable.zig");
-const w = @import("./wal.zig");
 const constants = @import("./constants.zig");
 
+const Memtable = @import("./memtable.zig").Memtable;
+const SSTable = @import("./sstable.zig").SSTable;
+const TableFileManager = @import("./table_file_manager.zig").TableFileManager;
+const Wal = @import("./wal.zig").Wal;
 const StringHashMap = std.StringHashMap;
 const StorageRecord = data_types.StorageRecord;
 
 pub fn Storage(comptime V: type) type {
     return struct {
+        allocator: std.mem.Allocator,
         path: []const u8,
         max_memtable_size: u16,
         memtable_level_probability: f32,
-        allocator: std.mem.Allocator,
-        active_memtable: ?*mt.Memtable(V),
-        memtables: ArrayList(*mt.Memtable(V)),
-        table_files: AutoHashMap(u8, *ArrayList([]u8)),
-        tables: StringHashMap(*st.SSTable(V)),
+        active_memtable: ?*Memtable(V),
+        memtables: ArrayList(*Memtable(V)),
+        table_file_manager: TableFileManager,
+        tables: StringHashMap(*SSTable(V)),
 
         const Self = @This();
 
         pub fn start(path: []const u8, max_memtable_size: u16, allocator: std.mem.Allocator) !Self {
             var storage = Self{
+                .allocator = allocator,
                 .path = path,
                 .max_memtable_size = max_memtable_size,
                 .memtable_level_probability = 0.125,
-                .allocator = allocator,
                 .active_memtable = null,
-                .memtables = try ArrayList(*mt.Memtable(V)).initCapacity(allocator, 2),
-                .table_files = AutoHashMap(u8, *ArrayList([]u8)).init(allocator),
-                .tables = StringHashMap(*st.SSTable(V)).init(allocator),
+                .memtables = try ArrayList(*Memtable(V)).initCapacity(allocator, 2),
+                .table_file_manager = try TableFileManager.init(allocator, path),
+                .tables = StringHashMap(*SSTable(V)).init(allocator),
             };
-
-            try storage.map_sstable_files();
             try storage.restore_memtables();
-
             return storage;
         }
 
         pub inline fn stop(self: *Self) void {
             self.deinit_memtables();
-            self.deinit_table_files();
-            self.deinit_table_levels();
+            self.deinit_tables();
+            self.table_file_manager.deinit();
         }
 
         pub fn put(self: *Self, key: []const u8, value: V) !void {
@@ -63,19 +61,20 @@ pub fn Storage(comptime V: type) type {
             } else if (self.memtables.getLast().size >= self.max_memtable_size) {
                 const filled_memtable = self.memtables.pop();
 
-                const file_name_buf = try self.allocator.alloc(u8, 14);
+                const max_file_id = self.table_file_manager.level_counters.get(0) orelse -1;
+                const file_name_buf = try self.allocator.alloc(u8, 10 + utils.num_digits(i16, max_file_id));
                 const file_name = try std.fmt.bufPrint(
                     file_name_buf,
-                    "0.{s}.sstable",
-                    .{filled_memtable.wal_name[0..4]},
+                    "0.{d}.sstable",
+                    .{max_file_id + 1},
                 );
-                var sstable = try st.SSTable(V).create(
+                var sstable = try SSTable(V).create(
                     filled_memtable,
                     file_name,
                     constants.PAGE_SIZE,
                     self.allocator,
                 );
-                try self.add_table_file_at_level(0, file_name_buf);
+                try self.table_file_manager.add_file(0, file_name_buf);
 
                 sstable.close();
                 try filled_memtable.wal.delete_file();
@@ -103,12 +102,12 @@ pub fn Storage(comptime V: type) type {
         }
 
         fn find_in_tables(self: *Self, key: []const u8) !?V {
-            var it = self.table_files.iterator();
+            var it = self.table_file_manager.files.iterator();
             while (it.next()) |entry| {
                 for (entry.value_ptr.*.items) |file_name| {
                     if (self.tables.contains(file_name) == false) {
-                        const table = try self.allocator.create(st.SSTable(V));
-                        table.* = try st.SSTable(V).open(file_name, self.allocator);
+                        const table = try self.allocator.create(SSTable(V));
+                        table.* = try SSTable(V).open(file_name, self.allocator);
                         try self.tables.put(
                             file_name,
                             table,
@@ -122,8 +121,8 @@ pub fn Storage(comptime V: type) type {
         }
 
         fn add_memtable(self: *Self) !void {
-            const memtable = try self.allocator.create(mt.Memtable(V));
-            memtable.* = try mt.Memtable(V).init(
+            const memtable = try self.allocator.create(Memtable(V));
+            memtable.* = try Memtable(V).init(
                 self.allocator,
                 std.crypto.random,
                 8,
@@ -145,15 +144,15 @@ pub fn Storage(comptime V: type) type {
                 if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".wal")) {
                     const wal_name = try self.allocator.alloc(u8, 8);
                     @memcpy(wal_name, entry.name);
-                    const wal = w.Wal(V){ .path = wal_name };
+                    const wal = Wal(V){ .path = wal_name };
                     try self.restore_memtable(wal);
                 }
             }
         }
 
-        fn restore_memtable(self: *Self, wal: w.Wal(V)) !void {
-            const memtable = try self.allocator.create(mt.Memtable(V));
-            memtable.* = try mt.Memtable(V).from_wal(
+        fn restore_memtable(self: *Self, wal: Wal(V)) !void {
+            const memtable = try self.allocator.create(Memtable(V));
+            memtable.* = try Memtable(V).from_wal(
                 wal,
                 self.allocator,
                 std.crypto.random,
@@ -164,38 +163,11 @@ pub fn Storage(comptime V: type) type {
             try self.memtables.append(memtable);
         }
 
-        fn add_table_file_at_level(self: *Self, level: u8, table_file: []u8) !void {
-            if (self.table_files.contains(level) == false) {
-                const level_list = try self.allocator.create(ArrayList([]u8));
-                level_list.* = ArrayList([]u8).init(self.allocator);
-                try self.table_files.put(level, level_list);
-            }
-            const level_files = self.table_files.get(level).?;
-            try level_files.append(table_file);
-        }
-
-        fn map_sstable_files(self: *Self) !void {
-            var dir = try std.fs.cwd().openDir(self.path, .{
-                .access_sub_paths = false,
-                .iterate = true,
-                .no_follow = true,
-            });
-            defer dir.close();
-
-            var it = dir.iterate();
-            while (try it.next()) |entry| {
-                if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".sstable")) {
-                    const file_name = entry.name;
-                    const first_dot = std.mem.indexOfScalar(u8, file_name, '.').?; // TODO: handle return value correctly
-                    const level_id: u8 = try std.fmt.parseInt(u8, file_name[0..first_dot], 10);
-                    const file_name_copy = try self.allocator.alloc(u8, 14);
-                    @memcpy(file_name_copy, file_name);
-                    try self.add_table_file_at_level(level_id, file_name_copy);
-                }
-            }
-        }
-
         fn deinit_memtables(self: *Self) void {
+            if (self.active_memtable) |memtable| {
+                memtable.destroy();
+                self.allocator.destroy(memtable);
+            }
             for (self.memtables.items) |t| {
                 t.destroy();
                 self.allocator.destroy(t);
@@ -203,19 +175,7 @@ pub fn Storage(comptime V: type) type {
             self.memtables.deinit();
         }
 
-        fn deinit_table_files(self: *Self) void {
-            var it = self.table_files.valueIterator();
-            while (it.next()) |value| {
-                for (value.*.items) |file_name| {
-                    self.allocator.free(file_name);
-                }
-                value.*.deinit();
-                self.allocator.destroy(value.*);
-            }
-            self.table_files.deinit();
-        }
-
-        fn deinit_table_levels(self: *Self) void {
+        fn deinit_tables(self: *Self) void {
             var it = self.tables.valueIterator();
             while (it.next()) |table_ptr| {
                 table_ptr.*.*.close();
