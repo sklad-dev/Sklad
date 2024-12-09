@@ -32,6 +32,12 @@ pub const TableFileManager = struct {
         try self.level_counters.put(level, current_level_counter + 1);
     }
 
+    pub inline fn parse_file_id(file_name: []u8) !i16 {
+        const first_dot = std.mem.indexOfScalar(u8, file_name, '.').?;
+        const second_dot = std.mem.indexOfScalarPos(u8, file_name, first_dot + 1, '.').?;
+        return try std.fmt.parseInt(i16, file_name[first_dot + 1 .. second_dot], 10);
+    }
+
     fn add_file_at_level(self: *TableFileManager, level: u8, file: []u8) !void {
         if (self.files.contains(level) == false) {
             const level_list = try self.allocator.create(ArrayList([]u8));

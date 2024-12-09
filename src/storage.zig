@@ -102,6 +102,8 @@ pub fn Storage(comptime V: type) type {
         }
 
         fn find_in_tables(self: *Self, key: []const u8) !?V {
+            var result: ?V = null;
+            var result_id: i16 = -1;
             var it = self.table_file_manager.files.iterator();
             while (it.next()) |entry| {
                 for (entry.value_ptr.*.items) |file_name| {
@@ -114,7 +116,16 @@ pub fn Storage(comptime V: type) type {
                         );
                     }
 
-                    if (try self.tables.get(file_name).?.find(key)) |value| return value;
+                    if (try self.tables.get(file_name).?.find(key)) |value| {
+                        const file_id = try TableFileManager.parse_file_id(file_name);
+                        if (file_id > result_id) {
+                            result_id = file_id;
+                            result = value;
+                        }
+                    }
+                }
+                if (result) |r| {
+                    return r;
                 }
             }
             return null;
@@ -257,6 +268,26 @@ test "Finding values" {
     try testing.expect(search_result != null);
     search_result = try storage.find_in_tables(&utils.key_from_int_data(u8, @as(u8, @intCast(9))));
     try testing.expect(search_result == null);
+
+    try clean_up(u8, &storage);
+}
+
+test "Finding values: return the newest value" {
+    var storage = try Storage(u8).start("./", 4, testing.allocator);
+    defer storage.stop();
+
+    for (0..8) |i| {
+        const v = @as(u8, @intCast(i));
+        try storage.put(&utils.key_from_int_data(u8, v), v);
+    }
+
+    for (0..8) |i| {
+        const v = @as(u8, @intCast(i));
+        try storage.put(&utils.key_from_int_data(u8, v), v * 2);
+    }
+
+    const search_result = try storage.find(&utils.key_from_int_data(u8, @as(u8, @intCast(1))));
+    try testing.expect(search_result == 2);
 
     try clean_up(u8, &storage);
 }
