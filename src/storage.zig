@@ -60,11 +60,11 @@ pub fn Storage(comptime V: type) type {
                 const filled_memtable = self.memtables.pop();
 
                 const max_file_id = self.table_file_manager.level_counters.get(0) orelse -1;
-                const file_name_buf = try self.allocator.alloc(u8, 10 + utils.num_digits(i16, max_file_id));
+                const file_name_buf = try self.allocator.alloc(u8, self.path.len + 11 + utils.num_digits(i16, max_file_id));
                 const file_name = try std.fmt.bufPrint(
                     file_name_buf,
-                    "0.{d}.sstable",
-                    .{max_file_id + 1},
+                    "{s}/0.{d}.sstable",
+                    .{ self.path, max_file_id + 1 },
                 );
                 var sstable = try SSTable(V).create(
                     self.allocator,
@@ -113,7 +113,7 @@ pub fn Storage(comptime V: type) type {
                     }
 
                     if (try self.tables.get(file_name).?.find(key)) |value| {
-                        const file_id = try TableFileManager.parse_file_id(file_name);
+                        const file_id = try self.table_file_manager.parse_file_id(file_name);
                         if (file_id > result_id) {
                             result_id = file_id;
                             result = value;
@@ -134,6 +134,7 @@ pub fn Storage(comptime V: type) type {
                 std.crypto.random,
                 8,
                 self.memtable_level_probability,
+                self.path,
             );
             try self.memtables.append(memtable);
         }
@@ -149,9 +150,12 @@ pub fn Storage(comptime V: type) type {
             var it = dir.iterate();
             while (try it.next()) |entry| {
                 if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".wal")) {
-                    const wal_name = try self.allocator.alloc(u8, 8);
-                    @memcpy(wal_name, entry.name);
-                    const wal = Wal(V){ .path = wal_name };
+                    const wal_name = try self.allocator.alloc(u8, self.path.len + 9);
+                    const wal = Wal(V){ .path = try std.fmt.bufPrint(
+                        wal_name,
+                        "{s}/{s}",
+                        .{ self.path, entry.name },
+                    ) };
                     try self.restore_memtable(wal);
                 }
             }

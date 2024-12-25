@@ -32,8 +32,8 @@ pub const TableFileManager = struct {
         try self.level_counters.put(level, current_level_counter + 1);
     }
 
-    pub inline fn parse_file_id(file_name: []u8) !i16 {
-        const first_dot = std.mem.indexOfScalar(u8, file_name, '.').?;
+    pub inline fn parse_file_id(self: *TableFileManager, file_name: []u8) !i16 {
+        const first_dot = std.mem.indexOfScalarPos(u8, file_name, self.path.len, '.').?;
         const second_dot = std.mem.indexOfScalarPos(u8, file_name, first_dot + 1, '.').?;
         return try std.fmt.parseInt(i16, file_name[first_dot + 1 .. second_dot], 10);
     }
@@ -71,8 +71,12 @@ pub const TableFileManager = struct {
                     try self.level_counters.put(level_id, file_id);
                 }
 
-                const file_name_copy = try self.allocator.alloc(u8, file_name.len);
-                @memcpy(file_name_copy, file_name);
+                const file_name_copy = try self.allocator.alloc(u8, self.path.len + 1 + file_name.len);
+                _ = try std.fmt.bufPrint(
+                    file_name_copy,
+                    "{s}/{s}",
+                    .{ self.path, file_name },
+                );
                 try self.add_file_at_level(level_id, file_name_copy);
             }
         }

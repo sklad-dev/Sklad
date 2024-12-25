@@ -50,14 +50,14 @@ pub fn Memtable(comptime V: type) type {
             }
         };
 
-        pub inline fn init(allocator: std.mem.Allocator, random: std.Random, max_level: u8, level_probability: f32) !Self {
-            const wal_name = try allocator.alloc(u8, 8);
+        pub inline fn init(allocator: std.mem.Allocator, random: std.Random, max_level: u8, level_probability: f32, wal_path: []const u8) !Self {
+            const wal_name = try allocator.alloc(u8, wal_path.len + 9);
             const wal_id = utils.generate_id(random);
 
             var wal = w.Wal(V){ .path = try std.fmt.bufPrint(
                 wal_name,
-                "{x:0>2}{x:0>2}.wal",
-                .{ wal_id[0], wal_id[1] },
+                "{s}/{x:0>2}{x:0>2}.wal",
+                .{ wal_path, wal_id[0], wal_id[1] },
             ) };
             try wal.open();
 
@@ -226,7 +226,7 @@ fn visualize_memtable(comptime V: type, table: Memtable(V)) !void {
 }
 
 test "Memtable#add and find" {
-    var test_memtable = try Memtable(u8).init(testing.allocator, std.crypto.random, 8, 0.125);
+    var test_memtable = try Memtable(u8).init(testing.allocator, std.crypto.random, 8, 0.125, "./");
     errdefer test_memtable.destroy();
 
     // Case: search in an empty memtable

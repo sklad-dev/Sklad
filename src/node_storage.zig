@@ -20,7 +20,9 @@ pub const NodeStorage = struct {
     node_index_storage: NodeIndexStorage,
 
     pub fn init(allocator: std.mem.Allocator, path: []const u8, max_memtable_size: u16) !NodeStorage {
-        var node_index_storage = NodeIndexStorage{};
+        try utils.make_dir_if_not_exists(path);
+
+        var node_index_storage = try NodeIndexStorage.init(allocator, path);
         try node_index_storage.open();
 
         return NodeStorage{
@@ -32,6 +34,7 @@ pub const NodeStorage = struct {
 
     pub inline fn stop(self: *NodeStorage) void {
         self.node_index_storage.close();
+        self.node_index_storage.deinit();
         self.storage.stop();
     }
 

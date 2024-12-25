@@ -233,7 +233,7 @@ fn clean_up(comptime V: type, storage: SSTable(V), memtable: m.Memtable(V)) !voi
 }
 
 test "SSTable#create" {
-    var test_memtable = try m.Memtable(u8).init(testing.allocator, std.crypto.random, 8, 0.125);
+    var test_memtable = try m.Memtable(u8).init(testing.allocator, std.crypto.random, 8, 0.125, "./");
     defer test_memtable.destroy();
 
     const test_vertex_data: u8 = 0;
@@ -247,7 +247,7 @@ test "SSTable#create" {
 }
 
 test "SSTable#open" {
-    var test_memtable = try m.Memtable(u8).init(testing.allocator, std.crypto.random, 8, 0.125);
+    var test_memtable = try m.Memtable(u8).init(testing.allocator, std.crypto.random, 8, 0.125, "./");
     defer test_memtable.destroy();
 
     const test_vertex_data: u8 = 0;
@@ -270,7 +270,7 @@ test "SSTable#open" {
 }
 
 test "SSTable#find" {
-    var test_memtable = try m.Memtable(u8).init(testing.allocator, std.crypto.random, 8, 0.125);
+    var test_memtable = try m.Memtable(u8).init(testing.allocator, std.crypto.random, 8, 0.125, "./");
     defer test_memtable.destroy();
 
     const test_vertex_data: u8 = 0;

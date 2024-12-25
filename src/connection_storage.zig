@@ -16,6 +16,8 @@ pub const ConnectionStorage = struct {
     storage: Storage(u8),
 
     pub fn init(allocator: std.mem.Allocator, path: []const u8, max_memtable_size: u16) !ConnectionStorage {
+        try utils.make_dir_if_not_exists(path);
+
         return ConnectionStorage{
             .allocator = allocator,
             .storage = try Storage(u8).start(allocator, path, max_memtable_size),

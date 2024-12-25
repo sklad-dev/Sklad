@@ -46,6 +46,16 @@ pub inline fn num_digits(comptime T: type, number: T) u8 {
     return digits;
 }
 
+pub fn make_dir_if_not_exists(dir_path: []const u8) !void {
+    std.fs.cwd().makeDir(dir_path) catch |e| brk: {
+        if (e == error.PathAlreadyExists) {
+            break :brk;
+        } else {
+            return e;
+        }
+    };
+}
+
 // Tests
 const testing = std.testing;
 

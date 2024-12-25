@@ -9,9 +9,25 @@ const NodePointer = data_types.NodePointer;
 const DEFAULT_NODE_INDEX_FILE = "./node_index.store";
 
 pub const NodeIndexStorage = struct {
-    path: []const u8 = (&DEFAULT_NODE_INDEX_FILE).*,
+    allocator: std.mem.Allocator,
+    path: []const u8,
     file: ?std.fs.File = null,
     next_id: u64 = 0,
+
+    pub fn init(allocator: std.mem.Allocator, path: []const u8) !NodeIndexStorage {
+        return NodeIndexStorage{
+            .allocator = allocator,
+            .path = try std.fmt.allocPrint(
+                allocator,
+                "{s}/{s}",
+                .{ path, (&DEFAULT_NODE_INDEX_FILE).* },
+            ),
+        };
+    }
+
+    pub fn deinit(self: *NodeIndexStorage) void {
+        self.allocator.free(self.path);
+    }
 
     pub fn open(self: *NodeIndexStorage) !void {
         self.file = try std.fs.cwd().createFile(self.path, .{
@@ -69,7 +85,8 @@ fn clean_up(storage: NodeIndexStorage) !void {
 }
 
 test "NodeIndexStorage#open when there is no storage file" {
-    var test_storage: NodeIndexStorage = .{};
+    var test_storage: NodeIndexStorage = try NodeIndexStorage.init(testing.allocator, "./");
+    defer test_storage.deinit();
 
     test_storage.open() catch {
         const out = std.io.getStdOut().writer();
@@ -81,7 +98,8 @@ test "NodeIndexStorage#open when there is no storage file" {
 }
 
 test "NodeIndexStorage#open when there is a storage file" {
-    var test_storage: NodeIndexStorage = .{};
+    var test_storage: NodeIndexStorage = try NodeIndexStorage.init(testing.allocator, "./");
+    defer test_storage.deinit();
 
     _ = try std.fs.cwd().createFile(test_storage.path, .{
         .read = true,
@@ -98,7 +116,9 @@ test "NodeIndexStorage#open when there is a storage file" {
 }
 
 test "NodeIndexStorage#allocate_next_id" {
-    var test_storage: NodeIndexStorage = .{};
+    var test_storage: NodeIndexStorage = try NodeIndexStorage.init(testing.allocator, "./");
+    defer test_storage.deinit();
+
     try test_storage.open();
     defer test_storage.close();
 
@@ -116,7 +136,9 @@ test "NodeIndexStorage#allocate_next_id" {
 }
 
 test "NodeIndexStorage update and get the record" {
-    var test_storage: NodeIndexStorage = .{};
+    var test_storage: NodeIndexStorage = try NodeIndexStorage.init(testing.allocator, "./");
+    defer test_storage.deinit();
+
     try test_storage.open();
     defer test_storage.close();
 
