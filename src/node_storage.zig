@@ -38,15 +38,16 @@ pub const NodeStorage = struct {
         self.storage.stop();
     }
 
-    pub fn put(self: *NodeStorage, node_value: []const u8, node_type: ValueType) !void {
+    pub fn put(self: *NodeStorage, node_value: []const u8, node_type: ValueType) !u64 {
         const node_key = try self.build_key(node_value, node_type);
         defer self.allocator.free(node_key);
 
         const found_value = try self.storage.find(node_key);
-        if (found_value != null) return;
+        if (found_value != null) return 0xFFFFFFFFFFFFFFFF;
 
         const node_id = try self.node_index_storage.allocate_next_id();
         try self.storage.put(node_key, node_id);
+        return node_id;
     }
 
     pub fn find(self: *NodeStorage, node_value: []const u8, node_type: ValueType) !?u64 {
@@ -105,18 +106,18 @@ test "NodeStorage#put" {
     defer clean_up(&node_storage);
 
     const v1 = try to_byte_array(u8, 2);
-    try node_storage.put(&v1, ValueType.smallserial);
+    try testing.expect((try node_storage.put(&v1, ValueType.smallserial)) == 0);
 
     const v2 = try to_byte_array(u64, 2);
-    try node_storage.put(&v2, ValueType.bigserial);
+    try testing.expect((try node_storage.put(&v2, ValueType.bigserial)) == 1);
 
     const v3 = try to_byte_array(i32, -5);
-    try node_storage.put(&v3, ValueType.int);
+    try testing.expect((try node_storage.put(&v3, ValueType.int)) == 2);
 
     const v4 = try to_byte_array(f32, 12.34);
-    try node_storage.put(&v4, ValueType.float);
+    try testing.expect((try node_storage.put(&v4, ValueType.float)) == 3);
 
-    try node_storage.put("Hello, world!", ValueType.string);
+    try testing.expect((try node_storage.put("Hello, world!", ValueType.string)) == 4);
 }
 
 test "Add value twice" {
@@ -126,11 +127,11 @@ test "Add value twice" {
 
     for (1..10) |i| {
         const v: u8 = @as(u8, @intCast(i));
-        try node_storage.put(&utils.key_from_int_data(u8, v), ValueType.smallserial);
+        _ = try node_storage.put(&utils.key_from_int_data(u8, v), ValueType.smallserial);
     }
     const initial_memtable_size = node_storage.storage.memtables.getLast().size;
 
     const v: u8 = @as(u8, @intCast(5));
-    try node_storage.put(&utils.key_from_int_data(u8, v), ValueType.smallserial);
+    try testing.expect((try node_storage.put(&utils.key_from_int_data(u8, v), ValueType.smallserial)) == 0xFFFFFFFFFFFFFFFF);
     try testing.expect(node_storage.storage.memtables.getLast().size == initial_memtable_size);
 }
