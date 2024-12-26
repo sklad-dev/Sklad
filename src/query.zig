@@ -24,8 +24,8 @@ pub fn exec(graph_storage: *GraphStorage, query_buffer: []u8) !u64 {
             const data_size: u16 = read_number(u16, query_buffer, 1);
             const data_type: ValueType = @enumFromInt(read_number(u8, query_buffer, 3));
             const data: []u8 = query_buffer[4 .. 4 + data_size];
-            try graph_storage.node_storage.put(data, data_type);
-            break :insert_blk 1;
+            const node_id = try graph_storage.node_storage.put(data, data_type);
+            break :insert_blk node_id;
         },
         1 => 1,
         2 => find_blk: {
