@@ -12,6 +12,20 @@ pub const IO = struct {
     stream: std.net.Stream,
     graph_storage: GraphStorage,
 
+    pub const IoError = error{
+        RequestReadingError,
+        RequestTooLong,
+        QueryMalformed,
+        QueryExecutionError,
+    };
+
+    pub fn Response(comptime T: type) type {
+        return struct {
+            data: T,
+            errors: ?IoError,
+        };
+    }
+
     pub fn init(allocator: std.mem.Allocator) !IO {
         const address = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, DEFAULT_PORT);
         const socket_handle = try posix.socket(
@@ -43,55 +57,69 @@ pub const IO = struct {
         while (true) {
             const connection = server.accept() catch {
                 stdout.print("Error! Failed to accept connection.\n", .{}) catch {
-                    return;
+                    continue;
                 };
-                return;
+                continue;
             };
             defer connection.stream.close();
 
             const reader = connection.stream.reader();
             const bytes_read = reader.read(&buffer) catch {
-                stdout.print("Error! Failed reading request.\n", .{}) catch {
-                    return;
+                const response = Response(i8){
+                    .data = -1,
+                    .errors = IoError.RequestReadingError,
                 };
-                return;
+                self.send_response(i8, connection.stream, response);
+                continue;
             };
 
             if (bytes_read > 0 and bytes_read <= buffer.len) {
-                const result: u64 = query.exec(&self.graph_storage, buffer[0..bytes_read]) catch |err| blk: {
+                const result: u64 = query.exec(&self.graph_storage, buffer[0..bytes_read]) catch |err| {
                     switch (err) {
                         query.QueryError.UnknownOperation => {
-                            _ = connection.stream.write(&buffer) catch {
-                                stdout.print("Error! Incorrect query.\n", .{}) catch {
-                                    break :blk 0xFFFFFFFFFFFFFFFF;
-                                };
-                                break :blk 0xFFFFFFFFFFFFFFFF;
+                            const response = Response(i8){
+                                .data = -1,
+                                .errors = IoError.QueryMalformed,
                             };
+                            self.send_response(i8, connection.stream, response);
+                            continue;
                         },
                         else => {
-                            _ = connection.stream.write(&buffer) catch {
-                                stdout.print("Error! Failed executing request.\n", .{}) catch {
-                                    break :blk 0xFFFFFFFFFFFFFFFF;
-                                };
-                                break :blk 0xFFFFFFFFFFFFFFFF;
+                            const response = Response(i8){
+                                .data = -1,
+                                .errors = IoError.QueryExecutionError,
                             };
+                            self.send_response(i8, connection.stream, response);
+                            continue;
                         },
                     }
-                    break :blk 0xFFFFFFFFFFFFFFFF;
                 };
-                _ = connection.stream.writer().writeInt(u64, result, std.builtin.Endian.big) catch return;
+                const response = Response(u64){
+                    .data = result,
+                    .errors = null,
+                };
+                self.send_response(u64, connection.stream, response);
             } else {
-                _ = connection.stream.write(&buffer) catch {
-                    stdout.print("Error! Request too long\n", .{}) catch {
-                        return;
-                    };
-                    return;
+                const response = Response(i8){
+                    .data = -1,
+                    .errors = IoError.RequestTooLong,
                 };
+                self.send_response(i8, connection.stream, response);
             }
         }
     }
 
     pub fn deinit(self: *const IO) void {
         posix.close(self.socket_handle);
+    }
+
+    fn send_response(self: *IO, comptime T: type, stream: std.net.Stream, response: Response(T)) void {
+        const message = std.json.stringifyAlloc(self.allocator, response, .{}) catch {
+            const stdout = std.io.getStdOut().writer();
+            stdout.print("Error! Failed send the response.\n", .{}) catch return;
+            return;
+        };
+        defer self.allocator.free(message);
+        _ = stream.write(message) catch return;
     }
 };
