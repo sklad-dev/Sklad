@@ -65,11 +65,7 @@ pub const IO = struct {
 
             const reader = connection.stream.reader();
             const bytes_read = reader.read(&buffer) catch {
-                const response = Response(i8){
-                    .data = -1,
-                    .errors = IoError.RequestReadingError,
-                };
-                self.send_response(i8, connection.stream, response);
+                self.send_response(i8, connection.stream, -1);
                 continue;
             };
 
@@ -77,34 +73,17 @@ pub const IO = struct {
                 const result: u64 = query.exec(&self.graph_storage, buffer[0..bytes_read]) catch |err| {
                     switch (err) {
                         query.QueryError.UnknownOperation => {
-                            const response = Response(i8){
-                                .data = -1,
-                                .errors = IoError.QueryMalformed,
-                            };
-                            self.send_response(i8, connection.stream, response);
-                            continue;
+                            self.send_response(i8, connection.stream, -1);
                         },
                         else => {
-                            const response = Response(i8){
-                                .data = -1,
-                                .errors = IoError.QueryExecutionError,
-                            };
-                            self.send_response(i8, connection.stream, response);
-                            continue;
+                            self.send_response(i8, connection.stream, -1);
                         },
                     }
+                    continue;
                 };
-                const response = Response(u64){
-                    .data = result,
-                    .errors = null,
-                };
-                self.send_response(u64, connection.stream, response);
+                self.send_response(u64, connection.stream, result);
             } else {
-                const response = Response(i8){
-                    .data = -1,
-                    .errors = IoError.RequestTooLong,
-                };
-                self.send_response(i8, connection.stream, response);
+                self.send_response(i8, connection.stream, -1);
             }
         }
     }
@@ -113,7 +92,11 @@ pub const IO = struct {
         posix.close(self.socket_handle);
     }
 
-    fn send_response(self: *IO, comptime T: type, stream: std.net.Stream, response: Response(T)) void {
+    fn send_response(self: *IO, comptime T: type, stream: std.net.Stream, data: T) void {
+        const response = Response(T){
+            .data = data,
+            .errors = IoError.RequestTooLong,
+        };
         const message = std.json.stringifyAlloc(self.allocator, response, .{}) catch {
             const stdout = std.io.getStdOut().writer();
             stdout.print("Error! Failed send the response.\n", .{}) catch return;
