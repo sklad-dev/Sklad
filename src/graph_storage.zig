@@ -19,4 +19,9 @@ pub const GraphStorage = struct {
             .connection_storage = try ConnectionStorage.init(allocator, DATABASE_STORAGE ++ "/connections", max_connection_memtable_size),
         };
     }
+
+    pub inline fn stop(self: *GraphStorage) void {
+        self.node_storage.stop();
+        self.connection_storage.stop();
+    }
 };

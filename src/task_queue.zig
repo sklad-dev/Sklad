@@ -1,7 +1,12 @@
 const std = @import("std");
 
 pub const Task = struct {
-    run: u8,
+    context: *anyopaque,
+    runFn: *const fn (ptr: *anyopaque) void,
+
+    pub fn run(self: *const Task) void {
+        self.runFn(self.context);
+    }
 };
 
 pub const TaskQueue = struct {
@@ -34,8 +39,8 @@ pub const TaskQueue = struct {
         }
     }
 
-    pub fn enqueue(self: *TaskQueue, task: Task) !void {
-        const node = try self.allocator.create(TaskNode);
+    pub fn enqueue(self: *TaskQueue, task: Task) void {
+        const node = self.allocator.create(TaskNode) catch unreachable;
         node.* = TaskNode{
             .task = task,
             .next = null,
@@ -58,7 +63,7 @@ pub const TaskQueue = struct {
         _ = @cmpxchgWeak(?*TaskNode, &self.tail, old_tail, node, .seq_cst, .seq_cst);
     }
 
-    pub fn dequeue(self: *TaskQueue) !?Task {
+    pub fn dequeue(self: *TaskQueue) ?Task {
         var old_head = @atomicLoad(?*TaskNode, &self.head, .seq_cst);
         while (old_head != null and @cmpxchgWeak(
             ?*TaskNode,
@@ -84,6 +89,22 @@ pub const TaskQueue = struct {
 // Tests
 const testing = std.testing;
 
+const TestTask = struct {
+    id: u8,
+
+    fn run(ptr: *anyopaque) void {
+        const self: *TestTask = @ptrCast(@alignCast(ptr));
+        _ = self.id;
+    }
+
+    fn task(self: *TestTask) Task {
+        return .{
+            .context = self,
+            .runFn = run,
+        };
+    }
+};
+
 test "TaskQueue#enqueue" {
     var task_queue = TaskQueue.init(testing.allocator);
     defer task_queue.deinit();
@@ -91,41 +112,48 @@ test "TaskQueue#enqueue" {
     try testing.expect(task_queue.head == null);
     try testing.expect(task_queue.tail == null);
 
-    try task_queue.enqueue(Task{ .run = 0 });
+    var t1 = TestTask{ .id = 0 };
+    task_queue.enqueue(t1.task());
     try testing.expect(task_queue.head != null);
     try testing.expect(task_queue.tail != null);
-    try testing.expect(task_queue.tail.?.task.run == 0);
-    try testing.expect(task_queue.head.?.task.run == 0);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.tail.?.task.context))) == &t1);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.?.task.context))) == &t1);
 
-    try task_queue.enqueue(Task{ .run = 1 });
-    try testing.expect(task_queue.tail.?.task.run == 1);
-    try testing.expect(task_queue.head.?.task.run == 0);
+    var t2 = TestTask{ .id = 1 };
+    task_queue.enqueue(t2.task());
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.tail.?.task.context))) == &t2);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.?.task.context))) == &t1);
 
-    try task_queue.enqueue(Task{ .run = 2 });
-    try testing.expect(task_queue.tail.?.task.run == 2);
-    try testing.expect(task_queue.head.?.task.run == 0);
+    var t3 = TestTask{ .id = 2 };
+    task_queue.enqueue(t3.task());
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.tail.?.task.context))) == &t3);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.?.task.context))) == &t1);
 }
 
 test "TaskQueue#dequeue" {
     var task_queue = TaskQueue.init(testing.allocator);
     defer task_queue.deinit();
 
-    try task_queue.enqueue(Task{ .run = 0 });
-    try task_queue.enqueue(Task{ .run = 1 });
-    try task_queue.enqueue(Task{ .run = 2 });
-    try testing.expect(task_queue.head.?.task.run == 0);
+    var t1 = TestTask{ .id = 0 };
+    var t2 = TestTask{ .id = 1 };
+    var t3 = TestTask{ .id = 2 };
+    task_queue.enqueue(t1.task());
+    task_queue.enqueue(t2.task());
+    task_queue.enqueue(t3.task());
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.?.task.context))) == &t1);
 
-    _ = try task_queue.dequeue();
-    try testing.expect(task_queue.head.?.task.run == 1);
+    _ = task_queue.dequeue();
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.?.task.context))) == &t2);
 
-    _ = try task_queue.dequeue();
-    try testing.expect(task_queue.head.?.task.run == 2);
+    _ = task_queue.dequeue();
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.?.task.context))) == &t3);
 
-    _ = try task_queue.dequeue();
+    _ = task_queue.dequeue();
     try testing.expect(task_queue.head == null);
     try testing.expect(task_queue.tail == null);
 
-    try task_queue.enqueue(Task{ .run = 3 });
-    try testing.expect(task_queue.tail.?.task.run == 3);
-    try testing.expect(task_queue.head.?.task.run == 3);
+    var t4 = TestTask{ .id = 3 };
+    task_queue.enqueue(t4.task());
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.tail.?.task.context))) == &t4);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.?.task.context))) == &t4);
 }
