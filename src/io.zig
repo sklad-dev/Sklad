@@ -6,6 +6,21 @@ const Task = @import("./task_queue.zig").Task;
 
 const DEFAULT_PORT: u16 = 7733;
 
+pub fn run_io_worker() void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer {
+        _ = gpa.deinit();
+    }
+
+    var io = IO.init(gpa.allocator()) catch {
+        std.log.err("Error! Failed to start io worker.\n", .{});
+        return;
+    };
+    defer io.deinit();
+
+    io.listen();
+}
+
 pub const IO = struct {
     allocator: std.mem.Allocator,
     address: std.net.Address,

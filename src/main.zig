@@ -1,6 +1,7 @@
 const std = @import("std");
 const global_context = @import("./global_context.zig");
-const IO = @import("./io.zig").IO;
+const thread_pool = @import("./thread_pool.zig");
+const io = @import("./io.zig");
 const GraphStorage = @import("./graph_storage.zig").GraphStorage;
 const TaskQueue = @import("./task_queue.zig").TaskQueue;
 
@@ -18,35 +19,8 @@ pub fn main() !void {
 
     global_context.init(&graph_storage, &task_queue);
 
-    _ = try std.Thread.spawn(.{}, worker, .{});
+    _ = try std.Thread.spawn(.{}, thread_pool.run_task, .{});
 
-    const thread = try std.Thread.spawn(.{}, io_worker, .{});
+    const thread = try std.Thread.spawn(.{}, io.run_io_worker, .{});
     thread.join();
-}
-
-pub fn io_worker() void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        _ = gpa.deinit();
-    }
-
-    var io = IO.init(gpa.allocator()) catch {
-        std.log.err("Error! Failed to start io worker.\n", .{});
-        return;
-    };
-    defer io.deinit();
-
-    io.listen();
-}
-
-pub fn worker() void {
-    const task_queue = global_context.get_task_queue().?;
-    while (true) {
-        const task = task_queue.dequeue();
-        if (task) |t| {
-            t.run();
-        } else {
-            std.time.sleep(std.time.ns_per_s / 100);
-        }
-    }
 }
