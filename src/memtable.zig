@@ -4,6 +4,7 @@ const data_types = @import("./data_types.zig");
 const w = @import("./wal.zig");
 const utils = @import("./utils.zig");
 
+const ApplicationError = @import("./constants.zig").ApplicationError;
 const StorageRecord = data_types.StorageRecord;
 
 pub const MemtableKey = []const u8;
@@ -20,6 +21,7 @@ pub fn Memtable(comptime V: type) type {
         compare_fn: *const fn ([]const u8, []const u8) isize = utils.compare_bitwise,
         head: ?*MemtableNode = null,
         size: u16 = 0,
+        lock: std.Thread.RwLock = .{},
 
         const Self = @This();
 
@@ -91,7 +93,13 @@ pub fn Memtable(comptime V: type) type {
         }
 
         pub fn add(self: *Self, key: MemtableKey, value: V) !void {
+            if (!self.try_lock_for(200)) {
+                return ApplicationError.ExecutionTimeout;
+            }
+            defer self.lock.unlock();
+
             if (self.head == null) try self.create_head();
+
             var path: []?*MemtableNode = try self.allocator.alloc(?*MemtableNode, self.max_level);
             defer self.allocator.free(path);
             for (0..self.max_level) |i| {
@@ -113,6 +121,7 @@ pub fn Memtable(comptime V: type) type {
                     new_node.*.tower[i] = null;
                 }
                 @memcpy(new_node.*.key.?, key);
+
                 for (path, 0..) |node, i| {
                     if (node) |n| {
                         new_node.tower[i] = n.tower[i];
@@ -125,7 +134,12 @@ pub fn Memtable(comptime V: type) type {
             }
         }
 
-        pub inline fn find(self: *const Self, key: MemtableKey) ?V {
+        pub inline fn find(self: *Self, key: MemtableKey) !?V {
+            if (!self.try_lock_shared_for(200)) {
+                return ApplicationError.ExecutionTimeout;
+            }
+            defer self.lock.unlockShared();
+
             if (self.head == null) return null;
 
             const result = self.search(key, null) orelse return null;
@@ -192,6 +206,22 @@ pub fn Memtable(comptime V: type) type {
             }
             self.head = head;
         }
+
+        fn try_lock_for(self: *Self, timeout: i64) bool {
+            const start_at: i64 = std.time.milliTimestamp();
+            while (true) {
+                if (self.lock.tryLock()) return true;
+                if (std.time.milliTimestamp() - start_at >= timeout) return false;
+            }
+        }
+
+        fn try_lock_shared_for(self: *Self, timeout: i64) bool {
+            const start_at: i64 = std.time.milliTimestamp();
+            while (true) {
+                if (self.lock.tryLockShared()) return true;
+                if (std.time.milliTimestamp() - start_at >= timeout) return false;
+            }
+        }
     };
 }
 
@@ -230,7 +260,7 @@ test "Memtable#add and find" {
     errdefer test_memtable.destroy();
 
     // Case: search in an empty memtable
-    try testing.expect(test_memtable.find(&utils.key_from_int_data(u8, 1)) == null);
+    try testing.expect(try test_memtable.find(&utils.key_from_int_data(u8, 1)) == null);
 
     // Case: a key is added succesfully to an empty memtable
     const test_vertex_data: u8 = 0;
@@ -254,9 +284,9 @@ test "Memtable#add and find" {
     }
 
     // Case: find
-    try testing.expect(test_memtable.find(&utils.key_from_int_data(u8, 0)) != null);
-    try testing.expect(test_memtable.find(&utils.key_from_int_data(u8, table_size / 2)) != null);
-    try testing.expect(test_memtable.find(&utils.key_from_int_data(u8, table_size + 1)) == null);
+    try testing.expect(try test_memtable.find(&utils.key_from_int_data(u8, 0)) != null);
+    try testing.expect(try test_memtable.find(&utils.key_from_int_data(u8, table_size / 2)) != null);
+    try testing.expect(try test_memtable.find(&utils.key_from_int_data(u8, table_size + 1)) == null);
 
     try test_memtable.wal.delete_file();
     test_memtable.destroy();

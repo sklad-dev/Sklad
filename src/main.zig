@@ -19,7 +19,8 @@ pub fn main() !void {
 
     global_context.init(&graph_storage, &task_queue);
 
-    _ = try std.Thread.spawn(.{}, thread_pool.run_task, .{});
+    var worker_thread = try std.Thread.spawn(.{}, thread_pool.run_task, .{});
+    worker_thread.detach();
 
     const thread = try std.Thread.spawn(.{}, io.run_io_worker, .{});
     thread.join();

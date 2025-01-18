@@ -12,26 +12,3 @@ pub fn run_task() void {
         }
     }
 }
-
-// pub const Worker = struct {
-//     state: std.atomic.Value(WorkerState) = std.atomic.Value(WorkerState).init(.WAITING),
-
-//     pub const WorkerState = enum(u8) {
-//         RUNNING,
-//         WAITING,
-//         DONE,
-//     };
-
-//     pub fn spawn(self: *Worker) void {
-//         self.state.store(.RUNNING, .acq_rel);
-//         const task_queue = global_context.get_task_queue().?;
-//     }
-// };
-
-// pub const WorkersPool = struct {
-//     allocator: std.mem.Allocator,
-//     num_workers: u8,
-//     workers: []std.Thread,
-
-//     pub fn run() void {}
-// };

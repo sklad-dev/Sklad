@@ -1,7 +1,10 @@
 const std = @import("std");
 const posix = std.posix;
+
 const query = @import("./query.zig");
 const global_context = @import("./global_context.zig");
+
+const ApplicationError = @import("./constants.zig").ApplicationError;
 const Task = @import("./task_queue.zig").Task;
 
 const DEFAULT_PORT: u16 = 7733;
@@ -31,6 +34,7 @@ pub const IO = struct {
         RequestTooLong,
         QueryMalformed,
         QueryExecutionError,
+        ProcessingTimeout,
     };
 
     pub fn Response(comptime T: type) type {
@@ -69,6 +73,9 @@ pub const IO = struct {
                     switch (e) {
                         query.QueryError.UnknownOperation => {
                             self.send_response(i8, -1, IoError.QueryMalformed);
+                        },
+                        ApplicationError.ExecutionTimeout => {
+                            self.send_response(i8, -1, IoError.ProcessingTimeout);
                         },
                         else => {
                             self.send_response(i8, -1, IoError.QueryExecutionError);

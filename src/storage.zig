@@ -8,6 +8,7 @@ const data_types = @import("./data_types.zig");
 const utils = @import("./utils.zig");
 const constants = @import("./constants.zig");
 
+const ApplicationError = @import("./constants.zig").ApplicationError;
 const Memtable = @import("./memtable.zig").Memtable;
 const SSTable = @import("./sstable.zig").SSTable;
 const TableFileManager = @import("./table_file_manager.zig").TableFileManager;
@@ -91,7 +92,8 @@ pub fn Storage(comptime V: type) type {
             var i = self.memtables.items.len;
             while (i > 0) {
                 i -= 1;
-                if (self.memtables.items[i].find(key)) |value| return value;
+                const value = try self.memtables.items[i].find(key);
+                if (value) |v| return v;
             }
             const value = try self.find_in_tables(key);
             return value;
@@ -215,7 +217,7 @@ test "Add value" {
 
     try test_storage.put(&utils.key_from_int_data(u8, 1), 42);
     try testing.expect(test_storage.memtables.items.len == 1);
-    try testing.expect(test_storage.memtables.getLast().find(&utils.key_from_int_data(u8, 1)) == 42);
+    try testing.expect(try test_storage.memtables.getLast().find(&utils.key_from_int_data(u8, 1)) == 42);
 
     for (test_storage.memtables.items) |t| {
         try t.wal.delete_file();
@@ -231,7 +233,7 @@ test "Restore memtable from wal" {
     defer storage2.stop();
 
     try testing.expect(storage2.memtables.items.len == 1);
-    try testing.expect(storage2.memtables.getLast().find(&utils.key_from_int_data(u8, 1)) == 42);
+    try testing.expect(try storage2.memtables.getLast().find(&utils.key_from_int_data(u8, 1)) == 42);
     for (storage2.memtables.items) |t| {
         try t.wal.delete_file();
     }
