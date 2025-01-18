@@ -54,13 +54,8 @@ pub const IO = struct {
             defer {
                 posix.close(self.socket);
             }
-            const graph_storage = global_context.get_graph_storage();
-            if (graph_storage == null) {
-                std.log.err("Error! Graph storage is not initialized.\n", .{});
-                return;
-            }
-            var buffer: [4096]u8 = [_]u8{0} ** 4096;
 
+            var buffer: [4096]u8 = [_]u8{0} ** 4096;
             const bytes_read = posix.read(self.socket, &buffer) catch |e| {
                 std.log.err("Error! Failed to read a message: {any}\n", .{e});
                 self.send_response(i8, -1, IoError.RequestReadingError);
@@ -68,6 +63,11 @@ pub const IO = struct {
             };
 
             if (bytes_read > 0 and bytes_read <= buffer.len) {
+                const graph_storage = global_context.get_graph_storage();
+                if (graph_storage == null) {
+                    std.log.err("Error! Graph storage is not initialized.\n", .{});
+                    return;
+                }
                 const result: u64 = query.exec(graph_storage.?, buffer[0..bytes_read]) catch |e| {
                     std.log.err("Error! Query execution failed: {any}\n", .{e});
                     switch (e) {
