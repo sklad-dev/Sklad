@@ -2,10 +2,15 @@ const std = @import("std");
 
 pub const Task = struct {
     context: *anyopaque,
-    runFn: *const fn (ptr: *anyopaque) void,
+    run_fn: *const fn (ptr: *anyopaque) void,
+    destroy_fn: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator) void,
 
     pub fn run(self: *const Task) void {
-        self.runFn(self.context);
+        self.run_fn(self.context);
+    }
+
+    pub fn destroy(self: *const Task, allocator: std.mem.Allocator) void {
+        self.destroy_fn(self.context, allocator);
     }
 };
 
@@ -97,10 +102,18 @@ const TestTask = struct {
         _ = self.id;
     }
 
+    fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+        // do nothing
+        const self: *TestTask = @ptrCast(@alignCast(ptr));
+        _ = self.id;
+        _ = allocator;
+    }
+
     fn task(self: *TestTask) Task {
         return .{
             .context = self,
-            .runFn = run,
+            .run_fn = run,
+            .destroy_fn = destroy,
         };
     }
 };

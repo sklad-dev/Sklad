@@ -16,7 +16,7 @@ pub fn run_io_worker() void {
     }
 
     var io = IO.init(gpa.allocator()) catch {
-        std.log.err("Error! Failed to start io worker.\n", .{});
+        std.log.err("Error! Failed to start io worker", .{});
         return;
     };
     defer io.deinit();
@@ -57,7 +57,7 @@ pub const IO = struct {
 
             var buffer: [4096]u8 = [_]u8{0} ** 4096;
             const bytes_read = posix.read(self.socket, &buffer) catch |e| {
-                std.log.err("Error! Failed to read a message: {any}\n", .{e});
+                std.log.err("Error! Failed to read a message: {any}", .{e});
                 self.send_response(i8, -1, IoError.RequestReadingError);
                 return;
             };
@@ -65,11 +65,11 @@ pub const IO = struct {
             if (bytes_read > 0 and bytes_read <= buffer.len) {
                 const graph_storage = global_context.get_graph_storage();
                 if (graph_storage == null) {
-                    std.log.err("Error! Graph storage is not initialized.\n", .{});
+                    std.log.err("Error! Graph storage is not initialized", .{});
                     return;
                 }
                 const result: u64 = query.exec(graph_storage.?, buffer[0..bytes_read]) catch |e| {
-                    std.log.err("Error! Query execution failed: {any}\n", .{e});
+                    std.log.err("Error! Query execution failed: {any}", .{e});
                     switch (e) {
                         query.QueryError.UnknownOperation => {
                             self.send_response(i8, -1, IoError.QueryMalformed);
@@ -89,10 +89,16 @@ pub const IO = struct {
             }
         }
 
+        fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+            const self: *IoTask = @ptrCast(@alignCast(ptr));
+            allocator.destroy(self);
+        }
+
         fn task(self: *IoTask) Task {
             return .{
                 .context = self,
-                .runFn = run,
+                .run_fn = run,
+                .destroy_fn = destroy,
             };
         }
 
@@ -102,12 +108,12 @@ pub const IO = struct {
                 .errors = err,
             };
             const message = std.json.stringifyAlloc(self.allocator, response, .{}) catch |e| {
-                std.log.err("Error! Failed send the response: {any}\n", .{e});
+                std.log.err("Error! Failed send the response: {any}", .{e});
                 return;
             };
             defer self.allocator.free(message);
             _ = posix.write(self.socket, message) catch |e| {
-                std.log.err("Error! Failed send the response: {any}\n", .{e});
+                std.log.err("Error! Failed send the response: {any}", .{e});
                 return;
             };
         }
@@ -135,15 +141,15 @@ pub const IO = struct {
             posix.SO.REUSEADDR,
             &std.mem.toBytes(@as(c_int, 1)),
         ) catch |e| {
-            std.log.err("Error! Failed to configure a socket: {any}\n", .{e});
+            std.log.err("Error! Failed to configure a socket: {any}", .{e});
             return;
         };
         posix.bind(self.socket_handle, &self.address.any, self.address.getOsSockLen()) catch |e| {
-            std.log.err("Error! Failed to bind to a socket: {any}\n", .{e});
+            std.log.err("Error! Failed to bind to a socket: {any}", .{e});
             return;
         };
         posix.listen(self.socket_handle, 128) catch |e| {
-            std.log.err("Error! Failed opening the port for listening: {any}\n", .{e});
+            std.log.err("Error! Failed opening the port for listening: {any}", .{e});
             return;
         };
 
@@ -157,11 +163,17 @@ pub const IO = struct {
                 &client_address_len,
                 0,
             ) catch |e| {
-                std.log.err("Error! Failed to accept connection: {any}\n", .{e});
+                std.log.err("Error! Failed to accept connection: {any}", .{e});
                 continue;
             };
 
-            var io_task = IoTask{
+            const task_queue = global_context.get_task_queue();
+            var io_task = task_queue.?.allocator.create(IoTask) catch |e| {
+                std.log.err("Error! Failed to allocate an IO task: {any}", .{e});
+                continue;
+            };
+
+            io_task.* = IoTask{
                 .allocator = self.allocator,
                 .client_address = client_address,
                 .socket = socket,

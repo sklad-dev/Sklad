@@ -85,7 +85,7 @@ pub fn Storage(comptime V: type) type {
 
             const current_memtable = self.memtables.getLast();
             try current_memtable.wal.write(&record);
-            try current_memtable.*.add(key, value);
+            try current_memtable.add(key, value);
         }
 
         pub fn find(self: *Self, key: []const u8) !?V {

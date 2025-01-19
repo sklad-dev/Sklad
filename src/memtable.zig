@@ -21,7 +21,7 @@ pub fn Memtable(comptime V: type) type {
         compare_fn: *const fn ([]const u8, []const u8) isize = utils.compare_bitwise,
         head: ?*MemtableNode = null,
         size: u16 = 0,
-        lock: std.Thread.RwLock = .{},
+        lock: std.Thread.Mutex = .{},
 
         const Self = @This();
 
@@ -93,9 +93,7 @@ pub fn Memtable(comptime V: type) type {
         }
 
         pub fn add(self: *Self, key: MemtableKey, value: V) !void {
-            if (!self.try_lock_for(200)) {
-                return ApplicationError.ExecutionTimeout;
-            }
+            if (!self.try_lock_for(200)) return ApplicationError.ExecutionTimeout;
             defer self.lock.unlock();
 
             if (self.head == null) try self.create_head();
@@ -135,10 +133,8 @@ pub fn Memtable(comptime V: type) type {
         }
 
         pub inline fn find(self: *Self, key: MemtableKey) !?V {
-            if (!self.try_lock_shared_for(200)) {
-                return ApplicationError.ExecutionTimeout;
-            }
-            defer self.lock.unlockShared();
+            if (!self.try_lock_for(200)) return ApplicationError.ExecutionTimeout;
+            defer self.lock.unlock();
 
             if (self.head == null) return null;
 
@@ -213,15 +209,17 @@ pub fn Memtable(comptime V: type) type {
                 if (self.lock.tryLock()) return true;
                 if (std.time.milliTimestamp() - start_at >= timeout) return false;
             }
+            return false;
         }
 
-        fn try_lock_shared_for(self: *Self, timeout: i64) bool {
-            const start_at: i64 = std.time.milliTimestamp();
-            while (true) {
-                if (self.lock.tryLockShared()) return true;
-                if (std.time.milliTimestamp() - start_at >= timeout) return false;
-            }
-        }
+        // fn try_lock_shared_for(self: *Self, timeout: i64) bool {
+        //     const start_at: i64 = std.time.milliTimestamp();
+        //     while (true) {
+        //         if (self.lock.tryLockShared()) return true;
+        //         if (std.time.milliTimestamp() - start_at >= timeout) return false;
+        //     }
+        //     return false;
+        // }
     };
 }
 
