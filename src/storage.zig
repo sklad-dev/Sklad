@@ -3,8 +3,10 @@ const builtin = @import("builtin");
 
 const ArrayList = std.ArrayList;
 const AutoHashMap = std.AutoHashMap;
+const StringHashMap = std.StringHashMap;
 
 const data_types = @import("./data_types.zig");
+const global_context = @import("./global_context.zig");
 const utils = @import("./utils.zig");
 const constants = @import("./constants.zig");
 
@@ -13,7 +15,7 @@ const Memtable = @import("./memtable.zig").Memtable;
 const SSTable = @import("./sstable.zig").SSTable;
 const TableFileManager = @import("./table_file_manager.zig").TableFileManager;
 const Wal = @import("./wal.zig").Wal;
-const StringHashMap = std.StringHashMap;
+
 const StorageRecord = data_types.StorageRecord;
 
 pub fn Storage(comptime V: type) type {
@@ -21,7 +23,6 @@ pub fn Storage(comptime V: type) type {
         allocator: std.mem.Allocator,
         path: []const u8,
         max_memtable_size: u16,
-        memtable_level_probability: f32,
         memtables: ArrayList(*Memtable(V)),
         table_file_manager: TableFileManager,
         tables: StringHashMap(*SSTable(V)),
@@ -33,7 +34,6 @@ pub fn Storage(comptime V: type) type {
                 .allocator = allocator,
                 .path = path,
                 .max_memtable_size = max_memtable_size,
-                .memtable_level_probability = 0.125,
                 .memtables = try ArrayList(*Memtable(V)).initCapacity(allocator, 2),
                 .table_file_manager = try TableFileManager.init(allocator, path),
                 .tables = StringHashMap(*SSTable(V)).init(allocator),
@@ -71,7 +71,7 @@ pub fn Storage(comptime V: type) type {
                     self.allocator,
                     filled_memtable,
                     file_name,
-                    constants.PAGE_SIZE,
+                    global_context.get_configurator().?.sstable_sparse_index_step(),
                 );
                 try self.table_file_manager.add_file(0, file_name_buf);
 
@@ -130,12 +130,13 @@ pub fn Storage(comptime V: type) type {
         }
 
         fn add_memtable(self: *Self) !void {
+            const config = global_context.get_configurator().?;
             const memtable = try self.allocator.create(Memtable(V));
             memtable.* = try Memtable(V).init(
                 self.allocator,
                 std.crypto.random,
-                8,
-                self.memtable_level_probability,
+                config.memtable_max_level(),
+                config.memtable_level_probability(),
                 self.path,
             );
             try self.memtables.append(memtable);
@@ -164,13 +165,14 @@ pub fn Storage(comptime V: type) type {
         }
 
         fn restore_memtable(self: *Self, wal: Wal(V)) !void {
+            const config = global_context.get_configurator().?;
             const memtable = try self.allocator.create(Memtable(V));
             memtable.* = try Memtable(V).from_wal(
                 wal,
                 self.allocator,
                 std.crypto.random,
-                8,
-                self.memtable_level_probability,
+                config.memtable_max_level(),
+                config.memtable_level_probability(),
             );
 
             try self.memtables.append(memtable);
@@ -197,6 +199,7 @@ pub fn Storage(comptime V: type) type {
 
 // Tests
 const testing = std.testing;
+const TestingConfigurator = @import("./configurator.zig").TestingConfigurator;
 
 fn clean_up(comptime V: type, storage: *Storage(V)) !void {
     for (storage.memtables.items) |t| {
@@ -212,6 +215,13 @@ fn clean_up(comptime V: type, storage: *Storage(V)) !void {
 }
 
 test "Add value" {
+    var configurator = try testing.allocator.create(TestingConfigurator);
+    defer global_context.deinit_configuration_for_tests();
+
+    configurator.* = TestingConfigurator.init();
+    var conf = configurator.configurator();
+    global_context.load_configuration(&conf);
+
     var test_storage = try Storage(u8).start(testing.allocator, "./", 4);
     defer test_storage.stop();
 
@@ -225,6 +235,13 @@ test "Add value" {
 }
 
 test "Restore memtable from wal" {
+    var configurator = try testing.allocator.create(TestingConfigurator);
+    defer global_context.deinit_configuration_for_tests();
+
+    configurator.* = TestingConfigurator.init();
+    var conf = configurator.configurator();
+    global_context.load_configuration(&conf);
+
     var storage1 = try Storage(u8).start(testing.allocator, "./", 4);
     try storage1.put(&utils.key_from_int_data(u8, 1), 42);
     storage1.stop();
@@ -240,6 +257,13 @@ test "Restore memtable from wal" {
 }
 
 test "Finding values" {
+    var configurator = try testing.allocator.create(TestingConfigurator);
+    defer global_context.deinit_configuration_for_tests();
+
+    configurator.* = TestingConfigurator.init();
+    var conf = configurator.configurator();
+    global_context.load_configuration(&conf);
+
     var storage = try Storage(u8).start(testing.allocator, "./", 4);
     defer storage.stop();
     try storage.put(&utils.key_from_int_data(u8, 1), 42);
@@ -271,6 +295,13 @@ test "Finding values" {
 }
 
 test "Finding values: return the newest value" {
+    var configurator = try testing.allocator.create(TestingConfigurator);
+    defer global_context.deinit_configuration_for_tests();
+
+    configurator.* = TestingConfigurator.init();
+    var conf = configurator.configurator();
+    global_context.load_configuration(&conf);
+
     var storage = try Storage(u8).start(testing.allocator, "./", 4);
     defer storage.stop();
 

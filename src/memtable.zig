@@ -211,15 +211,6 @@ pub fn Memtable(comptime V: type) type {
             }
             return false;
         }
-
-        // fn try_lock_shared_for(self: *Self, timeout: i64) bool {
-        //     const start_at: i64 = std.time.milliTimestamp();
-        //     while (true) {
-        //         if (self.lock.tryLockShared()) return true;
-        //         if (std.time.milliTimestamp() - start_at >= timeout) return false;
-        //     }
-        //     return false;
-        // }
     };
 }
 

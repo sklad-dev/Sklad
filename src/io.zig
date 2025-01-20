@@ -7,7 +7,7 @@ const global_context = @import("./global_context.zig");
 const ApplicationError = @import("./constants.zig").ApplicationError;
 const Task = @import("./task_queue.zig").Task;
 
-const DEFAULT_PORT: u16 = 7733;
+pub const DEFAULT_PORT: u16 = 7733;
 
 pub fn run_io_worker() void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

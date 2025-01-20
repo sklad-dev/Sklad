@@ -71,6 +71,8 @@ pub const ConnectionStorage = struct {
 
 // Tests
 const testing = std.testing;
+const global_context = @import("./global_context.zig");
+const TestingConfigurator = @import("./configurator.zig").TestingConfigurator;
 
 fn clean_up(node_storage: *ConnectionStorage) void {
     for (node_storage.storage.memtables.items) |t| {
@@ -91,6 +93,13 @@ fn clean_up(node_storage: *ConnectionStorage) void {
 }
 
 test "ConnectionStorage" {
+    var configurator = try testing.allocator.create(TestingConfigurator);
+    defer global_context.deinit_configuration_for_tests();
+
+    configurator.* = TestingConfigurator.init();
+    var conf = configurator.configurator();
+    global_context.load_configuration(&conf);
+
     var node_storage = try ConnectionStorage.init(testing.allocator, "./", 4);
     defer node_storage.stop();
     defer clean_up(&node_storage);

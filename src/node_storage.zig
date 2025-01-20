@@ -67,6 +67,8 @@ pub const NodeStorage = struct {
 
 // Tests
 const testing = std.testing;
+const global_context = @import("./global_context.zig");
+const TestingConfigurator = @import("./configurator.zig").TestingConfigurator;
 
 inline fn to_byte_array(comptime T: type, node: T) ![@sizeOf(@TypeOf(node))]u8 {
     return switch (T) {
@@ -101,6 +103,13 @@ fn clean_up(node_storage: *NodeStorage) void {
 }
 
 test "NodeStorage#put" {
+    var configurator = try testing.allocator.create(TestingConfigurator);
+    defer global_context.deinit_configuration_for_tests();
+
+    configurator.* = TestingConfigurator.init();
+    var conf = configurator.configurator();
+    global_context.load_configuration(&conf);
+
     var node_storage = try NodeStorage.init(testing.allocator, "./", 4);
     defer node_storage.stop();
     defer clean_up(&node_storage);
@@ -121,6 +130,13 @@ test "NodeStorage#put" {
 }
 
 test "Add value twice" {
+    var configurator = try testing.allocator.create(TestingConfigurator);
+    defer global_context.deinit_configuration_for_tests();
+
+    configurator.* = TestingConfigurator.init();
+    var conf = configurator.configurator();
+    global_context.load_configuration(&conf);
+
     var node_storage = try NodeStorage.init(testing.allocator, "./", 4);
     defer node_storage.stop();
     defer clean_up(&node_storage);
