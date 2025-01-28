@@ -140,17 +140,17 @@ const Lexer = struct {
         } else if (self.current_state == .numeric_value) {
             return Token.Kind.numeric_value;
         } else if (self.current_state == .connection_operator) {
-            if (is_equal_string_ignore_case(self.buf[0..self.current_token_len], BUILTINS[10].name)) {
+            if (is_equal_string_ignore_case(self.buf[0..self.current_token_len], BUILTINS[12].name)) {
                 return BUILTINS[10].kind;
-            } else if (is_equal_string_ignore_case(self.buf[0..self.current_token_len], BUILTINS[11].name)) {
+            } else if (is_equal_string_ignore_case(self.buf[0..self.current_token_len], BUILTINS[13].name)) {
                 return BUILTINS[11].kind;
             } else {
                 return LexingError.InvalidToken;
             }
         } else if (self.current_state == .node_block) {
-            if (is_equal_string_ignore_case(self.buf[0..self.current_token_len], BUILTINS[7].name)) {
+            if (is_equal_string_ignore_case(self.buf[0..self.current_token_len], BUILTINS[9].name)) {
                 return BUILTINS[7].kind;
-            } else if (is_equal_string_ignore_case(self.buf[0..self.current_token_len], BUILTINS[8].name)) {
+            } else if (is_equal_string_ignore_case(self.buf[0..self.current_token_len], BUILTINS[10].name)) {
                 return BUILTINS[8].kind;
             } else {
                 return LexingError.InvalidToken;
@@ -178,6 +178,8 @@ pub const Token = struct {
         find_keyword,
         delete_keyword,
         where_keyword,
+        and_keyword,
+        or_keyword,
         true_keyword,
         false_keyword,
 
@@ -220,6 +222,8 @@ var BUILTINS = [_]Builtin{
     .{ .name = "find", .kind = Token.Kind.find_keyword },
     .{ .name = "delete", .kind = Token.Kind.delete_keyword },
     .{ .name = "where", .kind = Token.Kind.where_keyword },
+    .{ .name = "and", .kind = Token.Kind.and_keyword },
+    .{ .name = "or", .kind = Token.Kind.or_keyword },
     .{ .name = "true", .kind = Token.Kind.true_keyword },
     .{ .name = "false", .kind = Token.Kind.false_keyword },
     .{ .name = "[", .kind = Token.Kind.left_square_bracket },
@@ -338,8 +342,8 @@ test "Lexer#lex find query" {
     var tokens = std.ArrayList(Token).init(testing.allocator);
     defer tokens.deinit();
 
-    const insert_node_query = "find x where [x]-['friend' string]->[y]";
+    const insert_node_query = "find x where [x]-['friend' string]->[y] and [x, y]-['type' string]->['person' string] and [y]-['name' string]->['John' string]";
     var lexer = Lexer.init(insert_node_query, &tokens);
     try testing.expect(lexer.lex() == 0);
-    try testing.expect(tokens.items.len == 15);
+    try testing.expect(tokens.items.len == 45);
 }
