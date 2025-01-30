@@ -6,6 +6,8 @@ const global_context = @import("./global_context.zig");
 
 const ApplicationError = @import("./constants.zig").ApplicationError;
 const Task = @import("./task_queue.zig").Task;
+const LexerTask = @import("./lex.zig").LexerTask;
+const Token = @import("./lex.zig").Token;
 
 pub const DEFAULT_PORT: u16 = 7733;
 
@@ -31,6 +33,7 @@ pub const IO = struct {
 
     pub const IoError = error{
         RequestReadingError,
+        RequestProcessingError,
         RequestTooLong,
         QueryMalformed,
         QueryExecutionError,
@@ -44,48 +47,77 @@ pub const IO = struct {
         };
     }
 
+    pub const Request = struct {
+        query: []u8,
+    };
+
+    pub const IoContext = struct {
+        address: std.net.Address,
+        socket: std.posix.socket_t,
+
+        pub fn send_response(self: *IoContext, comptime T: type, allocator: std.mem.Allocator, data: T, err: ?IoError) void {
+            const response = Response(T){
+                .data = data,
+                .errors = err,
+            };
+            const message = std.json.stringifyAlloc(allocator, response, .{}) catch |e| {
+                std.log.err("Error! Failed send the response: {any}", .{e});
+                return;
+            };
+            defer allocator.free(message);
+            _ = posix.write(self.socket, message) catch |e| {
+                std.log.err("Error! Failed send the response: {any}", .{e});
+                return;
+            };
+        }
+    };
+
     pub const IoTask = struct {
         allocator: std.mem.Allocator,
-        client_address: std.net.Address,
-        socket: posix.socket_t,
+        io_context: IoContext,
 
         fn run(ptr: *anyopaque) void {
             const self: *IoTask = @ptrCast(@alignCast(ptr));
-            defer {
-                posix.close(self.socket);
-            }
-
             var buffer: [4096]u8 = [_]u8{0} ** 4096;
-            const bytes_read = posix.read(self.socket, &buffer) catch |e| {
+            const bytes_read = posix.read(self.io_context.socket, &buffer) catch |e| {
                 std.log.err("Error! Failed to read a message: {any}", .{e});
-                self.send_response(i8, -1, IoError.RequestReadingError);
+                self.io_context.send_response(i8, self.allocator, -1, IoError.RequestReadingError);
                 return;
             };
 
             if (bytes_read > 0 and bytes_read <= buffer.len) {
-                const graph_storage = global_context.get_graph_storage();
-                if (graph_storage == null) {
-                    std.log.err("Error! Graph storage is not initialized", .{});
-                    return;
-                }
-                const result: u64 = query.exec(graph_storage.?, buffer[0..bytes_read]) catch |e| {
-                    std.log.err("Error! Query execution failed: {any}", .{e});
-                    switch (e) {
-                        query.QueryError.UnknownOperation => {
-                            self.send_response(i8, -1, IoError.QueryMalformed);
-                        },
-                        ApplicationError.ExecutionTimeout => {
-                            self.send_response(i8, -1, IoError.ProcessingTimeout);
-                        },
-                        else => {
-                            self.send_response(i8, -1, IoError.QueryExecutionError);
-                        },
-                    }
+                const request = std.json.parseFromSlice(
+                    Request,
+                    self.allocator,
+                    buffer[0..bytes_read],
+                    .{},
+                ) catch |e| {
+                    std.log.err("Error! Failed to parse a request: {any}", .{e});
+                    self.io_context.send_response(i8, self.allocator, -1, IoError.RequestProcessingError);
                     return;
                 };
-                self.send_response(u64, result, null);
+                defer request.deinit();
+
+                const task_queue = global_context.get_task_queue();
+                var lexer_task = task_queue.?.allocator.create(LexerTask) catch |e| {
+                    std.log.err("Error! Failed to allocate a lexer task: {any}", .{e});
+                    return;
+                };
+                lexer_task.* = LexerTask.init(
+                    task_queue.?.allocator,
+                    request.value.query.len,
+                    self.io_context,
+                ) catch |e| {
+                    std.log.err("Error! Failed to create a lexer task: {any}", .{e});
+                    return;
+                };
+
+                @memcpy(lexer_task.query, request.value.query);
+                lexer_task.tokens.* = std.ArrayList(Token).init(task_queue.?.allocator);
+
+                global_context.get_task_queue().?.enqueue(lexer_task.task());
             } else {
-                self.send_response(i8, -1, IoError.RequestTooLong);
+                self.io_context.send_response(i8, self.allocator, -1, IoError.RequestTooLong);
             }
         }
 
@@ -99,22 +131,6 @@ pub const IO = struct {
                 .context = self,
                 .run_fn = run,
                 .destroy_fn = destroy,
-            };
-        }
-
-        fn send_response(self: *IoTask, comptime T: type, data: T, err: ?IoError) void {
-            const response = Response(T){
-                .data = data,
-                .errors = err,
-            };
-            const message = std.json.stringifyAlloc(self.allocator, response, .{}) catch |e| {
-                std.log.err("Error! Failed send the response: {any}", .{e});
-                return;
-            };
-            defer self.allocator.free(message);
-            _ = posix.write(self.socket, message) catch |e| {
-                std.log.err("Error! Failed send the response: {any}", .{e});
-                return;
             };
         }
     };
@@ -175,8 +191,10 @@ pub const IO = struct {
 
             io_task.* = IoTask{
                 .allocator = self.allocator,
-                .client_address = client_address,
-                .socket = socket,
+                .io_context = .{
+                    .address = client_address,
+                    .socket = socket,
+                },
             };
 
             global_context.get_task_queue().?.enqueue(io_task.task());

@@ -1,5 +1,8 @@
 const std = @import("std");
 
+const io = @import("./io.zig");
+const Task = @import("./task_queue.zig").Task;
+
 pub const LexingError = error{
     InvalidToken,
 };
@@ -141,17 +144,17 @@ const Lexer = struct {
             return Token.Kind.numeric_value;
         } else if (self.current_state == .connection_operator) {
             if (is_equal_string_ignore_case(self.buf[0..self.current_token_len], BUILTINS[12].name)) {
-                return BUILTINS[10].kind;
+                return BUILTINS[12].kind;
             } else if (is_equal_string_ignore_case(self.buf[0..self.current_token_len], BUILTINS[13].name)) {
-                return BUILTINS[11].kind;
+                return BUILTINS[13].kind;
             } else {
                 return LexingError.InvalidToken;
             }
         } else if (self.current_state == .node_block) {
             if (is_equal_string_ignore_case(self.buf[0..self.current_token_len], BUILTINS[9].name)) {
-                return BUILTINS[7].kind;
+                return BUILTINS[9].kind;
             } else if (is_equal_string_ignore_case(self.buf[0..self.current_token_len], BUILTINS[10].name)) {
-                return BUILTINS[8].kind;
+                return BUILTINS[10].kind;
             } else {
                 return LexingError.InvalidToken;
             }
@@ -270,6 +273,56 @@ fn is_equal_string_ignore_case(s1: []const u8, s2: []const u8) bool {
 
     return true;
 }
+
+pub const LexerTask = struct {
+    allocator: std.mem.Allocator,
+    io_context: io.IO.IoContext,
+    query: []u8,
+    tokens: *std.ArrayList(Token),
+
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator, query_size: u64, io_context: io.IO.IoContext) !Self {
+        return .{
+            .allocator = allocator,
+            .io_context = io_context,
+            .query = try allocator.alloc(u8, query_size),
+            .tokens = try allocator.create(std.ArrayList(Token)),
+        };
+    }
+
+    pub fn task(self: *Self) Task {
+        return .{
+            .context = self,
+            .run_fn = run,
+            .destroy_fn = destroy,
+        };
+    }
+
+    fn run(ptr: *anyopaque) void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        defer std.posix.close(self.io_context.socket);
+
+        var lexer = Lexer.init(self.query, self.tokens);
+        const result = lexer.lex();
+        if (result > 0) {
+            self.io_context.send_response(u64, self.allocator, result, io.IO.IoError.RequestProcessingError);
+        } else {
+            for (self.tokens.items) |t| {
+                std.debug.print("[{s}]: {s}\n", .{ @tagName(t.kind), t.source[t.start..t.end] });
+            }
+            std.debug.print("------\n", .{});
+            self.io_context.send_response(u64, self.allocator, 0, null);
+        }
+    }
+
+    fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+        const self: *Self = @ptrCast(@alignCast(ptr));
+        allocator.free(self.query);
+        allocator.destroy(self.tokens);
+        allocator.destroy(self);
+    }
+};
 
 // Test
 const testing = std.testing;
