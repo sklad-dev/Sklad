@@ -9,27 +9,28 @@ pub const LexingError = error{
 
 const Lexer = struct {
     source: []const u8,
-    parent_state: State,
-    current_state: State,
+    state: State,
     buf: [4096]u8,
     current_token_len: u64,
     token_sequence: *std.ArrayList(Token),
 
     const State = enum {
-        default,
+        start,
         whitespace,
+        comma,
         keyword_or_identifier,
         connection_operator,
         numeric_value,
         string_value,
-        node_block,
+        node_block_start,
+        node_block_end,
+        end,
     };
 
     pub fn init(source: []const u8, token_sequence: *std.ArrayList(Token)) Lexer {
         return .{
             .source = source,
-            .parent_state = .default,
-            .current_state = .default,
+            .state = .start,
             .buf = [_]u8{0} ** 4096,
             .current_token_len = 0,
             .token_sequence = token_sequence,
@@ -52,28 +53,28 @@ const Lexer = struct {
     fn update_state(self: *Lexer, char: u8, pos: u64) !void {
         switch (char) {
             ' ', '\n', '\t', '\r' => {
-                if (self.current_state == .string_value and self.source[pos - 1] == '\'') {
+                if (self.state == .string_value and self.source[pos - 1] == '\'') {
                     try self.on_state_change(pos, .whitespace);
-                } else if (self.current_state != .string_value and self.current_state != .whitespace) {
+                } else if (self.state != .string_value and self.state != .whitespace) {
                     try self.on_state_change(pos, .whitespace);
-                } else if (self.current_state == .string_value) {
+                } else if (self.state == .string_value) {
                     self.buf[self.current_token_len] = char;
                     self.current_token_len += 1;
                 }
                 return;
             },
             ',' => {
-                if (self.current_state == .string_value) {
+                if (self.state == .string_value) {
                     self.buf[self.current_token_len] = char;
                     self.current_token_len += 1;
                 } else {
-                    try self.on_state_change(pos, .default);
+                    try self.on_state_change(pos, .comma);
                     self.buf[0] = char;
                     self.current_token_len = 1;
                 }
             },
             '\'' => {
-                if (self.current_state == .string_value) {
+                if (self.state == .string_value) {
                     self.buf[self.current_token_len] = char;
                     self.current_token_len += 1;
                 } else {
@@ -83,21 +84,17 @@ const Lexer = struct {
                 }
             },
             '[' => {
-                if (self.parent_state == .node_block) {
-                    return LexingError.InvalidToken;
-                }
-                try self.on_state_change(pos, .node_block);
+                try self.on_state_change(pos, .node_block_start);
                 self.buf[0] = char;
                 self.current_token_len = 1;
             },
             ']' => {
-                try self.on_state_change(pos, .node_block);
+                try self.on_state_change(pos, .node_block_end);
                 self.buf[0] = char;
                 self.current_token_len = 1;
-                self.parent_state = .default;
             },
             '-' => {
-                if (self.current_state == .connection_operator) {
+                if (self.state == .connection_operator) {
                     return LexingError.InvalidToken;
                 }
                 try self.on_state_change(pos, .connection_operator);
@@ -105,11 +102,11 @@ const Lexer = struct {
                 self.current_token_len = 1;
             },
             else => {
-                if (is_numeric(char) and self.current_state != .numeric_value and self.current_state != .keyword_or_identifier and self.current_state != .string_value) {
+                if (is_numeric(char) and self.state != .numeric_value and self.state != .keyword_or_identifier and self.state != .string_value) {
                     try self.on_state_change(pos, .numeric_value);
                     self.buf[0] = char;
                     self.current_token_len = 1;
-                } else if (is_alpha(char) and self.current_state != .keyword_or_identifier and self.current_state != .string_value) {
+                } else if (is_alpha(char) and self.state != .keyword_or_identifier and self.state != .string_value) {
                     try self.on_state_change(pos, .keyword_or_identifier);
                     self.buf[0] = char;
                     self.current_token_len = 1;
@@ -120,12 +117,12 @@ const Lexer = struct {
             },
         }
         if (pos == self.source.len - 1) {
-            try self.on_state_change(pos + 1, .default);
+            try self.on_state_change(pos + 1, .end);
         }
     }
 
     inline fn on_state_change(self: *Lexer, pos: u64, new_state: State) !void {
-        if (self.current_state != .whitespace and pos > 0) {
+        if (self.state != .whitespace and pos > 0) {
             try self.token_sequence.append(Token{
                 .start = pos - self.current_token_len,
                 .end = pos,
@@ -133,16 +130,16 @@ const Lexer = struct {
                 .source = self.source,
             });
         }
-        self.current_state = new_state;
+        self.state = new_state;
         self.current_token_len = 0;
     }
 
     inline fn infer_token_kind(self: *Lexer) LexingError!Token.Kind {
-        if (self.current_state == .string_value) {
+        if (self.state == .string_value) {
             return Token.Kind.string_value;
-        } else if (self.current_state == .numeric_value) {
+        } else if (self.state == .numeric_value) {
             return Token.Kind.numeric_value;
-        } else if (self.current_state == .connection_operator) {
+        } else if (self.state == .connection_operator) {
             if (is_equal_string_ignore_case(self.buf[0..self.current_token_len], BUILTINS[12].name)) {
                 return BUILTINS[12].kind;
             } else if (is_equal_string_ignore_case(self.buf[0..self.current_token_len], BUILTINS[13].name)) {
@@ -150,14 +147,10 @@ const Lexer = struct {
             } else {
                 return LexingError.InvalidToken;
             }
-        } else if (self.current_state == .node_block) {
-            if (is_equal_string_ignore_case(self.buf[0..self.current_token_len], BUILTINS[9].name)) {
-                return BUILTINS[9].kind;
-            } else if (is_equal_string_ignore_case(self.buf[0..self.current_token_len], BUILTINS[10].name)) {
-                return BUILTINS[10].kind;
-            } else {
-                return LexingError.InvalidToken;
-            }
+        } else if (self.state == .node_block_start) {
+            return Token.Kind.left_square_bracket;
+        } else if (self.state == .node_block_end) {
+            return Token.Kind.right_square_bracket;
         } else {
             for (BUILTINS) |builtin| {
                 if (is_equal_string_ignore_case(builtin.name, self.buf[0..self.current_token_len])) {
