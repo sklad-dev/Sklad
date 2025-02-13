@@ -19,7 +19,7 @@ pub const ValueType = enum(u8) {
 pub const NodePointer = u64;
 
 // A pointer to a node record stored on disk
-pub const FsNodePointer = struct {
+pub const FsNodePointer = packed struct {
     padding: u8,
     level_id: u8,
     file_id: u16,

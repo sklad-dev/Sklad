@@ -4,7 +4,7 @@ const utils = @import("./utils.zig");
 
 const Storage = @import("./storage.zig").Storage;
 
-pub const ConnectionRecord = struct {
+pub const ConnectionRecord = packed struct {
     src_node_id: u64,
     dst_node_id: u64,
     label: ?u64,

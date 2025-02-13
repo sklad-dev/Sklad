@@ -7,7 +7,7 @@ const NodeIndexStorage = @import("./node_index_storage.zig").NodeIndexStorage;
 
 const ValueType = data_types.ValueType;
 
-pub const NodeRecord = struct {
+pub const NodeRecord = packed struct {
     value_size: u16,
     value_type: ValueType,
     value: []const u8,
