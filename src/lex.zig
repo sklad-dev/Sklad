@@ -1,7 +1,9 @@
 const std = @import("std");
 
+const global_context = @import("./global_context.zig");
 const io = @import("./io.zig");
 const Task = @import("./task_queue.zig").Task;
+const ParserTask = @import("./parse.zig").ParserTask;
 
 pub const LexingError = error{
     InvalidToken,
@@ -281,9 +283,7 @@ pub const LexerTask = struct {
     query: []u8,
     tokens: *std.ArrayList(Token),
 
-    const Self = @This();
-
-    pub fn init(allocator: std.mem.Allocator, query_size: u64, io_context: io.IO.IoContext) !Self {
+    pub fn init(allocator: std.mem.Allocator, query_size: u64, io_context: io.IO.IoContext) !LexerTask {
         return .{
             .allocator = allocator,
             .io_context = io_context,
@@ -292,7 +292,7 @@ pub const LexerTask = struct {
         };
     }
 
-    pub fn task(self: *Self) Task {
+    pub fn task(self: *LexerTask) Task {
         return .{
             .context = self,
             .run_fn = run,
@@ -301,8 +301,7 @@ pub const LexerTask = struct {
     }
 
     fn run(ptr: *anyopaque) void {
-        const self: *Self = @ptrCast(@alignCast(ptr));
-        defer std.posix.close(self.io_context.socket);
+        const self: *LexerTask = @ptrCast(@alignCast(ptr));
 
         var lexer = Lexer.init(self.query, self.tokens);
         const result = lexer.lex();
@@ -313,14 +312,28 @@ pub const LexerTask = struct {
                 std.debug.print("[{s}]: {s}\n", .{ @tagName(t.kind), t.source[t.start..t.end] });
             }
             std.debug.print("------\n", .{});
-            self.io_context.send_response(u64, self.allocator, 0, null);
+
+            const task_queue = global_context.get_task_queue();
+            var parser_task = task_queue.?.allocator.create(ParserTask) catch |e| {
+                std.log.err("Error! Failed to allocate a parser task: {any}", .{e});
+                return;
+            };
+            parser_task.* = ParserTask.init(
+                task_queue.?.allocator,
+                self.io_context,
+                self.query,
+                self.tokens,
+            ) catch |e| {
+                std.log.err("Error! Failed to create a parser task: {any}", .{e});
+                return;
+            };
+
+            global_context.get_task_queue().?.enqueue(parser_task.task());
         }
     }
 
     fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
-        const self: *Self = @ptrCast(@alignCast(ptr));
-        allocator.free(self.query);
-        allocator.destroy(self.tokens);
+        const self: *LexerTask = @ptrCast(@alignCast(ptr));
         allocator.destroy(self);
     }
 };

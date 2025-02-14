@@ -1,7 +1,9 @@
 const std = @import("std");
 
+const io = @import("./io.zig");
 const lex = @import("./lex.zig");
 const ValueType = @import("./data_types.zig").ValueType;
+const Task = @import("./task_queue.zig").Task;
 
 pub const ExpressionType = enum {
     insert,
@@ -225,6 +227,57 @@ pub const TokenizedQuery = struct {
         }
 
         return ParserError.UnexpectedToken;
+    }
+};
+
+pub const ParserTask = struct {
+    allocator: std.mem.Allocator,
+    io_context: io.IO.IoContext,
+    query: []u8,
+    tokenized_query: TokenizedQuery,
+
+    pub fn init(allocator: std.mem.Allocator, io_context: io.IO.IoContext, query: []u8, tokens: *std.ArrayList(lex.Token)) !ParserTask {
+        return .{
+            .allocator = allocator,
+            .io_context = io_context,
+            .query = query,
+            .tokenized_query = TokenizedQuery.init(allocator, tokens),
+        };
+    }
+
+    pub fn task(self: *ParserTask) Task {
+        return .{
+            .context = self,
+            .run_fn = run,
+            .destroy_fn = destroy,
+        };
+    }
+
+    fn run(ptr: *anyopaque) void {
+        const self: *ParserTask = @ptrCast(@alignCast(ptr));
+        defer std.posix.close(self.io_context.socket);
+
+        var expression = ExpressionNode.parse(self.allocator, &self.tokenized_query) catch |e| {
+            std.log.err("Error! Query parsing failed: {any}, query: \"{s}\"", .{ e, self.query });
+            self.io_context.send_response(i8, self.allocator, -1, io.IO.IoError.RequestProcessingError);
+            return;
+        };
+        defer {
+            switch (expression) {
+                .insert => expression.insert.destory(),
+                .insert_connection => expression.insert_connection.destory(),
+            }
+        }
+
+        std.debug.print("Parsed expression: {s}\n", .{@typeName(@TypeOf(expression))});
+        self.io_context.send_response(u64, self.allocator, 0, null);
+    }
+
+    fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+        const self: *ParserTask = @ptrCast(@alignCast(ptr));
+        allocator.free(self.query);
+        allocator.destroy(self.tokenized_query.tokens);
+        allocator.destroy(self);
     }
 };
 
