@@ -249,33 +249,33 @@ test "Memtable#add and find" {
     errdefer test_memtable.destroy();
 
     // Case: search in an empty memtable
-    try testing.expect(try test_memtable.find(&utils.key_from_int_data(u8, 1)) == null);
+    try testing.expect(try test_memtable.find(&utils.int_to_byte_array(u8, 1)) == null);
 
     // Case: a key is added succesfully to an empty memtable
     const test_vertex_data: u8 = 0;
-    const test_vertex0 = utils.key_from_int_data(u8, 0);
+    const test_vertex0 = utils.int_to_byte_array(u8, 0);
     try test_memtable.add(&test_vertex0, test_vertex_data);
     try testing.expect(test_memtable.head != null);
     try testing.expect(std.mem.eql(u8, test_memtable.head.?.tower[0].?.key.?, &test_vertex0));
     try testing.expect(test_memtable.size == 1);
 
     // Case: adding the same key twice
-    const test_vertex1 = utils.key_from_int_data(u8, 0);
+    const test_vertex1 = utils.int_to_byte_array(u8, 0);
     try test_memtable.add(&test_vertex1, test_vertex_data);
     try testing.expect(test_memtable.size == 1);
 
     // Case: adding more keys
     var table_size: u8 = 1;
     for (0..16) |_| {
-        try test_memtable.add(&utils.key_from_int_data(u8, table_size), test_vertex_data);
+        try test_memtable.add(&utils.int_to_byte_array(u8, table_size), test_vertex_data);
         table_size += 1;
         try testing.expect(test_memtable.size == table_size);
     }
 
     // Case: find
-    try testing.expect(try test_memtable.find(&utils.key_from_int_data(u8, 0)) != null);
-    try testing.expect(try test_memtable.find(&utils.key_from_int_data(u8, table_size / 2)) != null);
-    try testing.expect(try test_memtable.find(&utils.key_from_int_data(u8, table_size + 1)) == null);
+    try testing.expect(try test_memtable.find(&utils.int_to_byte_array(u8, 0)) != null);
+    try testing.expect(try test_memtable.find(&utils.int_to_byte_array(u8, table_size / 2)) != null);
+    try testing.expect(try test_memtable.find(&utils.int_to_byte_array(u8, table_size + 1)) == null);
 
     try test_memtable.wal.delete_file();
     test_memtable.destroy();

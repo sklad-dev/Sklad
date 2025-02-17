@@ -302,17 +302,13 @@ pub const LexerTask = struct {
 
     fn run(ptr: *anyopaque) void {
         const self: *LexerTask = @ptrCast(@alignCast(ptr));
+        errdefer std.posix.close(self.io_context.socket);
 
         var lexer = Lexer.init(self.query, self.tokens);
         const result = lexer.lex();
         if (result > 0) {
-            self.io_context.send_response(u64, self.allocator, result, io.IO.IoError.RequestProcessingError);
+            self.io_context.send_response(u64, LexingError, self.allocator, result, LexingError.InvalidToken);
         } else {
-            for (self.tokens.items) |t| {
-                std.debug.print("[{s}]: {s}\n", .{ @tagName(t.kind), t.source[t.start..t.end] });
-            }
-            std.debug.print("------\n", .{});
-
             const task_queue = global_context.get_task_queue();
             var parser_task = task_queue.?.allocator.create(ParserTask) catch |e| {
                 std.log.err("Error! Failed to allocate a parser task: {any}", .{e});

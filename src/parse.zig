@@ -1,20 +1,22 @@
 const std = @import("std");
 
+const global_context = @import("./global_context.zig");
 const io = @import("./io.zig");
 const lex = @import("./lex.zig");
 const ValueType = @import("./data_types.zig").ValueType;
 const Task = @import("./task_queue.zig").Task;
+const ExecuteTask = @import("./execute.zig").ExecuteTask;
 
 pub const ExpressionType = enum {
     insert,
     insert_connection,
 };
 
-pub const ExpressionNode = union(ExpressionType) {
+pub const Expression = union(ExpressionType) {
     insert: InsertExpression,
     insert_connection: InsertConnectionExpression,
 
-    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !ExpressionNode {
+    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !Expression {
         query.current_pos = 0;
         if (query.next_token()) |token| {
             switch (token.kind) {
@@ -23,11 +25,11 @@ pub const ExpressionNode = union(ExpressionType) {
                         switch (t.kind) {
                             .connection_keyword => {
                                 query.current_pos += 1;
-                                return ExpressionNode{
+                                return Expression{
                                     .insert_connection = try InsertConnectionExpression.parse(allocator, query),
                                 };
                             },
-                            .left_square_bracket => return ExpressionNode{
+                            .left_square_bracket => return Expression{
                                 .insert = try InsertExpression.parse(allocator, query),
                             },
                             else => return ParserError.UnexpectedToken,
@@ -162,7 +164,14 @@ pub const NodeDefinitionNode = struct {
         const value_type = try value_type_from_type_specifier_token(
             try query.expect_token(&[_]lex.Token.Kind{.type_specifier}),
         );
-        const value_token = try query.expect_token(&[_]lex.Token.Kind{ .string_value, .numeric_value });
+        const value_token = try query.expect_token(
+            &[_]lex.Token.Kind{
+                .string_value,
+                .numeric_value,
+                .true_keyword,
+                .false_keyword,
+            },
+        );
         _ = try query.expect_token(&[_]lex.Token.Kind{.right_square_bracket});
         return .{
             .value_type = value_type,
@@ -180,6 +189,7 @@ pub const NodeDefinitionNode = struct {
 };
 
 pub const ParserError = error{
+    InvalidQuery,
     UnexpectedToken,
     UnexpectedEndOfQuery,
     UnknownTypeSpecifier,
@@ -255,27 +265,40 @@ pub const ParserTask = struct {
 
     fn run(ptr: *anyopaque) void {
         const self: *ParserTask = @ptrCast(@alignCast(ptr));
-        defer std.posix.close(self.io_context.socket);
+        errdefer std.posix.close(self.io_context.socket);
 
-        var expression = ExpressionNode.parse(self.allocator, &self.tokenized_query) catch |e| {
+        var expression = Expression.parse(self.allocator, &self.tokenized_query) catch |e| {
             std.log.err("Error! Query parsing failed: {any}, query: \"{s}\"", .{ e, self.query });
-            self.io_context.send_response(i8, self.allocator, -1, io.IO.IoError.RequestProcessingError);
+            self.io_context.send_response(i8, ParserError, self.allocator, -1, ParserError.InvalidQuery);
             return;
         };
-        defer {
+        errdefer {
             switch (expression) {
                 .insert => expression.insert.destory(),
                 .insert_connection => expression.insert_connection.destory(),
             }
         }
 
-        std.debug.print("Parsed expression: {s}\n", .{@typeName(@TypeOf(expression))});
-        self.io_context.send_response(u64, self.allocator, 0, null);
+        const task_queue = global_context.get_task_queue();
+        var execute_task = task_queue.?.allocator.create(ExecuteTask) catch |e| {
+            std.log.err("Error! Failed to allocate a parser task: {any}", .{e});
+            return;
+        };
+        execute_task.* = ExecuteTask.init(
+            task_queue.?.allocator,
+            self.io_context,
+            self.query,
+            expression,
+        ) catch |e| {
+            std.log.err("Error! Failed to create a parser task: {any}", .{e});
+            return;
+        };
+
+        global_context.get_task_queue().?.enqueue(execute_task.task());
     }
 
     fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
         const self: *ParserTask = @ptrCast(@alignCast(ptr));
-        allocator.free(self.query);
         allocator.destroy(self.tokenized_query.tokens);
         allocator.destroy(self);
     }
@@ -293,7 +316,7 @@ test "Parse insert query" {
     try testing.expect(lexer.lex() == 0);
 
     var query = TokenizedQuery.init(testing.allocator, &tokens);
-    var expression = try ExpressionNode.parse(testing.allocator, &query);
+    var expression = try Expression.parse(testing.allocator, &query);
     defer expression.insert.destory();
     try testing.expect(expression.insert.nodes.items.len == 6);
     try testing.expect(expression.insert.connections.items.len == 2);
@@ -308,7 +331,7 @@ test "Parse insert connection query" {
     try testing.expect(lexer.lex() == 0);
 
     var query = TokenizedQuery.init(testing.allocator, &tokens);
-    var expression = try ExpressionNode.parse(testing.allocator, &query);
+    var expression = try Expression.parse(testing.allocator, &query);
     defer expression.insert_connection.destory();
     try testing.expect(expression.insert_connection.connections.items.len == 2);
 }

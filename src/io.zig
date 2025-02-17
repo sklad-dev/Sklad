@@ -40,10 +40,10 @@ pub const IO = struct {
         ProcessingTimeout,
     };
 
-    pub fn Response(comptime T: type) type {
+    pub fn Response(comptime T: type, comptime E: type) type {
         return struct {
             data: T,
-            errors: ?IoError,
+            errors: ?E,
         };
     }
 
@@ -55,8 +55,8 @@ pub const IO = struct {
         address: std.net.Address,
         socket: std.posix.socket_t,
 
-        pub fn send_response(self: *IoContext, comptime T: type, allocator: std.mem.Allocator, data: T, err: ?IoError) void {
-            const response = Response(T){
+        pub fn send_response(self: *IoContext, comptime T: type, comptime E: type, allocator: std.mem.Allocator, data: T, err: ?E) void {
+            const response = Response(T, E){
                 .data = data,
                 .errors = err,
             };
@@ -81,7 +81,7 @@ pub const IO = struct {
             var buffer: [4096]u8 = [_]u8{0} ** 4096;
             const bytes_read = posix.read(self.io_context.socket, &buffer) catch |e| {
                 std.log.err("Error! Failed to read a message: {any}", .{e});
-                self.io_context.send_response(i8, self.allocator, -1, IoError.RequestReadingError);
+                self.io_context.send_response(i8, IoError, self.allocator, -1, IoError.RequestReadingError);
                 return;
             };
 
@@ -93,7 +93,7 @@ pub const IO = struct {
                     .{},
                 ) catch |e| {
                     std.log.err("Error! Failed to parse a request: {any}", .{e});
-                    self.io_context.send_response(i8, self.allocator, -1, IoError.RequestProcessingError);
+                    self.io_context.send_response(i8, IoError, self.allocator, -1, IoError.RequestProcessingError);
                     return;
                 };
                 defer request.deinit();
@@ -117,7 +117,7 @@ pub const IO = struct {
 
                 global_context.get_task_queue().?.enqueue(lexer_task.task());
             } else {
-                self.io_context.send_response(i8, self.allocator, -1, IoError.RequestTooLong);
+                self.io_context.send_response(i8, IoError, self.allocator, -1, IoError.RequestTooLong);
             }
         }
 

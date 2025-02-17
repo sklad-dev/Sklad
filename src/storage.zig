@@ -225,9 +225,9 @@ test "Add value" {
     var test_storage = try Storage(u8).start(testing.allocator, "./", 4);
     defer test_storage.stop();
 
-    try test_storage.put(&utils.key_from_int_data(u8, 1), 42);
+    try test_storage.put(&utils.int_to_byte_array(u8, 1), 42);
     try testing.expect(test_storage.memtables.items.len == 1);
-    try testing.expect(try test_storage.memtables.getLast().find(&utils.key_from_int_data(u8, 1)) == 42);
+    try testing.expect(try test_storage.memtables.getLast().find(&utils.int_to_byte_array(u8, 1)) == 42);
 
     for (test_storage.memtables.items) |t| {
         try t.wal.delete_file();
@@ -243,14 +243,14 @@ test "Restore memtable from wal" {
     global_context.load_configuration(&conf);
 
     var storage1 = try Storage(u8).start(testing.allocator, "./", 4);
-    try storage1.put(&utils.key_from_int_data(u8, 1), 42);
+    try storage1.put(&utils.int_to_byte_array(u8, 1), 42);
     storage1.stop();
 
     var storage2 = try Storage(u8).start(testing.allocator, "./", 4);
     defer storage2.stop();
 
     try testing.expect(storage2.memtables.items.len == 1);
-    try testing.expect(try storage2.memtables.getLast().find(&utils.key_from_int_data(u8, 1)) == 42);
+    try testing.expect(try storage2.memtables.getLast().find(&utils.int_to_byte_array(u8, 1)) == 42);
     for (storage2.memtables.items) |t| {
         try t.wal.delete_file();
     }
@@ -266,29 +266,29 @@ test "Finding values" {
 
     var storage = try Storage(u8).start(testing.allocator, "./", 4);
     defer storage.stop();
-    try storage.put(&utils.key_from_int_data(u8, 1), 42);
+    try storage.put(&utils.int_to_byte_array(u8, 1), 42);
 
-    var search_result = try storage.find(&utils.key_from_int_data(u8, 1));
+    var search_result = try storage.find(&utils.int_to_byte_array(u8, 1));
     try testing.expect(search_result == 42);
 
-    search_result = try storage.find(&utils.key_from_int_data(u8, 2));
+    search_result = try storage.find(&utils.int_to_byte_array(u8, 2));
     try testing.expect(search_result == null);
 
     for (2..10) |i| {
         const v = @as(u8, @intCast(i));
-        try storage.put(&utils.key_from_int_data(u8, v), v);
+        try storage.put(&utils.int_to_byte_array(u8, v), v);
     }
 
     for (1..10) |i| {
-        search_result = try storage.find(&utils.key_from_int_data(u8, @as(u8, @intCast(i))));
+        search_result = try storage.find(&utils.int_to_byte_array(u8, @as(u8, @intCast(i))));
         try testing.expect(search_result != null);
     }
 
-    search_result = try storage.find_in_tables(&utils.key_from_int_data(u8, @as(u8, @intCast(1))));
+    search_result = try storage.find_in_tables(&utils.int_to_byte_array(u8, @as(u8, @intCast(1))));
     try testing.expect(search_result != null);
-    search_result = try storage.find_in_tables(&utils.key_from_int_data(u8, @as(u8, @intCast(5))));
+    search_result = try storage.find_in_tables(&utils.int_to_byte_array(u8, @as(u8, @intCast(5))));
     try testing.expect(search_result != null);
-    search_result = try storage.find_in_tables(&utils.key_from_int_data(u8, @as(u8, @intCast(9))));
+    search_result = try storage.find_in_tables(&utils.int_to_byte_array(u8, @as(u8, @intCast(9))));
     try testing.expect(search_result == null);
 
     try clean_up(u8, &storage);
@@ -307,15 +307,15 @@ test "Finding values: return the newest value" {
 
     for (0..8) |i| {
         const v = @as(u8, @intCast(i));
-        try storage.put(&utils.key_from_int_data(u8, v), v);
+        try storage.put(&utils.int_to_byte_array(u8, v), v);
     }
 
     for (0..8) |i| {
         const v = @as(u8, @intCast(i));
-        try storage.put(&utils.key_from_int_data(u8, v), v * 2);
+        try storage.put(&utils.int_to_byte_array(u8, v), v * 2);
     }
 
-    const search_result = try storage.find(&utils.key_from_int_data(u8, @as(u8, @intCast(1))));
+    const search_result = try storage.find(&utils.int_to_byte_array(u8, @as(u8, @intCast(1))));
     try testing.expect(search_result == 2);
 
     try clean_up(u8, &storage);
