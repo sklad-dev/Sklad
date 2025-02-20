@@ -343,7 +343,6 @@ pub const ParserTask = struct {
 
     fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
         const self: *ParserTask = @ptrCast(@alignCast(ptr));
-        allocator.free(self.query);
         allocator.destroy(self.tokenized_query.tokens);
         allocator.destroy(self);
     }

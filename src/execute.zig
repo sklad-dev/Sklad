@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const global_context = @import("./global_context.zig");
+const GraphStorage = @import("./graph_storage.zig").GraphStorage;
 const io = @import("./io.zig");
 const parse = @import("./parse.zig");
 const utils = @import("./utils.zig");
@@ -55,6 +56,7 @@ pub const ExecuteTask = struct {
             .insert_connection => self.expression.insert_connection.destory(),
         }
         self.executor.deinit();
+        allocator.free(self.query);
         allocator.destroy(self);
     }
 };
@@ -62,6 +64,7 @@ pub const ExecuteTask = struct {
 const Executor = struct {
     allocator: std.mem.Allocator,
     inserted_nodes: std.HashMap(*const parse.NodeDefinitionNode, u64, parse.NodeDefinitionNode.HashContext, std.hash_map.default_max_load_percentage),
+    graph_storage: *GraphStorage,
 
     pub fn init(allocator: std.mem.Allocator) Executor {
         return .{
@@ -72,6 +75,7 @@ const Executor = struct {
                 parse.NodeDefinitionNode.HashContext,
                 std.hash_map.default_max_load_percentage,
             ).init(allocator),
+            .graph_storage = global_context.get_graph_storage().?,
         };
     }
 
@@ -82,39 +86,55 @@ const Executor = struct {
     pub fn execute(self: *Executor, expression: *parse.Expression) !void {
         switch (expression.*) {
             .insert => try self.execute_insert_expression(&expression.*.insert),
-            .insert_connection => {},
+            .insert_connection => try self.execute_insert_connection_expression(&expression.*.insert_connection),
         }
     }
 
     fn execute_insert_expression(self: *Executor, expression: *parse.InsertExpression) !void {
-        var graph_storage = global_context.get_graph_storage().?;
-
         for (expression.nodes.items) |node| {
-            const node_id = try graph_storage.node_storage.put(node.value, node.value_type);
+            const node_id = try self.graph_storage.node_storage.put(node.value, node.value_type);
             try self.inserted_nodes.put(&node, node_id);
         }
 
         for (expression.connections.items) |connection| {
-            const src_node_id = try self.get_node_id(&connection.source);
-            if (src_node_id == null) return ExecutionError.NodeNotFound;
-            const dst_node_id = try self.get_node_id(&connection.destination);
-            if (dst_node_id == null) return ExecutionError.NodeNotFound;
-            var label_node_id: u64 = 0xFFFFFFFFFFFFFFFF;
-            if (connection.label) |label_node| {
-                label_node_id = try self.get_node_id(&label_node) orelse 0xFFFFFFFFFFFFFFFF;
-            }
-            try graph_storage.connection_storage.put(src_node_id.?, dst_node_id.?, label_node_id);
+            try self.insert_connection(parse.ExpressionType.insert, &connection);
         }
     }
 
-    fn get_node_id(self: *Executor, node: *const parse.NodeDefinitionNode) !?u64 {
-        if (self.inserted_nodes.get(node)) |node_id| {
-            return node_id;
-        } else {
-            return try global_context
-                .get_graph_storage().?
-                .node_storage
-                .find(node.value, node.value_type);
+    fn execute_insert_connection_expression(self: *Executor, expression: *parse.InsertConnectionExpression) !void {
+        for (expression.connections.items) |connection| {
+            try self.insert_connection(parse.ExpressionType.insert_connection, &connection);
         }
+    }
+
+    fn get_node_id(self: *Executor, comptime E: parse.ExpressionType, node: *const parse.NodeDefinitionNode) !?u64 {
+        switch (E) {
+            inline .insert => {
+                if (self.inserted_nodes.get(node)) |node_id| {
+                    return node_id;
+                }
+            },
+            inline .insert_connection => {},
+        }
+
+        return try global_context
+            .get_graph_storage().?
+            .node_storage
+            .find(node.value, node.value_type);
+    }
+
+    fn insert_connection(self: *Executor, comptime E: parse.ExpressionType, connection: *const parse.ConnectionNode) !void {
+        const src_node_id = try self.get_node_id(E, &connection.source);
+        if (src_node_id == null) return ExecutionError.NodeNotFound;
+
+        const dst_node_id = try self.get_node_id(E, &connection.destination);
+        if (dst_node_id == null) return ExecutionError.NodeNotFound;
+
+        var label_node_id: u64 = 0xFFFFFFFFFFFFFFFF;
+        if (connection.label) |label_node| {
+            label_node_id = try self.get_node_id(E, &label_node) orelse 0xFFFFFFFFFFFFFFFF;
+        }
+
+        try self.graph_storage.connection_storage.put(src_node_id.?, dst_node_id.?, label_node_id);
     }
 };
