@@ -8,6 +8,7 @@ const Task = @import("./task_queue.zig").Task;
 
 pub const ExecutionError = error{
     ExecutionFailed,
+    NodeNotFound,
 };
 
 pub const ExecuteTask = struct {
@@ -15,6 +16,7 @@ pub const ExecuteTask = struct {
     io_context: io.IO.IoContext,
     query: []u8,
     expression: parse.Expression,
+    executor: Executor,
 
     pub fn init(allocator: std.mem.Allocator, io_context: io.IO.IoContext, query: []u8, expression: parse.Expression) !ExecuteTask {
         return .{
@@ -22,6 +24,7 @@ pub const ExecuteTask = struct {
             .io_context = io_context,
             .query = query,
             .expression = expression,
+            .executor = Executor.init(allocator),
         };
     }
 
@@ -37,7 +40,7 @@ pub const ExecuteTask = struct {
         const self: *ExecuteTask = @ptrCast(@alignCast(ptr));
         defer std.posix.close(self.io_context.socket);
 
-        execute(&self.expression) catch |e| {
+        self.executor.execute(&self.expression) catch |e| {
             std.log.err("Error! Query execution failed: {any}, query: \"{s}\"", .{ e, self.query });
             self.io_context.send_response(i8, ExecutionError, self.allocator, -1, ExecutionError.ExecutionFailed);
         };
@@ -47,38 +50,71 @@ pub const ExecuteTask = struct {
 
     fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
         const self: *ExecuteTask = @ptrCast(@alignCast(ptr));
-        allocator.free(self.query);
         switch (self.expression) {
             .insert => self.expression.insert.destory(),
             .insert_connection => self.expression.insert_connection.destory(),
         }
+        self.executor.deinit();
         allocator.destroy(self);
     }
 };
 
-fn execute(expression: *parse.Expression) !void {
-    switch (expression.*) {
-        .insert => try execute_insert_expression(&expression.*.insert),
-        .insert_connection => {},
-    }
-}
+const Executor = struct {
+    allocator: std.mem.Allocator,
+    inserted_nodes: std.HashMap(*const parse.NodeDefinitionNode, u64, parse.NodeDefinitionNode.HashContext, std.hash_map.default_max_load_percentage),
 
-fn execute_insert_expression(expression: *parse.InsertExpression) !void {
-    var graph_storage = global_context.get_graph_storage().?;
-    for (expression.nodes.items) |node| {
-        var value = node.value;
-        switch (node.value_type) {
-            .boolean => value = &try utils.to_byte_key(bool, (std.mem.eql(u8, node.value, "true"))),
-            .smallint => value = &try utils.to_byte_key(i8, try std.fmt.parseInt(i8, node.value, 10)),
-            .int => value = &try utils.to_byte_key(i32, try std.fmt.parseInt(i32, node.value, 10)),
-            .bigint => value = &try utils.to_byte_key(i64, try std.fmt.parseInt(i64, node.value, 10)),
-            .smallserial => value = &try utils.to_byte_key(u8, try std.fmt.parseInt(u8, node.value, 10)),
-            .serial => value = &try utils.to_byte_key(u32, try std.fmt.parseInt(u32, node.value, 10)),
-            .bigserial => value = &try utils.to_byte_key(u64, try std.fmt.parseInt(u64, node.value, 10)),
-            .float => value = &try utils.to_byte_key(f32, try std.fmt.parseFloat(f32, node.value)),
-            .bigfloat => value = &try utils.to_byte_key(f64, try std.fmt.parseFloat(f64, node.value)),
-            else => {},
-        }
-        _ = try graph_storage.node_storage.put(value, node.value_type);
+    pub fn init(allocator: std.mem.Allocator) Executor {
+        return .{
+            .allocator = allocator,
+            .inserted_nodes = std.HashMap(
+                *const parse.NodeDefinitionNode,
+                u64,
+                parse.NodeDefinitionNode.HashContext,
+                std.hash_map.default_max_load_percentage,
+            ).init(allocator),
+        };
     }
-}
+
+    pub fn deinit(self: *Executor) void {
+        self.inserted_nodes.deinit();
+    }
+
+    pub fn execute(self: *Executor, expression: *parse.Expression) !void {
+        switch (expression.*) {
+            .insert => try self.execute_insert_expression(&expression.*.insert),
+            .insert_connection => {},
+        }
+    }
+
+    fn execute_insert_expression(self: *Executor, expression: *parse.InsertExpression) !void {
+        var graph_storage = global_context.get_graph_storage().?;
+
+        for (expression.nodes.items) |node| {
+            const node_id = try graph_storage.node_storage.put(node.value, node.value_type);
+            try self.inserted_nodes.put(&node, node_id);
+        }
+
+        for (expression.connections.items) |connection| {
+            const src_node_id = try self.get_node_id(&connection.source);
+            if (src_node_id == null) return ExecutionError.NodeNotFound;
+            const dst_node_id = try self.get_node_id(&connection.destination);
+            if (dst_node_id == null) return ExecutionError.NodeNotFound;
+            var label_node_id: u64 = 0xFFFFFFFFFFFFFFFF;
+            if (connection.label) |label_node| {
+                label_node_id = try self.get_node_id(&label_node) orelse 0xFFFFFFFFFFFFFFFF;
+            }
+            try graph_storage.connection_storage.put(src_node_id.?, dst_node_id.?, label_node_id);
+        }
+    }
+
+    fn get_node_id(self: *Executor, node: *const parse.NodeDefinitionNode) !?u64 {
+        if (self.inserted_nodes.get(node)) |node_id| {
+            return node_id;
+        } else {
+            return try global_context
+                .get_graph_storage().?
+                .node_storage
+                .find(node.value, node.value_type);
+        }
+    }
+};
