@@ -25,7 +25,7 @@ pub const ExecuteTask = struct {
             .io_context = io_context,
             .query = query,
             .expression = expression,
-            .executor = Executor.init(allocator),
+            .executor = Executor.init(allocator, io_context),
         };
     }
 
@@ -54,6 +54,7 @@ pub const ExecuteTask = struct {
         switch (self.expression) {
             .insert => self.expression.insert.destory(),
             .insert_connection => self.expression.insert_connection.destory(),
+            .find => self.expression.find.destory(),
         }
         self.executor.deinit();
         allocator.free(self.query);
@@ -63,12 +64,14 @@ pub const ExecuteTask = struct {
 
 const Executor = struct {
     allocator: std.mem.Allocator,
+    io_context: io.IO.IoContext,
     inserted_nodes: std.HashMap(*const parse.NodeDefinitionNode, u64, parse.NodeDefinitionNode.HashContext, std.hash_map.default_max_load_percentage),
     graph_storage: *GraphStorage,
 
-    pub fn init(allocator: std.mem.Allocator) Executor {
+    pub fn init(allocator: std.mem.Allocator, io_context: io.IO.IoContext) Executor {
         return .{
             .allocator = allocator,
+            .io_context = io_context,
             .inserted_nodes = std.HashMap(
                 *const parse.NodeDefinitionNode,
                 u64,
@@ -87,6 +90,7 @@ const Executor = struct {
         switch (expression.*) {
             .insert => try self.execute_insert_expression(&expression.*.insert),
             .insert_connection => try self.execute_insert_connection_expression(&expression.*.insert_connection),
+            .find => try self.execute_find_expression(&expression.*.find),
         }
     }
 
@@ -107,6 +111,28 @@ const Executor = struct {
         }
     }
 
+    fn execute_find_expression(self: *Executor, expression: *parse.FindExpression) !void {
+        var iter = expression.identifiers.iterator();
+        while (iter.next()) |identifier| {
+            const condition = identifier.value_ptr.*.value_conditions.items[0];
+            switch (condition) {
+                .value_condition => {
+                    switch (condition.value_condition.operator) {
+                        .equal => {
+                            const node_id = try self.graph_storage.node_storage.find(
+                                condition.value_condition.value,
+                                condition.value_condition.value_type,
+                            );
+                            self.io_context.send_response(u64, io.IO.IoError, self.allocator, node_id orelse 0xFFFFFFFFFFFFFFFF, null);
+                        },
+                        else => return utils.SupportingError.NotImplemented,
+                    }
+                },
+                .in_condition => return utils.SupportingError.NotImplemented,
+            }
+        }
+    }
+
     fn get_node_id(self: *Executor, comptime E: parse.ExpressionType, node: *const parse.NodeDefinitionNode) !?u64 {
         switch (E) {
             inline .insert => {
@@ -115,6 +141,7 @@ const Executor = struct {
                 }
             },
             inline .insert_connection => {},
+            inline .find => {},
         }
 
         return try global_context

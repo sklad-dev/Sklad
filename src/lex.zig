@@ -15,6 +15,7 @@ pub const Token = struct {
     kind: Kind,
     source: []const u8,
 
+    // Potential token kinds: count_keyword
     pub const Kind = enum {
         insert_keyword,
         connection_keyword,
@@ -23,6 +24,7 @@ pub const Token = struct {
         where_keyword,
         and_keyword,
         or_keyword,
+        in_keyword,
         true_keyword,
         false_keyword,
 
@@ -30,6 +32,14 @@ pub const Token = struct {
         right_square_bracket,
         pre_label_connection_op,
         left_right_connection_op,
+        left_bracket,
+        right_bracket,
+        equal_operator,
+        not_equal_operator,
+        greater_operator,
+        greater_or_equal_operator,
+        less_operator,
+        less_or_equal_operator,
 
         identifier,
         type_specifier,
@@ -58,12 +68,21 @@ var BUILTINS = [_]Builtin{
     .{ .name = "where", .kind = Token.Kind.where_keyword },
     .{ .name = "and", .kind = Token.Kind.and_keyword },
     .{ .name = "or", .kind = Token.Kind.or_keyword },
+    .{ .name = "in", .kind = Token.Kind.in_keyword },
     .{ .name = "true", .kind = Token.Kind.true_keyword },
     .{ .name = "false", .kind = Token.Kind.false_keyword },
     .{ .name = "[", .kind = Token.Kind.left_square_bracket },
     .{ .name = "]", .kind = Token.Kind.right_square_bracket },
     .{ .name = "-", .kind = Token.Kind.pre_label_connection_op },
     .{ .name = "->", .kind = Token.Kind.left_right_connection_op },
+    .{ .name = "(", .kind = Token.Kind.left_bracket },
+    .{ .name = ")", .kind = Token.Kind.right_bracket },
+    .{ .name = "=", .kind = Token.Kind.equal_operator },
+    .{ .name = "!=", .kind = Token.Kind.not_equal_operator },
+    .{ .name = ">", .kind = Token.Kind.greater_operator },
+    .{ .name = ">=", .kind = Token.Kind.greater_or_equal_operator },
+    .{ .name = "<", .kind = Token.Kind.less_operator },
+    .{ .name = "<=", .kind = Token.Kind.less_or_equal_operator },
     .{ .name = "boolean", .kind = Token.Kind.type_specifier },
     .{ .name = "smallint", .kind = Token.Kind.type_specifier },
     .{ .name = "int", .kind = Token.Kind.type_specifier },
@@ -90,7 +109,7 @@ pub const Lexer = struct {
         whitespace,
         comma,
         keyword_or_identifier,
-        connection_operator,
+        operator,
         numeric_value,
         string_value,
         string_value_end,
@@ -134,14 +153,7 @@ pub const Lexer = struct {
                 return;
             },
             ',' => {
-                if (self.state == .string_value) {
-                    self.buf[self.current_token_len] = char;
-                    self.current_token_len += 1;
-                } else {
-                    try self.on_state_change(pos, .comma);
-                    self.buf[0] = char;
-                    self.current_token_len = 1;
-                }
+                try self.handle_symbol(char, pos, .comma);
             },
             '\'' => {
                 if (self.state == .string_value) {
@@ -152,46 +164,28 @@ pub const Lexer = struct {
                 }
             },
             '[' => {
-                if (self.state == .string_value) {
-                    self.buf[self.current_token_len] = char;
-                    self.current_token_len += 1;
-                } else {
-                    try self.on_state_change(pos, .node_block_start);
-                    self.buf[0] = char;
-                    self.current_token_len = 1;
-                }
+                try self.handle_symbol(char, pos, .node_block_start);
             },
             ']' => {
-                if (self.state == .string_value) {
-                    self.buf[self.current_token_len] = char;
-                    self.current_token_len += 1;
-                } else {
-                    try self.on_state_change(pos, .node_block_end);
-                    self.buf[0] = char;
-                    self.current_token_len = 1;
-                }
+                try self.handle_symbol(char, pos, .node_block_end);
             },
             '-' => {
                 if (self.state == .string_value) {
                     self.buf[self.current_token_len] = char;
                     self.current_token_len += 1;
-                } else if (self.state == .connection_operator) {
+                } else if (self.state == .operator) {
                     return LexingError.InvalidToken;
                 } else {
-                    try self.on_state_change(pos, .connection_operator);
+                    try self.on_state_change(pos, .operator);
                     self.buf[0] = char;
                     self.current_token_len = 1;
                 }
             },
             ';' => {
-                if (self.state == .string_value) {
-                    self.buf[self.current_token_len] = char;
-                    self.current_token_len += 1;
-                } else {
-                    try self.on_state_change(pos, .end);
-                    self.buf[0] = char;
-                    self.current_token_len = 1;
-                }
+                try self.handle_symbol(char, pos, .end);
+            },
+            '=' => {
+                try self.handle_symbol(char, pos, .operator);
             },
             else => {
                 if (is_numeric(char) and self.state != .numeric_value and self.state != .keyword_or_identifier and self.state != .string_value) {
@@ -210,6 +204,17 @@ pub const Lexer = struct {
         }
         if (pos == self.source.len - 1) {
             try self.on_state_change(pos + 1, .start);
+        }
+    }
+
+    inline fn handle_symbol(self: *Lexer, char: u8, pos: u64, new_state: State) !void {
+        if (self.state == .string_value) {
+            self.buf[self.current_token_len] = char;
+            self.current_token_len += 1;
+        } else {
+            try self.on_state_change(pos, new_state);
+            self.buf[0] = char;
+            self.current_token_len = 1;
         }
     }
 
@@ -405,8 +410,14 @@ test "Lexer#lex find query" {
     var tokens = std.ArrayList(Token).init(testing.allocator);
     defer tokens.deinit();
 
-    const insert_node_query = "find x where [x]-[string 'friend']->[y] and [x, y]-[string 'type']->[string 'person'] and [y]-[string 'name']->[string 'John'];";
-    var lexer = Lexer.init(insert_node_query, &tokens);
-    try testing.expect(lexer.lex() == 0);
-    try testing.expect(tokens.items.len == 46);
+    const q1 = "find [string x] where [x]-[string 'price']->[float 12.3] and x != 'potato';";
+    var l1 = Lexer.init(q1, &tokens);
+    try testing.expect(l1.lex() == 0);
+    try testing.expect(tokens.items.len == 24);
+    tokens.clearAndFree();
+
+    const q2 = "find [string x] where x = 'test';";
+    var l2 = Lexer.init(q2, &tokens);
+    try testing.expect(l2.lex() == 0);
+    try testing.expect(tokens.items.len == 10);
 }

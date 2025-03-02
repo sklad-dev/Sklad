@@ -1,5 +1,9 @@
 const std = @import("std");
 
+pub const SupportingError = error{
+    NotImplemented,
+};
+
 pub inline fn generate_id(rng: std.Random) [2]u8 {
     var buf: [2]u8 = undefined;
     rng.bytes(&buf);
