@@ -1,5 +1,9 @@
 const std = @import("std");
 
+pub const SupportingError = error{
+    NotImplemented,
+};
+
 pub inline fn generate_id(rng: std.Random) [2]u8 {
     var buf: [2]u8 = undefined;
     rng.bytes(&buf);
@@ -15,9 +19,19 @@ pub inline fn read_number(comptime T: type, file: std.fs.File) !T {
     return value;
 }
 
-pub inline fn key_from_int_data(comptime T: type, key_value: T) [@sizeOf(T)]u8 {
+pub inline fn to_byte_key(comptime T: type, value: T) ![@sizeOf(@TypeOf(value))]u8 {
+    return switch (T) {
+        bool => int_to_byte_array(u8, @as(u8, if (value == true) 1 else 0)),
+        i8, i16, i32, i64, u8, u16, u32, u64 => int_to_byte_array(T, value),
+        f32 => int_to_byte_array(u32, @as(u32, @bitCast(value))),
+        f64 => int_to_byte_array(u64, @as(u64, @bitCast(value))),
+        else => error.DataError,
+    };
+}
+
+pub inline fn int_to_byte_array(comptime T: type, value: T) [@sizeOf(T)]u8 {
     var buffer: [@sizeOf(T)]u8 = undefined;
-    std.mem.writeInt(T, &buffer, key_value, std.builtin.Endian.big);
+    std.mem.writeInt(T, &buffer, value, std.builtin.Endian.big);
     return buffer;
 }
 

@@ -14,12 +14,41 @@ pub const ValueType = enum(u8) {
     float, // f32
     bigfloat, //f64
     string, // variable length string
+
+    pub inline fn to_type(self: ValueType) type {
+        return switch (self) {
+            .boolean => bool,
+            .smallint => i8,
+            .int => i32,
+            .bigint => i64,
+            .smallserial => u8,
+            .serial => u32,
+            .bigserial => u64,
+            .float => f32,
+            .bigfloat => f64,
+            .string => []const u8,
+        };
+    }
+
+    pub inline fn is_int(self: ValueType) bool {
+        return switch (self) {
+            .bool, .float, .bigfloat, .string => false,
+            else => true,
+        };
+    }
+
+    pub inline fn is_float(self: ValueType) bool {
+        return switch (self) {
+            .float, .bigfloat => true,
+            else => false,
+        };
+    }
 };
 
 pub const NodePointer = u64;
 
 // A pointer to a node record stored on disk
-pub const FsNodePointer = struct {
+pub const FsNodePointer = packed struct {
     padding: u8,
     level_id: u8,
     file_id: u16,

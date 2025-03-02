@@ -7,7 +7,7 @@ const NodeIndexStorage = @import("./node_index_storage.zig").NodeIndexStorage;
 
 const ValueType = data_types.ValueType;
 
-pub const NodeRecord = struct {
+pub const NodeRecord = packed struct {
     value_size: u16,
     value_type: ValueType,
     value: []const u8,
@@ -70,16 +70,6 @@ const testing = std.testing;
 const global_context = @import("./global_context.zig");
 const TestingConfigurator = @import("./configurator.zig").TestingConfigurator;
 
-inline fn to_byte_array(comptime T: type, node: T) ![@sizeOf(@TypeOf(node))]u8 {
-    return switch (T) {
-        bool => utils.key_from_int_data(@as(u8, if (node == true) 1 else 0)),
-        i8, i16, i32, i64, u8, u16, u32, u64 => utils.key_from_int_data(T, node),
-        f32 => utils.key_from_int_data(u32, @as(u32, @bitCast(node))),
-        f64 => utils.key_from_int_data(u64, @as(u64, @bitCast(node))),
-        else => error.DataError,
-    };
-}
-
 fn clean_up(node_storage: *NodeStorage) void {
     for (node_storage.storage.memtables.items) |t| {
         t.wal.delete_file() catch {
@@ -114,16 +104,16 @@ test "NodeStorage#put" {
     defer node_storage.stop();
     defer clean_up(&node_storage);
 
-    const v1 = try to_byte_array(u8, 2);
+    const v1 = try utils.to_byte_key(u8, 2);
     try testing.expect((try node_storage.put(&v1, ValueType.smallserial)) == 0);
 
-    const v2 = try to_byte_array(u64, 2);
+    const v2 = try utils.to_byte_key(u64, 2);
     try testing.expect((try node_storage.put(&v2, ValueType.bigserial)) == 1);
 
-    const v3 = try to_byte_array(i32, -5);
+    const v3 = try utils.to_byte_key(i32, -5);
     try testing.expect((try node_storage.put(&v3, ValueType.int)) == 2);
 
-    const v4 = try to_byte_array(f32, 12.34);
+    const v4 = try utils.to_byte_key(f32, 12.34);
     try testing.expect((try node_storage.put(&v4, ValueType.float)) == 3);
 
     try testing.expect((try node_storage.put("Hello, world!", ValueType.string)) == 4);
@@ -143,11 +133,11 @@ test "Add value twice" {
 
     for (1..10) |i| {
         const v: u8 = @as(u8, @intCast(i));
-        _ = try node_storage.put(&utils.key_from_int_data(u8, v), ValueType.smallserial);
+        _ = try node_storage.put(&utils.int_to_byte_array(u8, v), ValueType.smallserial);
     }
     const initial_memtable_size = node_storage.storage.memtables.getLast().size;
 
     const v: u8 = @as(u8, @intCast(5));
-    try testing.expect((try node_storage.put(&utils.key_from_int_data(u8, v), ValueType.smallserial)) == 0xFFFFFFFFFFFFFFFF);
+    try testing.expect((try node_storage.put(&utils.int_to_byte_array(u8, v), ValueType.smallserial)) == 0xFFFFFFFFFFFFFFFF);
     try testing.expect(node_storage.storage.memtables.getLast().size == initial_memtable_size);
 }

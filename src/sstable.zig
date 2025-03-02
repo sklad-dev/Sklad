@@ -238,7 +238,7 @@ test "SSTable#create" {
 
     const test_vertex_data: u8 = 0;
     for (254..264) |i| {
-        try test_memtable.add(&utils.key_from_int_data(usize, i), test_vertex_data);
+        try test_memtable.add(&utils.int_to_byte_array(usize, i), test_vertex_data);
     }
 
     var test_sstable = try SSTable(u8).create(testing.allocator, &test_memtable, TEST_SSTABLE_PATH, 44);
@@ -252,7 +252,7 @@ test "SSTable#open" {
 
     const test_vertex_data: u8 = 0;
     for (254..264) |i| {
-        try test_memtable.add(&utils.key_from_int_data(usize, i), test_vertex_data);
+        try test_memtable.add(&utils.int_to_byte_array(usize, i), test_vertex_data);
     }
 
     var test_sstable = try SSTable(u8).create(testing.allocator, &test_memtable, TEST_SSTABLE_PATH, 44);
@@ -262,7 +262,7 @@ test "SSTable#open" {
 
     const vs = [2]usize{ 254, 263 };
     for (vs) |v| {
-        try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, v)) == 0);
+        try testing.expect(try test_sstable.find(&utils.int_to_byte_array(usize, v)) == 0);
     }
 
     test_sstable.close();
@@ -275,7 +275,7 @@ test "SSTable#find" {
 
     const test_vertex_data: u8 = 0;
     for (254..264) |i| {
-        try test_memtable.add(&utils.key_from_int_data(usize, i), test_vertex_data);
+        try test_memtable.add(&utils.int_to_byte_array(usize, i), test_vertex_data);
     }
 
     var test_sstable = try SSTable(u8).create(testing.allocator, &test_memtable, TEST_SSTABLE_PATH, 44);
@@ -286,12 +286,12 @@ test "SSTable#find" {
 
     const vs = [7]usize{ 254, 256, 257, 258, 259, 261, 263 };
     for (vs) |v| {
-        try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, v)) != null);
+        try testing.expect(try test_sstable.find(&utils.int_to_byte_array(usize, v)) != null);
     }
 
     const nvs = [2]usize{ 200, 300 };
     for (nvs) |v| {
-        try testing.expect(try test_sstable.find(&utils.key_from_int_data(usize, v)) == null);
+        try testing.expect(try test_sstable.find(&utils.int_to_byte_array(usize, v)) == null);
     }
 
     try clean_up(u8, test_sstable, test_memtable);

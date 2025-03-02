@@ -12,12 +12,6 @@ pub const Operations = enum(u8) {
     FIND,
 };
 
-pub const Node = struct {
-    value_size: u16,
-    value_type: ValueType,
-    value: []const u8,
-};
-
 pub fn exec(graph_storage: *GraphStorage, query_buffer: []u8) !u64 {
     return switch (query_buffer[0]) {
         0 => insert_blk: {
