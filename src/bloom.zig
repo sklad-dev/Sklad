@@ -76,9 +76,9 @@ test "test" {
     var filter = try BloomFilter.init(testing.allocator, 2, 10);
     defer filter.deinit();
 
-    filter.add(&utils.int_to_byte_array(u64, val1));
-    filter.add(&utils.int_to_byte_array(u64, val2));
+    filter.add(&utils.int_to_bytes(u64, val1));
+    filter.add(&utils.int_to_bytes(u64, val2));
 
-    try testing.expect(filter.may_contain(&utils.int_to_byte_array(u64, val1)) == true);
-    try testing.expect(filter.may_contain(&utils.int_to_byte_array(u64, val3)) == false);
+    try testing.expect(filter.may_contain(&utils.int_to_bytes(u64, val1)) == true);
+    try testing.expect(filter.may_contain(&utils.int_to_bytes(u64, val3)) == false);
 }

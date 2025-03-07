@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const global_context = @import("./global_context.zig");
-const GraphStorage = @import("./graph_storage.zig").GraphStorage;
+const TypedStorage = @import("./typed_storage.zig").TypedStorage;
 const io = @import("./io.zig");
 const parse = @import("./parse.zig");
 const utils = @import("./utils.zig");
@@ -52,9 +52,8 @@ pub const ExecuteTask = struct {
     fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
         const self: *ExecuteTask = @ptrCast(@alignCast(ptr));
         switch (self.expression) {
-            .insert => self.expression.insert.destory(),
-            .insert_connection => self.expression.insert_connection.destory(),
-            .find => self.expression.find.destory(),
+            .set => self.expression.set.destory(),
+            .get => self.expression.get.destory(),
         }
         self.executor.deinit();
         allocator.free(self.query);
@@ -65,103 +64,40 @@ pub const ExecuteTask = struct {
 const Executor = struct {
     allocator: std.mem.Allocator,
     io_context: io.IO.IoContext,
-    inserted_nodes: std.HashMap(*const parse.NodeDefinitionNode, u64, parse.NodeDefinitionNode.HashContext, std.hash_map.default_max_load_percentage),
-    graph_storage: *GraphStorage,
+    storage: *TypedStorage,
 
     pub fn init(allocator: std.mem.Allocator, io_context: io.IO.IoContext) Executor {
         return .{
             .allocator = allocator,
             .io_context = io_context,
-            .inserted_nodes = std.HashMap(
-                *const parse.NodeDefinitionNode,
-                u64,
-                parse.NodeDefinitionNode.HashContext,
-                std.hash_map.default_max_load_percentage,
-            ).init(allocator),
-            .graph_storage = global_context.get_graph_storage().?,
+            .storage = global_context.get_typed_storage().?,
         };
     }
 
     pub fn deinit(self: *Executor) void {
-        self.inserted_nodes.deinit();
+        _ = self;
     }
 
     pub fn execute(self: *Executor, expression: *parse.Expression) !void {
         switch (expression.*) {
-            .insert => try self.execute_insert_expression(&expression.*.insert),
-            .insert_connection => try self.execute_insert_connection_expression(&expression.*.insert_connection),
-            .find => try self.execute_find_expression(&expression.*.find),
+            .set => try self.execute_set_expression(&expression.*.set),
+            .get => try self.execute_get_expression(&expression.*.get),
         }
     }
 
-    fn execute_insert_expression(self: *Executor, expression: *parse.InsertExpression) !void {
-        for (expression.nodes.items) |node| {
-            const node_id = try self.graph_storage.node_storage.put(node.value, node.value_type);
-            try self.inserted_nodes.put(&node, node_id);
-        }
-
-        for (expression.connections.items) |connection| {
-            try self.insert_connection(parse.ExpressionType.insert, &connection);
+    fn execute_set_expression(self: *Executor, expression: *parse.SetExpression) !void {
+        for (expression.pairs.items) |pair| {
+            try self.storage.set(pair.key.value, pair.value.value);
         }
     }
 
-    fn execute_insert_connection_expression(self: *Executor, expression: *parse.InsertConnectionExpression) !void {
-        for (expression.connections.items) |connection| {
-            try self.insert_connection(parse.ExpressionType.insert_connection, &connection);
+    fn execute_get_expression(self: *Executor, expression: *parse.GetExpression) !void {
+        const result = try self.storage.get(expression.key.value);
+        if (result) |r| {
+            defer r.allocator.free(r.data);
+            self.io_context.send_response([]const u8, ExecutionError, self.allocator, r.data, null);
+        } else {
+            self.io_context.send_response(?u8, ExecutionError, self.allocator, null, null);
         }
-    }
-
-    fn execute_find_expression(self: *Executor, expression: *parse.FindExpression) !void {
-        var iter = expression.identifiers.iterator();
-        while (iter.next()) |identifier| {
-            const condition = identifier.value_ptr.*.value_conditions.items[0];
-            switch (condition) {
-                .value_condition => {
-                    switch (condition.value_condition.operator) {
-                        .equal => {
-                            const node_id = try self.graph_storage.node_storage.find(
-                                condition.value_condition.value,
-                                condition.value_condition.value_type,
-                            );
-                            self.io_context.send_response(u64, io.IO.IoError, self.allocator, node_id orelse 0xFFFFFFFFFFFFFFFF, null);
-                        },
-                        else => return utils.SupportingError.NotImplemented,
-                    }
-                },
-                .in_condition => return utils.SupportingError.NotImplemented,
-            }
-        }
-    }
-
-    fn get_node_id(self: *Executor, comptime E: parse.ExpressionType, node: *const parse.NodeDefinitionNode) !?u64 {
-        switch (E) {
-            inline .insert => {
-                if (self.inserted_nodes.get(node)) |node_id| {
-                    return node_id;
-                }
-            },
-            inline .insert_connection => {},
-            inline .find => {},
-        }
-
-        return try global_context
-            .get_graph_storage().?
-            .node_storage
-            .find(node.value, node.value_type);
-    }
-
-    fn insert_connection(self: *Executor, comptime E: parse.ExpressionType, connection: *const parse.ConnectionNode) !void {
-        const src_node_id = try self.get_node_id(E, &connection.source);
-        if (src_node_id == null) return ExecutionError.NodeNotFound;
-
-        const dst_node_id = try self.get_node_id(E, &connection.destination);
-        if (dst_node_id == null) return ExecutionError.NodeNotFound;
-
-        var label_node_id: u64 = 0xFFFFFFFFFFFFFFFF;
-        if (connection.label) |label_node| {
-            label_node_id = try self.get_node_id(E, &label_node) orelse 0xFFFFFFFFFFFFFFFF;
-        }
-
-        try self.graph_storage.connection_storage.put(src_node_id.?, dst_node_id.?, label_node_id);
     }
 };

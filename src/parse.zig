@@ -6,44 +6,35 @@ const lex = @import("./lex.zig");
 const utils = @import("./utils.zig");
 
 const ValueType = @import("./data_types.zig").ValueType;
+const TypedBinaryData = @import("./data_types.zig").TypedBinaryData;
 const Task = @import("./task_queue.zig").Task;
 const ExecuteTask = @import("./execute.zig").ExecuteTask;
 
+pub const ParserError = error{
+    InvalidQuery,
+    InvalidValue,
+    UnexpectedToken,
+    UnexpectedEndOfQuery,
+};
+
 pub const ExpressionType = enum {
-    insert,
-    insert_connection,
-    find,
+    set,
+    get,
 };
 
 pub const Expression = union(ExpressionType) {
-    insert: InsertExpression,
-    insert_connection: InsertConnectionExpression,
-    find: FindExpression,
+    set: SetExpression,
+    get: GetExpression,
 
     pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !Expression {
         query.current_pos = 0;
         if (query.next_token()) |token| {
             switch (token.kind) {
-                .insert_keyword => {
-                    if (query.peak_next_token()) |t| {
-                        switch (t.kind) {
-                            .connection_keyword => {
-                                query.current_pos += 1;
-                                return Expression{
-                                    .insert_connection = try InsertConnectionExpression.parse(allocator, query),
-                                };
-                            },
-                            .left_square_bracket => return Expression{
-                                .insert = try InsertExpression.parse(allocator, query),
-                            },
-                            else => return ParserError.UnexpectedToken,
-                        }
-                    } else {
-                        return ParserError.UnexpectedToken;
-                    }
+                .set_keyword => return Expression{
+                    .set = try SetExpression.parse(allocator, query),
                 },
-                .find_keyword => return Expression{
-                    .find = try FindExpression.parse(allocator, query),
+                .get_keyword => return Expression{
+                    .get = try GetExpression.parse(allocator, query),
                 },
                 else => return ParserError.UnexpectedToken,
             }
@@ -53,405 +44,198 @@ pub const Expression = union(ExpressionType) {
     }
 };
 
-pub const InsertExpression = struct {
+pub const SetExpression = struct {
     allocator: std.mem.Allocator,
-    nodes: std.ArrayList(NodeDefinitionNode),
-    connections: std.ArrayList(ConnectionNode),
+    pairs: std.ArrayList(KeyValuePairNode),
 
-    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !InsertExpression {
-        var nodes = std.ArrayList(NodeDefinitionNode).init(allocator);
-        var connections = std.ArrayList(ConnectionNode).init(allocator);
+    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !SetExpression {
+        var pairs = std.ArrayList(KeyValuePairNode).init(allocator);
         while (query.peak_next_token()) |token| {
             switch (token.kind) {
-                .left_square_bracket => try nodes.append(try NodeDefinitionNode.parse(allocator, query)),
-                .pre_label_connection_op => {
-                    _ = query.next_token();
-                    try nodes.append(try NodeDefinitionNode.parse(allocator, query));
-                    _ = try query.expect_token(&[_]lex.Token.Kind{.left_right_connection_op});
-                    try nodes.append(try NodeDefinitionNode.parse(allocator, query));
-                    try connections.append(ConnectionNode{
-                        .source = nodes.items[nodes.items.len - 3],
-                        .destination = nodes.items[nodes.items.len - 1],
-                        .label = nodes.items[nodes.items.len - 2],
-                    });
-                },
-                .left_right_connection_op => {
-                    _ = query.next_token();
-                    try nodes.append(try NodeDefinitionNode.parse(allocator, query));
-                    try connections.append(ConnectionNode{
-                        .source = nodes.items[nodes.items.len - 2],
-                        .destination = nodes.items[nodes.items.len - 1],
-                        .label = null,
-                    });
-                },
+                .string_value, .numeric_value, .bool_value => try pairs.append(try KeyValuePairNode.parse(allocator, query)),
                 .comma => {
                     _ = query.next_token();
                     continue;
                 },
-                .semicolon => {
-                    _ = query.next_token();
-                    break;
-                },
                 else => return ParserError.UnexpectedToken,
             }
         }
         return .{
             .allocator = allocator,
-            .nodes = nodes,
-            .connections = connections,
+            .pairs = pairs,
         };
     }
 
-    pub fn destory(self: *InsertExpression) void {
-        for (self.nodes.items) |node| {
-            node.deinit();
+    pub fn destory(self: *SetExpression) void {
+        for (self.pairs.items) |pair| {
+            pair.deinit();
         }
-        self.nodes.deinit();
-        self.connections.deinit();
+        self.pairs.deinit();
     }
 };
 
-pub const InsertConnectionExpression = struct {
+pub const GetExpression = struct {
     allocator: std.mem.Allocator,
-    connections: std.ArrayList(ConnectionNode),
+    key: ValueNode,
 
-    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !InsertConnectionExpression {
-        var connections = std.ArrayList(ConnectionNode).init(allocator);
-        while (query.peak_next_token()) |token| {
+    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !GetExpression {
+        if (query.peak_next_token()) |token| {
             switch (token.kind) {
-                .left_square_bracket => try connections.append(try ConnectionNode.parse(allocator, query)),
-                .comma => {
-                    _ = query.next_token();
-                    continue;
-                },
-                .semicolon => {
-                    _ = query.next_token();
-                    break;
+                .string_value, .numeric_value, .bool_value => return .{
+                    .allocator = allocator,
+                    .key = try ValueNode.parse(allocator, query),
                 },
                 else => return ParserError.UnexpectedToken,
             }
         }
+        return ParserError.InvalidQuery;
+    }
+
+    pub fn destory(self: *GetExpression) void {
+        self.key.deinit();
+    }
+};
+
+pub const KeyValuePairNode = struct {
+    allocator: std.mem.Allocator,
+    key: ValueNode,
+    value: ValueNode,
+
+    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !KeyValuePairNode {
+        const key = try ValueNode.parse(allocator, query);
+        const value = try ValueNode.parse(allocator, query);
         return .{
             .allocator = allocator,
-            .connections = connections,
+            .key = key,
+            .value = value,
         };
     }
 
-    pub fn destory(self: *InsertConnectionExpression) void {
-        for (self.connections.items) |connection| {
-            connection.deinit();
-        }
-        self.connections.deinit();
+    pub fn deinit(self: *const KeyValuePairNode) void {
+        self.key.deinit();
+        self.value.deinit();
     }
 };
 
-pub const FindExpression = struct {
+pub const ValueNode = struct {
     allocator: std.mem.Allocator,
-    identifiers: std.StringHashMap(*NodeIdentifierNode),
+    value: TypedBinaryData,
 
-    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !FindExpression {
-        var identifiers = std.StringHashMap(*NodeIdentifierNode).init(allocator);
-        while (query.peak_next_token()) |token| {
-            switch (token.kind) {
-                .left_square_bracket => {
-                    const node_identifier = try allocator.create(NodeIdentifierNode);
-                    node_identifier.* = try NodeIdentifierNode.parse(allocator, query);
-                    try identifiers.put(node_identifier.name, node_identifier);
-                },
-                .comma => {
-                    _ = query.next_token();
-                    continue;
-                },
-                .where_keyword => {
-                    try WhereSubexpression.parse(allocator, query, &identifiers);
-                },
-                else => return ParserError.UnexpectedToken,
-            }
-        }
-        return .{
-            .allocator = allocator,
-            .identifiers = identifiers,
-        };
-    }
-
-    pub fn destory(self: *FindExpression) void {
-        var iter = self.identifiers.iterator();
-        while (iter.next()) |identifier| {
-            identifier.value_ptr.*.*.deinit();
-            self.allocator.destroy(identifier.value_ptr.*);
-        }
-        self.identifiers.deinit();
-    }
-};
-
-pub const WhereSubexpression = struct {
-    allocator: std.mem.Allocator,
-    conditions: std.ArrayList(IdentifierCondition),
-
-    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery, identifiers: *std.StringHashMap(*NodeIdentifierNode)) !void {
-        _ = try query.expect_token(&[_]lex.Token.Kind{.where_keyword});
-        while (query.peak_next_token()) |token| {
-            switch (token.kind) {
-                .left_square_bracket => {},
-                .identifier => try IdentifierCondition.parse(allocator, query, identifiers),
-                .left_bracket => return utils.SupportingError.NotImplemented,
-                else => return ParserError.UnexpectedToken,
-            }
-        }
-    }
-
-    pub fn destory(self: *WhereSubexpression) void {
-        for (self.conditions.items) |condition| {
-            condition.deinit();
-        }
-        self.conditions.deinit();
-    }
-};
-
-pub const ConnectionNode = struct {
-    source: NodeDefinitionNode,
-    destination: NodeDefinitionNode,
-    label: ?NodeDefinitionNode,
-
-    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !ConnectionNode {
-        const source = try NodeDefinitionNode.parse(allocator, query);
-        const token = try query.expect_token(&[_]lex.Token.Kind{ .pre_label_connection_op, .left_right_connection_op });
-        var label: ?NodeDefinitionNode = null;
-        if (token.kind == .pre_label_connection_op) {
-            label = try NodeDefinitionNode.parse(allocator, query);
-            _ = try query.expect_token(&[_]lex.Token.Kind{.left_right_connection_op});
-        }
-        const destination = try NodeDefinitionNode.parse(allocator, query);
-
-        return .{
-            .source = source,
-            .label = label,
-            .destination = destination,
-        };
-    }
-
-    pub fn deinit(self: *const ConnectionNode) void {
-        self.source.deinit();
-        self.destination.deinit();
-        if (self.label) |label| {
-            label.deinit();
-        }
-    }
-};
-
-pub const ConditionOperator = enum(u8) {
-    equal,
-    not_equal,
-    greater_than,
-    greater_or_equal,
-    less_than,
-    less_or_equal,
-};
-
-pub const IdentifierConditionType = enum {
-    value_condition,
-    in_condition,
-};
-
-pub const IdentifierCondition = union(IdentifierConditionType) {
-    value_condition: ValueConditionNode,
-    in_condition: InConditionNode,
-
-    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery, identifiers: *std.StringHashMap(*NodeIdentifierNode)) !void {
-        const identifier_token = try query.expect_token(&[_]lex.Token.Kind{.identifier});
-        var identifier_node = identifiers.get(identifier_token.string()) orelse return ParserError.UnknownIdentifier;
-
-        const operator_token = query.peak_next_token();
-        switch (operator_token.?.kind) {
-            .equal_operator, .not_equal_operator, .greater_operator, .greater_or_equal_operator, .less_operator, .less_or_equal_operator => {
-                try identifier_node.value_conditions.append(IdentifierCondition{
-                    .value_condition = try ValueConditionNode.parse(
-                        allocator,
-                        query,
-                        identifier_node,
-                    ),
-                });
+    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !ValueNode {
+        const key_token = try query.expect_token(&[_]lex.Token.Kind{ .string_value, .numeric_value, .bool_value });
+        switch (key_token.kind) {
+            .string_value => {
+                return .{
+                    .allocator = allocator,
+                    .value = .{
+                        .allocator = allocator,
+                        .data_type = ValueType.string,
+                        .data = try value_from_str(allocator, .string, key_token.string()),
+                    },
+                };
             },
-            .in_keyword => return utils.SupportingError.NotImplemented,
-            else => return ParserError.UnexpectedToken,
-        }
-    }
-
-    pub fn deinit(self: IdentifierCondition) void {
-        switch (self) {
-            .value_condition => self.value_condition.deinit(),
-            .in_condition => {},
-        }
-    }
-};
-
-pub const ValueConditionNode = struct {
-    allocator: std.mem.Allocator,
-    operator: ConditionOperator,
-    value_type: ValueType,
-    value: []u8,
-
-    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery, identifier_node: *NodeIdentifierNode) !ValueConditionNode {
-        const operator = try query.expect_token(
-            &[_]lex.Token.Kind{
-                .equal_operator,
-                .not_equal_operator,
-                .greater_operator,
-                .greater_or_equal_operator,
-                .less_operator,
-                .less_or_equal_operator,
+            .numeric_value => {
+                const value_string = key_token.string();
+                if (std.mem.containsAtLeast(u8, value_string, 1, ".")) {
+                    return .{
+                        .allocator = allocator,
+                        .value = .{
+                            .allocator = allocator,
+                            .data_type = ValueType.bigfloat,
+                            .data = try value_from_str(allocator, .boolean, value_string),
+                        },
+                    };
+                } else {
+                    if (std.mem.startsWith(u8, value_string, "-")) {
+                        if (value_from_str(allocator, .smallint, value_string)) |value| {
+                            return .{
+                                .allocator = allocator,
+                                .value = .{
+                                    .allocator = allocator,
+                                    .data_type = ValueType.smallint,
+                                    .data = value,
+                                },
+                            };
+                        } else |_| {
+                            if (value_from_str(allocator, .int, value_string)) |value| {
+                                return .{
+                                    .allocator = allocator,
+                                    .value = .{
+                                        .allocator = allocator,
+                                        .data_type = ValueType.int,
+                                        .data = value,
+                                    },
+                                };
+                            } else |_| {
+                                if (value_from_str(allocator, .bigint, value_string)) |value| {
+                                    return .{
+                                        .allocator = allocator,
+                                        .value = .{
+                                            .allocator = allocator,
+                                            .data_type = ValueType.bigint,
+                                            .data = value,
+                                        },
+                                    };
+                                } else |_| {
+                                    return ParserError.InvalidValue;
+                                }
+                            }
+                        }
+                    } else {
+                        if (value_from_str(allocator, .smallserial, value_string)) |value| {
+                            return .{
+                                .allocator = allocator,
+                                .value = .{
+                                    .allocator = allocator,
+                                    .data_type = ValueType.smallserial,
+                                    .data = value,
+                                },
+                            };
+                        } else |_| {
+                            if (value_from_str(allocator, .serial, value_string)) |value| {
+                                return .{
+                                    .allocator = allocator,
+                                    .value = .{
+                                        .allocator = allocator,
+                                        .data_type = ValueType.serial,
+                                        .data = value,
+                                    },
+                                };
+                            } else |_| {
+                                if (value_from_str(allocator, .bigserial, value_string)) |value| {
+                                    return .{
+                                        .allocator = allocator,
+                                        .value = .{
+                                            .allocator = allocator,
+                                            .data_type = ValueType.bigserial,
+                                            .data = value,
+                                        },
+                                    };
+                                } else |_| {
+                                    return ParserError.InvalidValue;
+                                }
+                            }
+                        }
+                    }
+                }
             },
-        );
-        const condition_value = try query.expect_token(
-            &[_]lex.Token.Kind{
-                .string_value,
-                .numeric_value,
-                .true_keyword,
-                .false_keyword,
+            .bool_value => {
+                return .{
+                    .allocator = allocator,
+                    .value = .{
+                        .allocator = allocator,
+                        .data_type = ValueType.boolean,
+                        .data = try value_from_str(allocator, .boolean, key_token.string()),
+                    },
+                };
             },
-        );
-
-        return ValueConditionNode{
-            .allocator = allocator,
-            .operator = try operator_type_from_operator_token(&operator),
-            .value_type = identifier_node.value_type,
-            .value = try value_from_str(allocator, identifier_node.value_type, condition_value.string()),
-        };
-    }
-
-    pub fn deinit(self: ValueConditionNode) void {
-        self.allocator.free(self.value);
-    }
-
-    inline fn operator_type_from_operator_token(token: *const lex.Token) !ConditionOperator {
-        switch (token.kind) {
-            .equal_operator => return ConditionOperator.equal,
-            .not_equal_operator => return ConditionOperator.not_equal,
-            .greater_operator => return ConditionOperator.greater_than,
-            .greater_or_equal_operator => return ConditionOperator.greater_or_equal,
-            .less_operator => return ConditionOperator.less_than,
-            .less_or_equal_operator => return ConditionOperator.less_or_equal,
-            else => return ParserError.UnexpectedToken,
+            else => unreachable,
         }
     }
-};
 
-pub const InConditionNode = struct {
-    allocator: std.mem.Allocator,
-    operator: ConditionOperator,
-    value_type: ValueType,
-    values: std.ArrayList([]u8),
-};
-
-pub const ConnectionConditionNode = struct {
-    allocator: std.mem.Allocator,
-    source: NodeNode,
-    destination: NodeNode,
-    label: ?NodeNode,
-};
-
-pub const NodeType = enum {
-    identifier_pointer,
-    identifier,
-    definition,
-};
-
-pub const NodeNode = union(NodeType) {
-    identifier_pointer: *NodeIdentifierNode,
-    identifier: NodeIdentifierNode,
-    definition: NodeDefinitionNode,
-};
-
-pub const NodeIdentifierNode = struct {
-    allocator: std.mem.Allocator,
-    name: []u8,
-    value_type: ValueType,
-    value_conditions: std.ArrayList(IdentifierCondition),
-    connection_conditions: std.ArrayList(ConnectionConditionNode),
-
-    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !NodeIdentifierNode {
-        _ = try query.expect_token(&[_]lex.Token.Kind{.left_square_bracket});
-        const value_type = try value_type_from_type_specifier_token(
-            try query.expect_token(&[_]lex.Token.Kind{.type_specifier}),
-        );
-        const identifier = try query.expect_token(&[_]lex.Token.Kind{.identifier});
-        const identifier_name = try allocator.alloc(u8, identifier.end - identifier.start);
-        @memcpy(identifier_name, identifier.string());
-        _ = try query.expect_token(&[_]lex.Token.Kind{.right_square_bracket});
-        return .{
-            .allocator = allocator,
-            .name = identifier_name,
-            .value_type = value_type,
-            .value_conditions = std.ArrayList(IdentifierCondition).init(allocator),
-            .connection_conditions = std.ArrayList(ConnectionConditionNode).init(allocator),
-        };
+    pub fn deinit(self: *const ValueNode) void {
+        self.allocator.free(self.value.data);
     }
-
-    pub fn deinit(self: NodeIdentifierNode) void {
-        self.allocator.free(self.name);
-        for (self.value_conditions.items) |condition| {
-            condition.deinit();
-        }
-        self.value_conditions.deinit();
-        self.connection_conditions.deinit();
-    }
-};
-
-pub const NodeDefinitionNode = struct {
-    allocator: std.mem.Allocator,
-    value_type: ValueType,
-    value: []u8,
-
-    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !NodeDefinitionNode {
-        _ = try query.expect_token(&[_]lex.Token.Kind{.left_square_bracket});
-        const value_type = try value_type_from_type_specifier_token(
-            try query.expect_token(&[_]lex.Token.Kind{.type_specifier}),
-        );
-        const value_token = try query.expect_token(
-            &[_]lex.Token.Kind{
-                .string_value,
-                .numeric_value,
-                .true_keyword,
-                .false_keyword,
-            },
-        );
-        _ = try query.expect_token(&[_]lex.Token.Kind{.right_square_bracket});
-        return .{
-            .allocator = allocator,
-            .value_type = value_type,
-            .value = try value_from_str(allocator, value_type, value_token.string()),
-        };
-    }
-
-    pub fn deinit(self: NodeDefinitionNode) void {
-        self.allocator.free(self.value);
-    }
-
-    pub const HashContext = struct {
-        pub fn hash(self: @This(), node: *const NodeDefinitionNode) u64 {
-            _ = self;
-            var h = std.hash.Wyhash.init(0);
-            h.update(node.value);
-            h.update(std.mem.asBytes(&@intFromEnum(node.value_type)));
-            return h.final();
-        }
-
-        pub fn eql(self: @This(), n1: *const NodeDefinitionNode, n2: *const NodeDefinitionNode) bool {
-            _ = self;
-            if (std.mem.eql(u8, n1.value, n2.value) and n1.value_type == n2.value_type) {
-                return true;
-            }
-            return false;
-        }
-    };
-};
-
-pub const ParserError = error{
-    InvalidQuery,
-    UnexpectedToken,
-    UnexpectedEndOfQuery,
-    UnknownTypeSpecifier,
-    UnknownIdentifier,
 };
 
 pub const TokenizedQuery = struct {
@@ -468,7 +252,7 @@ pub const TokenizedQuery = struct {
     }
 
     pub fn next_token(self: *TokenizedQuery) ?lex.Token {
-        if (self.current_pos >= self.tokens.items.len - 1) {
+        if (self.current_pos > self.tokens.items.len - 1) {
             return null;
         }
         defer self.current_pos += 1;
@@ -476,14 +260,14 @@ pub const TokenizedQuery = struct {
     }
 
     pub fn peak_next_token(self: *TokenizedQuery) ?lex.Token {
-        if (self.current_pos >= self.tokens.items.len - 1) {
+        if (self.current_pos > self.tokens.items.len - 1) {
             return null;
         }
         return self.tokens.items[self.current_pos];
     }
 
     pub fn expect_token(self: *TokenizedQuery, token_kinds: []const lex.Token.Kind) !lex.Token {
-        if (self.current_pos >= self.tokens.items.len - 1) {
+        if (self.current_pos > self.tokens.items.len - 1) {
             return ParserError.UnexpectedEndOfQuery;
         }
         defer self.current_pos += 1;
@@ -533,7 +317,7 @@ pub const ParserTask = struct {
         };
         errdefer {
             switch (expression) {
-                .insert => expression.insert.destory(),
+                .set => expression.set.destory(),
                 .insert_connection => expression.insert_connection.destory(),
                 .find => expression.find.destroy(),
             }
@@ -564,25 +348,17 @@ pub const ParserTask = struct {
     }
 };
 
-fn value_type_from_type_specifier_token(token: lex.Token) !ValueType {
-    if (std.meta.stringToEnum(ValueType, token.string())) |value_type| {
-        return value_type;
-    } else {
-        return ParserError.UnknownTypeSpecifier;
-    }
-}
-
 fn value_from_str(allocator: std.mem.Allocator, value_type: ValueType, value_str: []const u8) ![]u8 {
     const tmp: []const u8 = switch (value_type) {
-        .boolean => &try utils.to_byte_key(bool, (std.mem.eql(u8, value_str, "true"))),
-        .smallint => &try utils.to_byte_key(i8, try std.fmt.parseInt(i8, value_str, 10)),
-        .int => &try utils.to_byte_key(i32, try std.fmt.parseInt(i32, value_str, 10)),
-        .bigint => &try utils.to_byte_key(i64, try std.fmt.parseInt(i64, value_str, 10)),
-        .smallserial => &try utils.to_byte_key(u8, try std.fmt.parseInt(u8, value_str, 10)),
-        .serial => &try utils.to_byte_key(u32, try std.fmt.parseInt(u32, value_str, 10)),
-        .bigserial => &try utils.to_byte_key(u64, try std.fmt.parseInt(u64, value_str, 10)),
-        .float => &try utils.to_byte_key(f32, try std.fmt.parseFloat(f32, value_str)),
-        .bigfloat => &try utils.to_byte_key(f64, try std.fmt.parseFloat(f64, value_str)),
+        .boolean => &try utils.to_bytes(bool, (std.mem.eql(u8, value_str, "true"))),
+        .smallint => &try utils.to_bytes(i8, try std.fmt.parseInt(i8, value_str, 10)),
+        .int => &try utils.to_bytes(i32, try std.fmt.parseInt(i32, value_str, 10)),
+        .bigint => &try utils.to_bytes(i64, try std.fmt.parseInt(i64, value_str, 10)),
+        .smallserial => &try utils.to_bytes(u8, try std.fmt.parseInt(u8, value_str, 10)),
+        .serial => &try utils.to_bytes(u32, try std.fmt.parseInt(u32, value_str, 10)),
+        .bigserial => &try utils.to_bytes(u64, try std.fmt.parseInt(u64, value_str, 10)),
+        .float => &try utils.to_bytes(f32, try std.fmt.parseFloat(f32, value_str)),
+        .bigfloat => &try utils.to_bytes(f64, try std.fmt.parseFloat(f64, value_str)),
         .string => value_str,
     };
     const value = try allocator.alloc(u8, tmp.len);
@@ -593,44 +369,30 @@ fn value_from_str(allocator: std.mem.Allocator, value_type: ValueType, value_str
 // Test
 const testing = std.testing;
 
-test "Parse insert query" {
+test "Parse set query" {
     var tokens = std.ArrayList(lex.Token).init(testing.allocator);
     defer tokens.deinit();
 
-    const insert_query = "insert [string 'name']->[string 'toothbrush'], [int 4], [float 3.0]-[string 'price']->[string 'bread'];";
+    const insert_query = "set 'test' 4, 'another test' 12.45, 'falsy' false";
     var lexer = lex.Lexer.init(insert_query, &tokens);
     try testing.expect(lexer.lex() == 0);
 
     var query = TokenizedQuery.init(testing.allocator, &tokens);
     var expression = try Expression.parse(testing.allocator, &query);
-    defer expression.insert.destory();
-    try testing.expect(expression.insert.nodes.items.len == 6);
-    try testing.expect(expression.insert.connections.items.len == 2);
+    defer expression.set.destory();
+    try testing.expect(expression.set.pairs.items.len == 3);
 }
 
-test "Parse insert connection query" {
+test "Parse get query" {
     var tokens = std.ArrayList(lex.Token).init(testing.allocator);
     defer tokens.deinit();
 
-    const insert_node_query = "insert connection [string 'name']->[string 'toothbrush'], [float 3.0]-[string 'price']->[string 'bread'];";
+    const insert_node_query = "get 'test'";
     var lexer = lex.Lexer.init(insert_node_query, &tokens);
     try testing.expect(lexer.lex() == 0);
 
     var query = TokenizedQuery.init(testing.allocator, &tokens);
     var expression = try Expression.parse(testing.allocator, &query);
-    defer expression.insert_connection.destory();
-    try testing.expect(expression.insert_connection.connections.items.len == 2);
-}
-
-test "Parse find query" {
-    var tokens = std.ArrayList(lex.Token).init(testing.allocator);
-    defer tokens.deinit();
-
-    const insert_node_query = "find [string x] where x = 'type';";
-    var lexer = lex.Lexer.init(insert_node_query, &tokens);
-    try testing.expect(lexer.lex() == 0);
-
-    var query = TokenizedQuery.init(testing.allocator, &tokens);
-    var expression = try Expression.parse(testing.allocator, &query);
-    defer expression.find.destory();
+    defer expression.get.destory();
+    try testing.expect(std.mem.eql(u8, expression.get.key.value.data, "test"));
 }

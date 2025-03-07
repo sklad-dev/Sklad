@@ -48,7 +48,7 @@ pub const IO = struct {
     }
 
     pub const Request = struct {
-        query: []u8,
+        command: []u8,
     };
 
     pub const IoContext = struct {
@@ -105,14 +105,14 @@ pub const IO = struct {
                 };
                 lexer_task.* = LexerTask.init(
                     task_queue.?.allocator,
-                    request.value.query.len,
+                    request.value.command.len,
                     self.io_context,
                 ) catch |e| {
                     std.log.err("Error! Failed to create a lexer task: {any}", .{e});
                     return;
                 };
 
-                @memcpy(lexer_task.query, request.value.query);
+                @memcpy(lexer_task.query, request.value.command);
                 lexer_task.tokens.* = std.ArrayList(Token).init(task_queue.?.allocator);
 
                 global_context.get_task_queue().?.enqueue(lexer_task.task());
