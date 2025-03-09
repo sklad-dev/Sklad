@@ -19,7 +19,7 @@ pub inline fn read_number(comptime T: type, file: std.fs.File) !T {
     return value;
 }
 
-pub inline fn number_from_bytes(comptime T: type, buffer: []const u8, offset: usize) T {
+pub inline fn int_from_bytes(comptime T: type, buffer: []const u8, offset: usize) T {
     return std.mem.readInt(T, buffer[offset .. offset + @sizeOf(T)], std.builtin.Endian.big);
 }
 

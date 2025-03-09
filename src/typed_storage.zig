@@ -25,15 +25,15 @@ pub const TypedStorage = struct {
     }
 
     pub fn set(self: *TypedStorage, key: TypedBinaryData, value: TypedBinaryData) !void {
-        const key_bytes = try self.build_key(key.data_type, key.data);
+        const key_bytes = try self.build_binary_data(key.data_type, key.data);
         defer self.allocator.free(key_bytes);
-        const value_bytes = try self.build_key(value.data_type, value.data);
+        const value_bytes = try self.build_binary_data(value.data_type, value.data);
         defer self.allocator.free(value_bytes);
         try self.storage.put(key_bytes, value_bytes);
     }
 
     pub fn get(self: *TypedStorage, key: TypedBinaryData) !?TypedBinaryData {
-        const binary_key = try self.build_key(key.data_type, key.data);
+        const binary_key = try self.build_binary_data(key.data_type, key.data);
         defer self.allocator.free(binary_key);
 
         const result = try self.storage.find(binary_key);
@@ -45,7 +45,7 @@ pub const TypedStorage = struct {
         return null;
     }
 
-    inline fn build_key(self: *const TypedStorage, node_type: ValueType, node_bytes: []const u8) ![]u8 {
+    inline fn build_binary_data(self: *const TypedStorage, node_type: ValueType, node_bytes: []const u8) ![]u8 {
         const key_buffer = try self.allocator.alloc(u8, 1 + node_bytes.len);
         key_buffer[0] = @intFromEnum(node_type);
         @memcpy(key_buffer[1..], node_bytes);

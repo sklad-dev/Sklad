@@ -16,7 +16,7 @@ pub const ValueType = enum(u8) {
     string, // variable length string
 
     pub fn from_bytes(bytes: []const u8) ValueType {
-        return @enumFromInt(utils.number_from_bytes(u8, bytes, 0));
+        return @enumFromInt(utils.int_from_bytes(u8, bytes, 0));
     }
 };
 

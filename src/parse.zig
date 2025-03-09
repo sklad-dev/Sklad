@@ -142,7 +142,7 @@ pub const ValueNode = struct {
                         .value = .{
                             .allocator = allocator,
                             .data_type = ValueType.bigfloat,
-                            .data = try value_from_str(allocator, .boolean, value_string),
+                            .data = try value_from_str(allocator, .bigfloat, value_string),
                         },
                     };
                 } else {

@@ -107,7 +107,7 @@ pub const Lexer = struct {
                 }
             },
             else => {
-                if (is_numeric(char) and self.state != .numeric_value and self.state != .keyword and self.state != .string_value) {
+                if ((is_numeric(char) or char == '-') and self.state != .numeric_value and self.state != .keyword and self.state != .string_value) {
                     try self.on_state_change(pos, .numeric_value);
                     self.buf[0] = char;
                     self.current_token_len = 1;
@@ -302,10 +302,10 @@ test "Lexer#lex set node query" {
     try testing.expect(tokens.items.len == 3);
     tokens.clearAndFree();
 
-    const set_query2 = "set 'test' 4, 'another test' 12.45, 'falsy' false";
+    const set_query2 = "set 'test' 4, 'test1' 12.45, 'test2' -23456, 'test3' -12345.6789, 'falsy' false";
     lexer = Lexer.init(set_query2, &tokens);
     try testing.expect(lexer.lex() == 0);
-    try testing.expect(tokens.items.len == 9);
+    try testing.expect(tokens.items.len == 15);
 }
 
 test "Lexer#lex get query" {
