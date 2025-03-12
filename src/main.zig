@@ -10,7 +10,7 @@ const TaskQueue = @import("./task_queue.zig").TaskQueue;
 const DEFAULT_CONFIGURATION_FILE_PATH = @import("./json_configurator.zig").DEFAULT_CONFIGURATION_FILE_PATH;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer {
         _ = gpa.deinit();
     }
