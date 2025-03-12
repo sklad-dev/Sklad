@@ -102,7 +102,7 @@ const Executor = struct {
         }
     }
 
-    fn send_get_result(self: *Executor, result: TypedBinaryData) void {
+    fn send_get_result(self: *const Executor, result: TypedBinaryData) void {
         switch (result.data_type) {
             .boolean => {
                 const v = utils.int_from_bytes(u8, result.data, 0);

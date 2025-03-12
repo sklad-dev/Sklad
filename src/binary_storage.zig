@@ -188,7 +188,7 @@ pub const BinaryStorage = struct {
         try self.memtables.append(memtable);
     }
 
-    fn deinit_memtables(self: *Self) void {
+    fn deinit_memtables(self: *const Self) void {
         for (self.memtables.items) |t| {
             t.destroy();
             self.allocator.destroy(t);

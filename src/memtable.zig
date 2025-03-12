@@ -144,7 +144,7 @@ pub const Memtable = struct {
         return result.*.value;
     }
 
-    pub fn destroy(self: *Memtable) void {
+    pub fn destroy(self: *const Memtable) void {
         var current = self.head;
         var next = current;
         while (current != null) {
@@ -186,7 +186,7 @@ pub const Memtable = struct {
         return null;
     }
 
-    inline fn pick_level(self: *Memtable) u8 {
+    inline fn pick_level(self: *const Memtable) u8 {
         var level: u8 = 1;
         while (level < self.max_level and self.rng.float(f32) > (1 - self.level_probability)) {
             level += 1;

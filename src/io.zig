@@ -55,7 +55,7 @@ pub const IO = struct {
         address: std.net.Address,
         socket: std.posix.socket_t,
 
-        pub fn send_response(self: *IoContext, comptime T: type, comptime E: type, allocator: std.mem.Allocator, data: T, err: ?E) void {
+        pub fn send_response(self: *const IoContext, comptime T: type, comptime E: type, allocator: std.mem.Allocator, data: T, err: ?E) void {
             const response = Response(T, E){
                 .data = data,
                 .errors = err,

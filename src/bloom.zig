@@ -5,7 +5,7 @@ pub const BloomFilter = struct {
     allocator: std.mem.Allocator,
     filter: []u8,
 
-    pub fn may_contain(self: BloomFilter, key: []const u8) bool {
+    pub fn may_contain(self: *const BloomFilter, key: []const u8) bool {
         if (self.filter.len < 2) {
             return false;
         }
@@ -47,7 +47,7 @@ pub const BloomFilter = struct {
         };
     }
 
-    pub fn add(self: BloomFilter, key: []const u8) void {
+    pub fn add(self: *const BloomFilter, key: []const u8) void {
         const num_hashes = self.filter[self.filter.len - 1];
         const filter_size_bits: u32 = (@as(u32, @intCast(self.filter.len)) - 1) * 8;
         var hash = std.hash.XxHash32.hash(SEED, key);
@@ -59,7 +59,7 @@ pub const BloomFilter = struct {
         }
     }
 
-    pub inline fn deinit(self: *BloomFilter) void {
+    pub inline fn deinit(self: *const BloomFilter) void {
         self.allocator.free(self.filter);
     }
 };

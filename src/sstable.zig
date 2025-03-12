@@ -128,7 +128,7 @@ pub const SSTable = struct {
         };
     }
 
-    pub inline fn close(self: *SSTable) void {
+    pub inline fn close(self: *const SSTable) void {
         if (self.min_key != null) {
             self.allocator.free(self.min_key.?);
         }
