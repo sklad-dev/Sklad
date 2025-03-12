@@ -21,8 +21,9 @@ pub const Wal = struct {
         };
     }
 
-    pub fn close(self: *const Wal) void {
+    pub fn close_and_free(self: *const Wal) void {
         self.file.close();
+        self.allocator.free(self.path);
     }
 
     pub inline fn is_empty(self: *const Wal) !bool {

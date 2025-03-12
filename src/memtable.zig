@@ -13,7 +13,6 @@ pub const Memtable = struct {
     max_level: u8,
     level_probability: f32,
     level: u8 = 1,
-    wal_name: []const u8,
     wal: w.Wal,
     compare_fn: *const fn (data_types.BinaryData, data_types.BinaryData) isize = utils.compare_bitwise,
     head: ?*MemtableNode = null,
@@ -68,7 +67,6 @@ pub const Memtable = struct {
             .rng = random,
             .max_level = max_level,
             .level_probability = level_probability,
-            .wal_name = wal_name,
             .wal = wal,
         };
     }
@@ -79,7 +77,6 @@ pub const Memtable = struct {
             .rng = random,
             .max_level = max_level,
             .level_probability = level_probability,
-            .wal_name = wal.path,
             .wal = wal,
         };
 
@@ -157,8 +154,7 @@ pub const Memtable = struct {
             self.allocator.destroy(current.?);
             current = next;
         }
-        self.wal.close();
-        self.allocator.free(self.wal_name);
+        self.wal.close_and_free();
     }
 
     pub inline fn iterator(self: *const Memtable) MemtableIterator {
