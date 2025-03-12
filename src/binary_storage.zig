@@ -161,11 +161,14 @@ pub const BinaryStorage = struct {
         while (try it.next()) |entry| {
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".wal")) {
                 const wal_name = try self.allocator.alloc(u8, self.path.len + 9);
-                const wal = Wal{ .path = try std.fmt.bufPrint(
-                    wal_name,
-                    "{s}/{s}",
-                    .{ self.path, entry.name },
-                ) };
+                const wal = try Wal.open(
+                    self.allocator,
+                    try std.fmt.bufPrint(
+                        wal_name,
+                        "{s}/{s}",
+                        .{ self.path, entry.name },
+                    ),
+                );
                 try self.restore_memtable(wal);
             }
         }

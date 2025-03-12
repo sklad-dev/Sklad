@@ -54,12 +54,14 @@ pub const Memtable = struct {
         const wal_name = try allocator.alloc(u8, wal_path.len + 9);
         const wal_id = utils.generate_id(random);
 
-        var wal = w.Wal{ .path = try std.fmt.bufPrint(
-            wal_name,
-            "{s}/{x:0>2}{x:0>2}.wal",
-            .{ wal_path, wal_id[0], wal_id[1] },
-        ) };
-        try wal.open();
+        const wal = try w.Wal.open(
+            allocator,
+            try std.fmt.bufPrint(
+                wal_name,
+                "{s}/{x:0>2}{x:0>2}.wal",
+                .{ wal_path, wal_id[0], wal_id[1] },
+            ),
+        );
 
         return Memtable{
             .allocator = allocator,
@@ -80,7 +82,6 @@ pub const Memtable = struct {
             .wal_name = wal.path,
             .wal = wal,
         };
-        try memtable.wal.open();
 
         while (memtable.wal.read_record(allocator)) |record| {
             try memtable.add(record.key, record.value);
