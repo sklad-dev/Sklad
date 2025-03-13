@@ -62,7 +62,7 @@ pub const BinaryStorage = struct {
             const filled_memtable = self.memtables.pop().?;
 
             const max_file_id = self.table_file_manager.level_counters.get(0) orelse -1;
-            const file_name_buf = try self.allocator.alloc(u8, self.path.len + 11 + utils.num_digits(i16, max_file_id));
+            const file_name_buf = try self.allocator.alloc(u8, self.path.len + 11 + utils.num_digits(i16, max_file_id + 1));
             const file_name = try std.fmt.bufPrint(
                 file_name_buf,
                 "{s}/0.{d}.sstable",

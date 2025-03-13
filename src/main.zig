@@ -10,21 +10,18 @@ const TaskQueue = @import("./task_queue.zig").TaskQueue;
 const DEFAULT_CONFIGURATION_FILE_PATH = @import("./json_configurator.zig").DEFAULT_CONFIGURATION_FILE_PATH;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
-    defer {
-        _ = gpa.deinit();
-    }
+    const allocator = std.heap.smp_allocator;
 
-    var json_conf = try JsonConfigurator.init(gpa.allocator(), DEFAULT_CONFIGURATION_FILE_PATH);
+    var json_conf = try JsonConfigurator.init(allocator, DEFAULT_CONFIGURATION_FILE_PATH);
     var conf = json_conf.configurator();
     global_context.load_configuration(&conf);
     std.log.info("Configuration is loaded", .{});
 
-    var storage = try TypedStorage.init(gpa.allocator(), conf.memtable_max_size());
+    var storage = try TypedStorage.init(allocator, conf.memtable_max_size());
     defer storage.stop();
     std.log.info("Storage engine is initialized", .{});
 
-    var task_queue = TaskQueue.init(gpa.allocator());
+    var task_queue = TaskQueue.init(allocator);
     defer task_queue.deinit();
     std.log.info("Task queue is initialized", .{});
 

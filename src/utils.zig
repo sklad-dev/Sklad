@@ -108,3 +108,9 @@ test "compare_bitwise" {
     try testing.expect(compare_bitwise(&a9, &a6) > 0);
     try testing.expect(compare_bitwise(&a4, &a7) < 0);
 }
+
+test "num_digits" {
+    try testing.expect(num_digits(i16, 1) == 1);
+    try testing.expect(num_digits(i16, 10) == 2);
+    try testing.expect(num_digits(i16, 199) == 3);
+}
