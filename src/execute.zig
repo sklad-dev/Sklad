@@ -52,8 +52,8 @@ pub const ExecuteTask = struct {
     fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
         const self: *ExecuteTask = @ptrCast(@alignCast(ptr));
         switch (self.expression) {
-            .set => self.expression.set.destory(),
-            .get => self.expression.get.destory(),
+            .set => self.expression.set.destroy(),
+            .get => self.expression.get.destroy(),
         }
         self.executor.deinit();
         allocator.free(self.query);

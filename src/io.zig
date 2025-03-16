@@ -62,11 +62,13 @@ pub const IO = struct {
             };
             const message = std.json.stringifyAlloc(allocator, response, .{}) catch |e| {
                 std.log.err("Error! Failed send the response: {any}", .{e});
+                std.posix.close(self.socket);
                 return;
             };
             defer allocator.free(message);
             _ = posix.write(self.socket, message) catch |e| {
                 std.log.err("Error! Failed send the response: {any}", .{e});
+                std.posix.close(self.socket);
                 return;
             };
         }
@@ -82,6 +84,7 @@ pub const IO = struct {
             const bytes_read = posix.read(self.io_context.socket, &buffer) catch |e| {
                 std.log.err("Error! Failed to read a message: {any}", .{e});
                 self.io_context.send_response(i8, IoError, self.allocator, -1, IoError.RequestReadingError);
+                std.posix.close(self.io_context.socket);
                 return;
             };
 
@@ -94,6 +97,7 @@ pub const IO = struct {
                 ) catch |e| {
                     std.log.err("Error! Failed to parse a request: {any}", .{e});
                     self.io_context.send_response(i8, IoError, self.allocator, -1, IoError.RequestProcessingError);
+                    std.posix.close(self.io_context.socket);
                     return;
                 };
                 defer request.deinit();
@@ -101,6 +105,7 @@ pub const IO = struct {
                 const task_queue = global_context.get_task_queue();
                 var lexer_task = task_queue.?.allocator.create(LexerTask) catch |e| {
                     std.log.err("Error! Failed to allocate a lexer task: {any}", .{e});
+                    std.posix.close(self.io_context.socket);
                     return;
                 };
                 lexer_task.* = LexerTask.init(
@@ -109,6 +114,7 @@ pub const IO = struct {
                     self.io_context,
                 ) catch |e| {
                     std.log.err("Error! Failed to create a lexer task: {any}", .{e});
+                    std.posix.close(self.io_context.socket);
                     return;
                 };
 
@@ -186,6 +192,7 @@ pub const IO = struct {
             const task_queue = global_context.get_task_queue();
             var io_task = task_queue.?.allocator.create(IoTask) catch |e| {
                 std.log.err("Error! Failed to allocate an IO task: {any}", .{e});
+                std.posix.close(socket);
                 continue;
             };
 

@@ -2,6 +2,7 @@ const std = @import("std");
 
 const global_context = @import("./global_context.zig");
 const io = @import("./io.zig");
+const ApplicationError = @import("./constants.zig").ApplicationError;
 const Task = @import("./task_queue.zig").Task;
 const ParserTask = @import("./parse.zig").ParserTask;
 
@@ -223,16 +224,17 @@ pub const LexerTask = struct {
 
     fn run(ptr: *anyopaque) void {
         const self: *LexerTask = @ptrCast(@alignCast(ptr));
-        errdefer std.posix.close(self.io_context.socket);
 
         var lexer = Lexer.init(self.query, self.tokens);
         const result = lexer.lex();
         if (result > 0) {
             self.io_context.send_response(u64, LexingError, self.allocator, result, LexingError.InvalidToken);
+            std.posix.close(self.io_context.socket);
         } else {
             const task_queue = global_context.get_task_queue();
             var parser_task = task_queue.?.allocator.create(ParserTask) catch |e| {
                 std.log.err("Error! Failed to allocate a parser task: {any}", .{e});
+                self.handle_error();
                 return;
             };
             parser_task.* = ParserTask.init(
@@ -242,6 +244,7 @@ pub const LexerTask = struct {
                 self.tokens,
             ) catch |e| {
                 std.log.err("Error! Failed to create a parser task: {any}", .{e});
+                self.handle_error();
                 return;
             };
 
@@ -252,6 +255,11 @@ pub const LexerTask = struct {
     fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
         const self: *LexerTask = @ptrCast(@alignCast(ptr));
         allocator.destroy(self);
+    }
+
+    fn handle_error(self: *LexerTask) void {
+        self.io_context.send_response(i8, ApplicationError, self.allocator, -1, ApplicationError.InternalError);
+        std.posix.close(self.io_context.socket);
     }
 };
 

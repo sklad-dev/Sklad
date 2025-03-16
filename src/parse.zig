@@ -5,6 +5,7 @@ const io = @import("./io.zig");
 const lex = @import("./lex.zig");
 const utils = @import("./utils.zig");
 
+const ApplicationError = @import("./constants.zig").ApplicationError;
 const ValueType = @import("./data_types.zig").ValueType;
 const TypedBinaryData = @import("./data_types.zig").TypedBinaryData;
 const Task = @import("./task_queue.zig").Task;
@@ -66,7 +67,7 @@ pub const SetExpression = struct {
         };
     }
 
-    pub fn destory(self: *SetExpression) void {
+    pub fn destroy(self: *SetExpression) void {
         for (self.pairs.items) |pair| {
             pair.deinit();
         }
@@ -91,7 +92,7 @@ pub const GetExpression = struct {
         return ParserError.InvalidQuery;
     }
 
-    pub fn destory(self: *GetExpression) void {
+    pub fn destroy(self: *GetExpression) void {
         self.key.deinit();
     }
 };
@@ -308,24 +309,18 @@ pub const ParserTask = struct {
 
     fn run(ptr: *anyopaque) void {
         const self: *ParserTask = @ptrCast(@alignCast(ptr));
-        errdefer std.posix.close(self.io_context.socket);
 
         var expression = Expression.parse(self.allocator, &self.tokenized_query) catch |e| {
             std.log.err("Error! Query parsing failed: {any}, query: \"{s}\"", .{ e, self.query });
             self.io_context.send_response(i8, ParserError, self.allocator, -1, ParserError.InvalidQuery);
+            std.posix.close(self.io_context.socket);
             return;
         };
-        errdefer {
-            switch (expression) {
-                .set => expression.set.destory(),
-                .insert_connection => expression.insert_connection.destory(),
-                .find => expression.find.destroy(),
-            }
-        }
 
         const task_queue = global_context.get_task_queue();
         var execute_task = task_queue.?.allocator.create(ExecuteTask) catch |e| {
             std.log.err("Error! Failed to allocate a parser task: {any}", .{e});
+            self.handle_error(&expression);
             return;
         };
         execute_task.* = ExecuteTask.init(
@@ -335,6 +330,7 @@ pub const ParserTask = struct {
             expression,
         ) catch |e| {
             std.log.err("Error! Failed to create a parser task: {any}", .{e});
+            self.handle_error(&expression);
             return;
         };
 
@@ -345,6 +341,15 @@ pub const ParserTask = struct {
         const self: *ParserTask = @ptrCast(@alignCast(ptr));
         allocator.destroy(self.tokenized_query.tokens);
         allocator.destroy(self);
+    }
+
+    fn handle_error(self: *ParserTask, expression: *Expression) void {
+        switch (expression.*) {
+            .set => expression.set.destroy(),
+            .get => expression.get.destroy(),
+        }
+        self.io_context.send_response(i8, ApplicationError, self.allocator, -1, ApplicationError.InternalError);
+        std.posix.close(self.io_context.socket);
     }
 };
 
@@ -379,7 +384,7 @@ test "Parse set query" {
 
     var query = TokenizedQuery.init(testing.allocator, &tokens);
     var expression = try Expression.parse(testing.allocator, &query);
-    defer expression.set.destory();
+    defer expression.set.destroy();
     try testing.expect(expression.set.pairs.items.len == 3);
 }
 
@@ -393,6 +398,6 @@ test "Parse get query" {
 
     var query = TokenizedQuery.init(testing.allocator, &tokens);
     var expression = try Expression.parse(testing.allocator, &query);
-    defer expression.get.destory();
+    defer expression.get.destroy();
     try testing.expect(std.mem.eql(u8, expression.get.key.value.data, "test"));
 }
