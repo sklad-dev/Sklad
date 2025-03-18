@@ -11,7 +11,7 @@ pub fn run_task() void {
 
             t.run();
         } else {
-            std.time.sleep(std.time.ns_per_s / 100);
+            std.time.sleep(std.time.ns_per_s / 10);
         }
     }
 }
