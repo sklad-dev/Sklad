@@ -284,22 +284,20 @@ pub const TokenizedQuery = struct {
     }
 };
 
-pub const ParserTask = struct {
+pub const CommandProcessingTask = struct {
     allocator: std.mem.Allocator,
     io_context: io.IO.IoContext,
     query: []u8,
-    tokenized_query: TokenizedQuery,
 
-    pub fn init(allocator: std.mem.Allocator, io_context: io.IO.IoContext, query: []u8, tokens: *std.ArrayList(lex.Token)) !ParserTask {
+    pub fn init(allocator: std.mem.Allocator, query_size: u64, io_context: io.IO.IoContext) !CommandProcessingTask {
         return .{
             .allocator = allocator,
             .io_context = io_context,
-            .query = query,
-            .tokenized_query = TokenizedQuery.init(allocator, tokens),
+            .query = try allocator.alloc(u8, query_size),
         };
     }
 
-    pub fn task(self: *ParserTask) Task {
+    pub fn task(self: *CommandProcessingTask) Task {
         return .{
             .context = self,
             .run_fn = run,
@@ -308,9 +306,20 @@ pub const ParserTask = struct {
     }
 
     fn run(ptr: *anyopaque) void {
-        const self: *ParserTask = @ptrCast(@alignCast(ptr));
+        const self: *CommandProcessingTask = @ptrCast(@alignCast(ptr));
 
-        var expression = Expression.parse(self.allocator, &self.tokenized_query) catch |e| {
+        var tokens = std.ArrayList(lex.Token).init(self.allocator);
+        defer tokens.deinit();
+
+        var lexer = lex.Lexer.init(self.query, &tokens);
+        const lex_result = lexer.lex();
+        if (lex_result > 0) {
+            self.io_context.send_response(u64, lex.LexingError, self.allocator, lex_result, lex.LexingError.InvalidToken);
+            std.posix.close(self.io_context.socket);
+        }
+
+        var tokenized_query = TokenizedQuery.init(self.allocator, &tokens);
+        var expression = Expression.parse(self.allocator, &tokenized_query) catch |e| {
             std.log.err("Error! Query parsing failed: {any}, query: \"{s}\"", .{ e, self.query });
             self.io_context.send_response(i8, ParserError, self.allocator, -1, ParserError.InvalidQuery);
             std.posix.close(self.io_context.socket);
@@ -320,7 +329,7 @@ pub const ParserTask = struct {
         const task_queue = global_context.get_task_queue();
         var execute_task = task_queue.?.allocator.create(ExecuteTask) catch |e| {
             std.log.err("Error! Failed to allocate a parser task: {any}", .{e});
-            self.handle_error(&expression);
+            self.handle_parse_error(&expression);
             return;
         };
         execute_task.* = ExecuteTask.init(
@@ -330,7 +339,7 @@ pub const ParserTask = struct {
             expression,
         ) catch |e| {
             std.log.err("Error! Failed to create a parser task: {any}", .{e});
-            self.handle_error(&expression);
+            self.handle_parse_error(&expression);
             return;
         };
 
@@ -338,12 +347,11 @@ pub const ParserTask = struct {
     }
 
     fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
-        const self: *ParserTask = @ptrCast(@alignCast(ptr));
-        allocator.destroy(self.tokenized_query.tokens);
+        const self: *CommandProcessingTask = @ptrCast(@alignCast(ptr));
         allocator.destroy(self);
     }
 
-    fn handle_error(self: *ParserTask, expression: *Expression) void {
+    fn handle_parse_error(self: *CommandProcessingTask, expression: *Expression) void {
         switch (expression.*) {
             .set => expression.set.destroy(),
             .get => expression.get.destroy(),

@@ -6,8 +6,7 @@ const global_context = @import("./global_context.zig");
 
 const ApplicationError = @import("./constants.zig").ApplicationError;
 const Task = @import("./task_queue.zig").Task;
-const LexerTask = @import("./lex.zig").LexerTask;
-const Token = @import("./lex.zig").Token;
+const CommandProcessingTask = @import("./parse.zig").CommandProcessingTask;
 
 pub const DEFAULT_PORT: u16 = 7733;
 
@@ -68,7 +67,6 @@ pub const IO = struct {
             defer allocator.free(message);
             _ = posix.write(self.socket, message) catch |e| {
                 std.log.err("Error! Failed send the response: {any}", .{e});
-                std.posix.close(self.socket);
                 return;
             };
         }
@@ -103,25 +101,24 @@ pub const IO = struct {
                 defer request.deinit();
 
                 const task_queue = global_context.get_task_queue();
-                var lexer_task = task_queue.?.allocator.create(LexerTask) catch |e| {
-                    std.log.err("Error! Failed to allocate a lexer task: {any}", .{e});
+                var new_task = task_queue.?.allocator.create(CommandProcessingTask) catch |e| {
+                    std.log.err("Error! Failed to allocate a task to process the command: {any}", .{e});
                     std.posix.close(self.io_context.socket);
                     return;
                 };
-                lexer_task.* = LexerTask.init(
+                new_task.* = CommandProcessingTask.init(
                     task_queue.?.allocator,
                     request.value.command.len,
                     self.io_context,
                 ) catch |e| {
-                    std.log.err("Error! Failed to create a lexer task: {any}", .{e});
+                    std.log.err("Error! Failed to create a task to process the command: {any}", .{e});
                     std.posix.close(self.io_context.socket);
                     return;
                 };
 
-                @memcpy(lexer_task.query, request.value.command);
-                lexer_task.tokens.* = std.ArrayList(Token).init(task_queue.?.allocator);
+                @memcpy(new_task.query, request.value.command);
 
-                global_context.get_task_queue().?.enqueue(lexer_task.task());
+                global_context.get_task_queue().?.enqueue(new_task.task());
             } else {
                 self.io_context.send_response(i8, IoError, self.allocator, -1, IoError.RequestTooLong);
             }
