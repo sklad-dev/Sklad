@@ -1,7 +1,12 @@
 const std = @import("std");
 
+const global_context = @import("./global_context.zig");
+const utils = @import("./utils.zig");
+
 const ArrayList = std.ArrayList;
 const AutoHashMap = std.AutoHashMap;
+const Memtable = @import("./memtable.zig").Memtable;
+const SSTable = @import("./sstable.zig").SSTable;
 
 pub const TableFileManager = struct {
     allocator: std.mem.Allocator,
@@ -36,6 +41,26 @@ pub const TableFileManager = struct {
         const first_dot = std.mem.indexOfScalarPos(u8, file_name, self.path.len, '.').?;
         const second_dot = std.mem.indexOfScalarPos(u8, file_name, first_dot + 1, '.').?;
         return try std.fmt.parseInt(i16, file_name[first_dot + 1 .. second_dot], 10);
+    }
+
+    pub fn flush_memtable(self: *TableFileManager, memtable: *Memtable) !void {
+        const max_file_id = self.level_counters.get(0) orelse -1;
+        const file_name_buf = try self.allocator.alloc(u8, self.path.len + 11 + utils.num_digits(i16, max_file_id + 1));
+        const file_name = try std.fmt.bufPrint(
+            file_name_buf,
+            "{s}/0.{d}.sstable",
+            .{ self.path, max_file_id + 1 },
+        );
+        var sstable = try SSTable.create(
+            self.allocator,
+            memtable,
+            file_name,
+            global_context.get_configurator().?.sstable_sparse_index_step(),
+        );
+        try self.add_file(0, file_name_buf);
+
+        sstable.close();
+        try memtable.wal.delete_file();
     }
 
     fn add_file_at_level(self: *TableFileManager, level: u8, file: []u8) !void {

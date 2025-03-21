@@ -22,7 +22,6 @@ pub fn main() !void {
     std.log.info("Storage engine is initialized", .{});
 
     var task_queue = TaskQueue.init(allocator);
-    defer task_queue.deinit();
     std.log.info("Task queue is initialized", .{});
 
     global_context.init(&storage, &task_queue);
@@ -33,4 +32,6 @@ pub fn main() !void {
     const thread = try std.Thread.spawn(.{}, io.run_io_worker, .{});
     std.log.info("Listening port {d}", .{io.DEFAULT_PORT});
     thread.join();
+
+    task_queue.deinit();
 }

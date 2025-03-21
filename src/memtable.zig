@@ -1,6 +1,8 @@
 /// Skiplist implementation of a memtable for graph nodes
 const std = @import("std");
+
 const data_types = @import("./data_types.zig");
+const global_context = @import("./global_context.zig");
 const w = @import("./wal.zig");
 const utils = @import("./utils.zig");
 
@@ -10,6 +12,7 @@ const StorageRecord = data_types.StorageRecord;
 pub const Memtable = struct {
     allocator: std.mem.Allocator,
     rng: std.Random,
+    max_size: u16,
     max_level: u8,
     level_probability: f32,
     level: u8 = 1,
@@ -18,6 +21,8 @@ pub const Memtable = struct {
     head: ?*MemtableNode = null,
     size: u16 = 0,
     lock: std.Thread.Mutex = .{},
+
+    pub const IsFull = bool;
 
     const MemtableNode = struct {
         key: ?[]u8,
@@ -49,7 +54,7 @@ pub const Memtable = struct {
         }
     };
 
-    pub inline fn init(allocator: std.mem.Allocator, random: std.Random, max_level: u8, level_probability: f32, wal_path: []const u8) !Memtable {
+    pub inline fn init(allocator: std.mem.Allocator, random: std.Random, max_size: u16, max_level: u8, level_probability: f32, wal_path: []const u8) !Memtable {
         const wal_name = try allocator.alloc(u8, wal_path.len + 9);
         const wal_id = utils.generate_id(random);
 
@@ -65,31 +70,43 @@ pub const Memtable = struct {
         return Memtable{
             .allocator = allocator,
             .rng = random,
+            .max_size = max_size,
             .max_level = max_level,
             .level_probability = level_probability,
             .wal = wal,
         };
     }
 
-    pub fn from_wal(wal: w.Wal, allocator: std.mem.Allocator, random: std.Random, max_level: u8, level_probability: f32) !Memtable {
-        var memtable = Memtable{
-            .allocator = allocator,
-            .rng = random,
-            .max_level = max_level,
-            .level_probability = level_probability,
-            .wal = wal,
-        };
-
-        while (memtable.wal.read_record(allocator)) |record| {
-            try memtable.add(record.key, record.value);
-            record.destroy();
-        } else |_| {}
-
+    pub fn create(allocator: std.mem.Allocator, path: []const u8) !*Memtable {
+        const config = global_context.get_configurator().?;
+        const memtable = try allocator.create(Memtable);
+        memtable.* = try Memtable.init(
+            allocator,
+            std.crypto.random,
+            config.memtable_max_size(),
+            config.memtable_max_level(),
+            config.memtable_level_probability(),
+            path,
+        );
         return memtable;
     }
 
+    pub fn from_wal(wal: w.Wal, memtable: *Memtable) !IsFull {
+        while (wal.read_record(memtable.allocator)) |record| {
+            defer record.destroy();
+            if (!memtable.is_full()) {
+                try memtable.wal.write(&record);
+                try memtable.add(record.key, record.value);
+            } else {
+                return true;
+            }
+        } else |_| {}
+
+        return false;
+    }
+
     pub fn add(self: *Memtable, key: data_types.BinaryData, value: data_types.BinaryData) !void {
-        if (!self.try_lock_for(200)) return ApplicationError.ExecutionTimeout;
+        if (!utils.try_lock_for(&self.lock, 200)) return ApplicationError.ExecutionTimeout; // TODO: try to re-queue the task
         defer self.lock.unlock();
 
         if (self.head == null) try self.create_head();
@@ -132,7 +149,7 @@ pub const Memtable = struct {
     }
 
     pub inline fn find(self: *Memtable, key: data_types.BinaryData) !?data_types.BinaryData {
-        if (!self.try_lock_for(200)) return ApplicationError.ExecutionTimeout;
+        if (!utils.try_lock_for(&self.lock, 200)) return ApplicationError.ExecutionTimeout;
         defer self.lock.unlock();
 
         if (self.head == null) return null;
@@ -155,6 +172,10 @@ pub const Memtable = struct {
             current = next;
         }
         self.wal.close_and_free();
+    }
+
+    pub inline fn is_full(self: *const Memtable) bool {
+        return self.size >= self.max_size;
     }
 
     pub inline fn iterator(self: *const Memtable) MemtableIterator {
@@ -204,15 +225,6 @@ pub const Memtable = struct {
         }
         self.head = head;
     }
-
-    fn try_lock_for(self: *Memtable, timeout: i64) bool {
-        const start_at: i64 = std.time.milliTimestamp();
-        while (true) {
-            if (self.lock.tryLock()) return true;
-            if (std.time.milliTimestamp() - start_at >= timeout) return false;
-        }
-        return false;
-    }
 };
 
 // Tests
@@ -246,7 +258,7 @@ fn visualize_memtable(table: Memtable) !void {
 }
 
 test "Memtable#add and find" {
-    var test_memtable = try Memtable.init(testing.allocator, std.crypto.random, 8, 0.125, "./");
+    var test_memtable = try Memtable.init(testing.allocator, std.crypto.random, 64, 8, 0.125, "./");
     errdefer test_memtable.destroy();
 
     // Case: search in an empty memtable

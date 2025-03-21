@@ -74,6 +74,15 @@ pub fn make_dir_if_not_exists(dir_path: []const u8) !void {
     };
 }
 
+pub fn try_lock_for(lock: *std.Thread.Mutex, timeout: i64) bool {
+    const start_at: i64 = std.time.milliTimestamp();
+    while (true) {
+        if (lock.tryLock()) return true;
+        if (std.time.milliTimestamp() - start_at >= timeout) return false;
+    }
+    return false;
+}
+
 // Tests
 const testing = std.testing;
 
