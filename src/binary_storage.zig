@@ -55,7 +55,14 @@ pub const BinaryStorage = struct {
         fn run(ptr: *anyopaque) void {
             const self: *FlushTask = @ptrCast(@alignCast(ptr));
 
-            const memtable = self.storage.memtables.peek(self.memtable_key);
+            var memtable: ?*Memtable = null;
+            if (!utils.try_lock_for(&self.storage.memtables_lock, 200)) {
+                std.log.err("Lock timeout: failed to update the memtables", .{});
+                return;
+            }
+            memtable = self.storage.memtables.peek(self.memtable_key);
+            self.storage.memtables_lock.unlock();
+
             self.storage.table_file_manager.flush_memtable(memtable.?) catch |e| {
                 std.log.err("Error! Failed to falush a memtable {s}: {any}", .{ memtable.?.wal.path, e });
                 return;
