@@ -18,6 +18,7 @@ pub const TaskQueue = struct {
     allocator: std.mem.Allocator,
     head: *TaskNode,
     tail: *TaskNode,
+    destroy_buffer: *DestroyBuffer(64),
 
     const TaskNode = struct {
         task: Task,
@@ -25,6 +26,34 @@ pub const TaskQueue = struct {
         prev: ?*TaskNode,
         padding1: u8 align(std.atomic.cache_line) = 0,
     };
+
+    // S have to be power of 2 so it is possible to use bitwise and to compute modulo
+    fn DestroyBuffer(S: u8) type {
+        return struct {
+            head: u8,
+            buffer: []?*TaskNode,
+
+            const Self = @This();
+
+            pub fn init(allocator: std.mem.Allocator) Self {
+                var buffer = allocator.alloc(?*TaskNode, S) catch unreachable;
+                for (0..buffer.len) |i| {
+                    buffer[i] = null;
+                }
+                return .{
+                    .head = 0,
+                    .buffer = buffer,
+                };
+            }
+
+            pub inline fn put(self: *Self, task_node: *TaskNode) ?*TaskNode {
+                const index = @atomicRmw(u8, &self.head, .Add, 1, .acq_rel);
+                const to_delete = @atomicRmw(?*TaskNode, &self.buffer[index % S], .Xchg, task_node, .acq_rel);
+                _ = @atomicRmw(u8, &self.head, .And, S - 1, .acq_rel);
+                return to_delete;
+            }
+        };
+    }
 
     pub fn init(allocator: std.mem.Allocator) TaskQueue {
         var guard_task = NullTask{};
@@ -46,15 +75,19 @@ pub const TaskQueue = struct {
         start_guard.prev = prev_guard;
         prev_guard.next = start_guard;
 
+        const destroy_buffer = allocator.create(DestroyBuffer(64)) catch unreachable;
+        destroy_buffer.* = DestroyBuffer(64).init(allocator);
+
         return TaskQueue{
             .allocator = allocator,
             .head = start_guard,
             .tail = start_guard,
+            .destroy_buffer = destroy_buffer,
         };
     }
 
     pub fn deinit(self: *TaskQueue) void {
-        // TODO: THIS IS NOT THREAD SAFE! Tutn to lock-free
+        // TODO: THIS IS NOT THREAD SAFE!
         var head_pointer: ?*TaskNode = self.head;
         if (head_pointer.?.prev) |prev_guard| {
             self.allocator.destroy(prev_guard);
@@ -64,6 +97,11 @@ pub const TaskQueue = struct {
             self.allocator.destroy(head_pointer.?);
             head_pointer = next_node;
         }
+        for (self.destroy_buffer.buffer) |node| {
+            if (node) |n| self.allocator.destroy(n);
+        }
+        self.allocator.free(self.destroy_buffer.buffer);
+        self.allocator.destroy(self.destroy_buffer);
     }
 
     pub fn enqueue(self: *TaskQueue, task: Task) void {
@@ -116,7 +154,10 @@ pub const TaskQueue = struct {
                 .seq_cst,
                 .seq_cst,
             ) == null) {
-                defer self.allocator.destroy(lhead.prev.?);
+                // defer self.allocator.destroy(lhead.prev.?); // this line causes errors
+                if (self.destroy_buffer.put(lhead.prev.?)) |node| {
+                    self.allocator.destroy(node);
+                }
                 return lnext.?.task;
             }
         }
@@ -241,6 +282,49 @@ test "TaskQueue#dequeue" {
     try testing.expect(task == null);
 }
 
+test "DestroyBuffer" {
+    var destroy_buffer = TaskQueue.DestroyBuffer(2).init(testing.allocator);
+    defer {
+        testing.allocator.free(destroy_buffer.buffer);
+    }
+
+    try testing.expect(destroy_buffer.head == 0);
+    try testing.expect(destroy_buffer.buffer[0] == null);
+
+    var t1 = TestTask{ .id = 0 };
+    var tn1 = TaskQueue.TaskNode{
+        .task = t1.task(),
+        .next = null,
+        .prev = null,
+    };
+    const r1 = destroy_buffer.put(&tn1);
+    try testing.expect(destroy_buffer.head == 1);
+    try testing.expect(r1 == null);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(destroy_buffer.buffer[0].?.task.context))).id == 0);
+
+    var t2 = TestTask{ .id = 1 };
+    var tn2 = TaskQueue.TaskNode{
+        .task = t2.task(),
+        .next = null,
+        .prev = null,
+    };
+    const r2 = destroy_buffer.put(&tn2);
+    try testing.expect(destroy_buffer.head == 0);
+    try testing.expect(r2 == null);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(destroy_buffer.buffer[1].?.task.context))).id == 1);
+
+    var t3 = TestTask{ .id = 2 };
+    var tn3 = TaskQueue.TaskNode{
+        .task = t3.task(),
+        .next = null,
+        .prev = null,
+    };
+    const r3 = destroy_buffer.put(&tn3);
+    try testing.expect(destroy_buffer.head == 1);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(r3.?.task.context))).id == 0);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(destroy_buffer.buffer[0].?.task.context))).id == 2);
+}
+
 // fn run_task_test(task_queue: *TaskQueue) void {
 //     var idle_cycles_counter: u8 = 0;
 //     while (true) {
@@ -251,12 +335,12 @@ test "TaskQueue#dequeue" {
 //             t.run();
 //             std.time.sleep(std.time.ns_per_s / 100);
 
-//             const rand = std.crypto.random;
-//             if (rand.boolean() and rand.boolean() and rand.boolean()) {
-//                 const new_task = testing.allocator.create(NullTask) catch unreachable;
-//                 new_task.* = .{};
-//                 task_queue.enqueue(new_task.task());
-//             }
+//             // const rand = std.crypto.random;
+//             // if (rand.boolean() and rand.boolean() and rand.boolean()) {
+//             //     const new_task = testing.allocator.create(NullTask) catch unreachable;
+//             //     new_task.* = .{};
+//             //     task_queue.enqueue(new_task.task());
+//             // }
 //         } else {
 //             idle_cycles_counter += 1;
 //             if (idle_cycles_counter >= 3) {
@@ -268,7 +352,7 @@ test "TaskQueue#dequeue" {
 // }
 
 // fn add_task_test(task_queue: *TaskQueue) void {
-//     for (0..5000) |i| {
+//     for (0..1000) |i| {
 //         if (i % 500 == 0) {
 //             std.debug.print("[TEST] {d}: {d}\n", .{ std.Thread.getCurrentId(), i });
 //         }
@@ -287,22 +371,21 @@ test "TaskQueue#dequeue" {
 // test "TaskQueue concurrecny testing" {
 //     var task_queue = TaskQueue.init(testing.allocator);
 
-//     var worker_threads: [16]std.Thread = undefined;
-//     for (0..16) |i| {
+//     var worker_threads: [4]std.Thread = undefined;
+//     for (0..4) |i| {
 //         worker_threads[i] = try std.Thread.spawn(.{}, run_task_test, .{&task_queue});
 //     }
 
-//     const thread1 = try std.Thread.spawn(.{}, add_task_test, .{&task_queue});
-//     const thread2 = try std.Thread.spawn(.{}, add_task_test, .{&task_queue});
-//     const thread3 = try std.Thread.spawn(.{}, add_task_test, .{&task_queue});
-//     const thread4 = try std.Thread.spawn(.{}, add_task_test, .{&task_queue});
+//     var threads: [16]std.Thread = undefined;
+//     for (0..16) |i| {
+//         threads[i] = try std.Thread.spawn(.{}, add_task_test, .{&task_queue});
+//     }
 
 //     const check_thread = try std.Thread.spawn(.{}, check_task_queue, .{&task_queue});
 
-//     thread1.join();
-//     thread2.join();
-//     thread3.join();
-//     thread4.join();
+//     for (threads) |t| {
+//         t.join();
+//     }
 //     for (worker_threads) |wt| {
 //         wt.join();
 //     }

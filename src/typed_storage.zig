@@ -11,12 +11,12 @@ pub const TypedStorage = struct {
     allocator: std.mem.Allocator,
     storage: BinaryStorage,
 
-    pub fn init(allocator: std.mem.Allocator, max_memtable_size: u16) !TypedStorage {
+    pub fn init(allocator: std.mem.Allocator) !TypedStorage {
         try utils.make_dir_if_not_exists(DATABASE_STORAGE);
 
         return .{
             .allocator = allocator,
-            .storage = try BinaryStorage.start(allocator, DATABASE_STORAGE, max_memtable_size),
+            .storage = try BinaryStorage.start(allocator, DATABASE_STORAGE),
         };
     }
 
@@ -92,7 +92,7 @@ test "NodeStorage#set" {
     var conf = configurator.configurator();
     global_context.load_configuration(&conf);
 
-    var test_storage = try TypedStorage.init(testing.allocator, 4);
+    var test_storage = try TypedStorage.init(testing.allocator);
     defer test_storage.stop();
     defer clean_up(&test_storage);
 
@@ -137,7 +137,7 @@ test "NodeStorage#get" {
     var conf = configurator.configurator();
     global_context.load_configuration(&conf);
 
-    var test_storage = try TypedStorage.init(testing.allocator, 4);
+    var test_storage = try TypedStorage.init(testing.allocator);
     defer test_storage.stop();
     defer clean_up(&test_storage);
 
