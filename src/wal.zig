@@ -46,7 +46,7 @@ pub const Wal = struct {
     pub fn delete_file(self: *const Wal) !void {
         std.fs.cwd().deleteFile(self.path) catch {
             const out = std.io.getStdOut().writer();
-            try std.fmt.format(out, "failed to clean up after the test\n", .{});
+            try std.fmt.format(out, "failed to delete wal file {s}\n", .{self.path});
         };
     }
 

@@ -11,6 +11,8 @@ const SSTable = @import("./sstable.zig").SSTable;
 pub const TableFileManager = struct {
     allocator: std.mem.Allocator,
     path: []const u8,
+    // files: [256]*ArrayList([]u8),
+    // level_counters: [256]i16,
     files: AutoHashMap(u8, *ArrayList([]u8)),
     level_counters: AutoHashMap(u8, i16),
 

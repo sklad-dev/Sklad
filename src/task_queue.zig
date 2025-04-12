@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const DestroyBuffer = @import("./lock_free.zig").DestroyBuffer;
+
 pub const Task = struct {
     context: *anyopaque,
     run_fn: *const fn (ptr: *anyopaque) void,
@@ -18,7 +20,7 @@ pub const TaskQueue = struct {
     allocator: std.mem.Allocator,
     head: *TaskNode,
     tail: *TaskNode,
-    destroy_buffer: *DestroyBuffer(64),
+    destroy_buffer: *DestroyBuffer(TaskNode, 64),
 
     const TaskNode = struct {
         task: Task,
@@ -26,34 +28,6 @@ pub const TaskQueue = struct {
         prev: ?*TaskNode,
         padding1: u8 align(std.atomic.cache_line) = 0,
     };
-
-    // S have to be power of 2 so it is possible to use bitwise and to compute modulo
-    fn DestroyBuffer(S: u8) type {
-        return struct {
-            head: u8,
-            buffer: []?*TaskNode,
-
-            const Self = @This();
-
-            pub fn init(allocator: std.mem.Allocator) Self {
-                var buffer = allocator.alloc(?*TaskNode, S) catch unreachable;
-                for (0..buffer.len) |i| {
-                    buffer[i] = null;
-                }
-                return .{
-                    .head = 0,
-                    .buffer = buffer,
-                };
-            }
-
-            pub inline fn put(self: *Self, task_node: *TaskNode) ?*TaskNode {
-                const index = @atomicRmw(u8, &self.head, .Add, 1, .acq_rel);
-                const to_delete = @atomicRmw(?*TaskNode, &self.buffer[index % S], .Xchg, task_node, .acq_rel);
-                _ = @atomicRmw(u8, &self.head, .And, S - 1, .acq_rel);
-                return to_delete;
-            }
-        };
-    }
 
     pub fn init(allocator: std.mem.Allocator) TaskQueue {
         var guard_task = NullTask{};
@@ -75,8 +49,8 @@ pub const TaskQueue = struct {
         start_guard.prev = prev_guard;
         prev_guard.next = start_guard;
 
-        const destroy_buffer = allocator.create(DestroyBuffer(64)) catch unreachable;
-        destroy_buffer.* = DestroyBuffer(64).init(allocator);
+        const destroy_buffer = allocator.create(DestroyBuffer(TaskNode, 64)) catch unreachable;
+        destroy_buffer.* = DestroyBuffer(TaskNode, 64).init(allocator);
 
         return TaskQueue{
             .allocator = allocator,
@@ -154,7 +128,6 @@ pub const TaskQueue = struct {
                 .seq_cst,
                 .seq_cst,
             ) == null) {
-                // defer self.allocator.destroy(lhead.prev.?); // this line causes errors
                 if (self.destroy_buffer.put(lhead.prev.?)) |node| {
                     self.allocator.destroy(node);
                 }
@@ -280,49 +253,6 @@ test "TaskQueue#dequeue" {
     try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task.?.context))).id == t4.id);
     task = task_queue.dequeue();
     try testing.expect(task == null);
-}
-
-test "DestroyBuffer" {
-    var destroy_buffer = TaskQueue.DestroyBuffer(2).init(testing.allocator);
-    defer {
-        testing.allocator.free(destroy_buffer.buffer);
-    }
-
-    try testing.expect(destroy_buffer.head == 0);
-    try testing.expect(destroy_buffer.buffer[0] == null);
-
-    var t1 = TestTask{ .id = 0 };
-    var tn1 = TaskQueue.TaskNode{
-        .task = t1.task(),
-        .next = null,
-        .prev = null,
-    };
-    const r1 = destroy_buffer.put(&tn1);
-    try testing.expect(destroy_buffer.head == 1);
-    try testing.expect(r1 == null);
-    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(destroy_buffer.buffer[0].?.task.context))).id == 0);
-
-    var t2 = TestTask{ .id = 1 };
-    var tn2 = TaskQueue.TaskNode{
-        .task = t2.task(),
-        .next = null,
-        .prev = null,
-    };
-    const r2 = destroy_buffer.put(&tn2);
-    try testing.expect(destroy_buffer.head == 0);
-    try testing.expect(r2 == null);
-    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(destroy_buffer.buffer[1].?.task.context))).id == 1);
-
-    var t3 = TestTask{ .id = 2 };
-    var tn3 = TaskQueue.TaskNode{
-        .task = t3.task(),
-        .next = null,
-        .prev = null,
-    };
-    const r3 = destroy_buffer.put(&tn3);
-    try testing.expect(destroy_buffer.head == 1);
-    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(r3.?.task.context))).id == 0);
-    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(destroy_buffer.buffer[0].?.task.context))).id == 2);
 }
 
 // fn run_task_test(task_queue: *TaskQueue) void {

@@ -57,14 +57,38 @@ pub const TypedStorage = struct {
 const testing = std.testing;
 const global_context = @import("./global_context.zig");
 const TestingConfigurator = @import("./configurator.zig").TestingConfigurator;
+const TaskQueue = @import("./task_queue.zig").TaskQueue;
 
 fn clean_up(typed_storage: *TypedStorage) void {
-    for (typed_storage.storage.memtables.items) |t| {
-        t.wal.delete_file() catch {
+    var iter = typed_storage.storage.memtables.iterator() catch {
+        const out = std.io.getStdOut().writer();
+        std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
+        return;
+    };
+    defer iter.deinit();
+
+    typed_storage.storage.active_memtable.wal.delete_file() catch {
+        const out = std.io.getStdOut().writer();
+        std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
+        return;
+    };
+
+    while (true) {
+        const node = iter.next() catch {
             const out = std.io.getStdOut().writer();
             std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
+            return;
         };
+        if (node) |n| {
+            n.entry.?.memtable.wal.delete_file() catch {
+                const out = std.io.getStdOut().writer();
+                std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
+            };
+        } else {
+            break;
+        }
     }
+
     var it = typed_storage.storage.table_file_manager.files.iterator();
     while (it.next()) |entry| {
         for (entry.value_ptr.*.items) |file_name| {
@@ -89,8 +113,13 @@ test "NodeStorage#set" {
     defer global_context.deinit_configuration_for_tests();
 
     configurator.* = TestingConfigurator.init();
+    configurator.max_size = 4;
     var conf = configurator.configurator();
     global_context.load_configuration(&conf);
+
+    var task_queue = TaskQueue.init(testing.allocator);
+    global_context.init_task_queue_for_tests(&task_queue);
+    defer global_context.clean_and_deinit_task_queue_for_tests();
 
     var test_storage = try TypedStorage.init(testing.allocator);
     defer test_storage.stop();
@@ -100,25 +129,25 @@ test "NodeStorage#set" {
         try build_typed_data(u8, .smallint, 2),
         try build_typed_data(u8, .smallint, 2),
     );
-    try testing.expect(test_storage.storage.memtables.items[0].size == 1);
+    try testing.expect(test_storage.storage.active_memtable.size == 1);
 
     try test_storage.set(
         try build_typed_data(u64, .bigserial, 2),
         try build_typed_data(u64, .bigserial, 2),
     );
-    try testing.expect(test_storage.storage.memtables.items[0].size == 2);
+    try testing.expect(test_storage.storage.active_memtable.size == 2);
 
     try test_storage.set(
         try build_typed_data(i32, .int, -5),
         try build_typed_data(i32, .int, 5),
     );
-    try testing.expect(test_storage.storage.memtables.items[0].size == 3);
+    try testing.expect(test_storage.storage.active_memtable.size == 3);
 
     try test_storage.set(
         try build_typed_data(f32, .float, -5.5),
         try build_typed_data(f32, .float, 5.5),
     );
-    try testing.expect(test_storage.storage.memtables.items[0].size == 4);
+    try testing.expect(test_storage.storage.active_memtable.size == 4);
 
     const data = TypedBinaryData{
         .allocator = testing.allocator,
@@ -126,7 +155,7 @@ test "NodeStorage#set" {
         .data = "Hello, world!",
     };
     try test_storage.set(data, data);
-    try testing.expect(test_storage.storage.memtables.items[0].size == 1);
+    try testing.expect(test_storage.storage.active_memtable.size == 1);
 }
 
 test "NodeStorage#get" {
@@ -134,8 +163,13 @@ test "NodeStorage#get" {
     defer global_context.deinit_configuration_for_tests();
 
     configurator.* = TestingConfigurator.init();
+    configurator.max_size = 4;
     var conf = configurator.configurator();
     global_context.load_configuration(&conf);
+
+    var task_queue = TaskQueue.init(testing.allocator);
+    global_context.init_task_queue_for_tests(&task_queue);
+    defer global_context.clean_and_deinit_task_queue_for_tests();
 
     var test_storage = try TypedStorage.init(testing.allocator);
     defer test_storage.stop();

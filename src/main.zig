@@ -17,7 +17,7 @@ pub fn main() !void {
     global_context.load_configuration(&conf);
     std.log.info("Configuration is loaded", .{});
 
-    var storage = try TypedStorage.init(allocator, conf.memtable_max_size());
+    var storage = try TypedStorage.init(allocator);
     defer storage.stop();
     std.log.info("Storage engine is initialized", .{});
 
