@@ -20,10 +20,152 @@ pub fn DestroyBuffer(E: type, S: u64) type {
         }
 
         pub inline fn put(self: *Self, entry: *E) ?*E {
-            const index = @atomicRmw(u64, &self.head, .Add, 1, .acq_rel);
-            const to_delete = @atomicRmw(?*E, &self.buffer[index % S], .Xchg, entry, .acq_rel);
-            _ = @atomicRmw(u64, &self.head, .And, S - 1, .acq_rel);
+            const index = @atomicRmw(u64, &self.head, .Add, 1, .seq_cst);
+            _ = @atomicRmw(u64, &self.head, .And, S - 1, .seq_cst);
+            const to_delete = @atomicRmw(?*E, &self.buffer[index % S], .Xchg, entry, .seq_cst);
             return to_delete;
+        }
+    };
+}
+
+pub fn Queue(E: type, S: u64) type {
+    return struct {
+        const Self = @This();
+
+        allocator: std.mem.Allocator,
+        head: *Node,
+        tail: *Node,
+        destroy_buffer: *DestroyBuffer(Node, S),
+
+        const Node = struct {
+            entry: ?E,
+            next: ?*Node,
+            prev: ?*Node,
+            use_counter: u32,
+            padding1: u8 align(std.atomic.cache_line) = 0,
+        };
+
+        pub fn init(allocator: std.mem.Allocator) Self {
+            var prev_guard = allocator.create(Node) catch unreachable;
+            prev_guard.* = Node{
+                .entry = null,
+                .next = null,
+                .prev = null,
+                .use_counter = 0,
+            };
+
+            var start_guard = allocator.create(Node) catch unreachable;
+            start_guard.* = Node{
+                .entry = null,
+                .next = null,
+                .prev = null,
+                .use_counter = 0,
+            };
+
+            start_guard.prev = prev_guard;
+            prev_guard.next = start_guard;
+
+            const destroy_buffer = allocator.create(DestroyBuffer(Node, S)) catch unreachable;
+            destroy_buffer.* = DestroyBuffer(Node, S).init(allocator);
+
+            return Self{
+                .allocator = allocator,
+                .head = start_guard,
+                .tail = start_guard,
+                .destroy_buffer = destroy_buffer,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            // TODO: THIS IS NOT THREAD SAFE!
+            var head_pointer: ?*Node = self.head;
+            if (head_pointer.?.prev) |prev_guard| {
+                self.allocator.destroy(prev_guard);
+            }
+            while (head_pointer != null) {
+                const next_node = head_pointer.?.next;
+                self.allocator.destroy(head_pointer.?);
+                head_pointer = next_node;
+            }
+            for (self.destroy_buffer.buffer) |node| {
+                if (node) |n| self.allocator.destroy(n);
+            }
+            self.allocator.free(self.destroy_buffer.buffer);
+            self.allocator.destroy(self.destroy_buffer);
+        }
+
+        pub fn enqueue(self: *Self, entry: E) void {
+            const node = self.allocator.create(Node) catch unreachable;
+            node.* = Node{
+                .entry = entry,
+                .next = null,
+                .prev = null,
+                .use_counter = 0,
+            };
+
+            while (true) {
+                var ltail = @atomicLoad(*Node, &self.tail, .seq_cst);
+                _ = @atomicRmw(u32, &ltail.use_counter, .Add, 1, .seq_cst);
+                if (ltail != @atomicLoad(*Node, &self.tail, .seq_cst)) {
+                    _ = @atomicRmw(u32, &ltail.use_counter, .Sub, 1, .seq_cst);
+                    continue;
+                }
+
+                var lprev = @atomicLoad(*Node, &ltail.prev.?, .seq_cst);
+                if (@atomicLoad(?*Node, &lprev.next, .seq_cst) == null) {
+                    @atomicStore(?*Node, &lprev.next, ltail, .seq_cst);
+                }
+                node.prev = ltail;
+                if (@cmpxchgWeak(
+                    *Node,
+                    &self.tail,
+                    ltail,
+                    node,
+                    .seq_cst,
+                    .seq_cst,
+                ) == null) {
+                    @atomicStore(?*Node, &ltail.next, node, .seq_cst);
+                    _ = @atomicRmw(u32, &ltail.use_counter, .Sub, 1, .seq_cst);
+                    return;
+                }
+                _ = @atomicRmw(u32, &ltail.use_counter, .Sub, 1, .seq_cst);
+            }
+        }
+
+        pub fn dequeue(self: *Self) ?E {
+            while (true) {
+                const lhead = @atomicLoad(*Node, &self.head, .seq_cst);
+                _ = @atomicRmw(u32, &lhead.use_counter, .Add, 1, .seq_cst);
+                if (lhead != @atomicLoad(*Node, &self.head, .seq_cst)) {
+                    _ = @atomicRmw(u32, &lhead.use_counter, .Sub, 1, .seq_cst);
+                    continue;
+                }
+
+                const lnext = @atomicLoad(?*Node, &lhead.next, .seq_cst);
+                if (lnext) |ln| {
+                    if (@cmpxchgWeak(
+                        *Node,
+                        &self.head,
+                        lhead,
+                        ln,
+                        .seq_cst,
+                        .seq_cst,
+                    ) == null) {
+                        const entry = ln.entry;
+                        _ = @atomicRmw(u32, &lhead.use_counter, .Sub, 1, .seq_cst);
+                        if (self.destroy_buffer.put(lhead.prev.?)) |node| {
+                            while (true) {
+                                if (node.use_counter == 0) {
+                                    self.allocator.destroy(node);
+                                    break;
+                                }
+                            }
+                        }
+                        return entry;
+                    }
+                }
+                _ = @atomicRmw(u32, &lhead.use_counter, .Sub, 1, .seq_cst);
+            }
         }
     };
 }
@@ -363,6 +505,84 @@ fn test_condition(T: type, C: type) type {
     };
 }
 
+test "DestroyBuffer" {
+    var destroy_buffer = DestroyBuffer(u8, 2).init(testing.allocator);
+    defer {
+        testing.allocator.free(destroy_buffer.buffer);
+    }
+
+    try testing.expect(destroy_buffer.head == 0);
+    try testing.expect(destroy_buffer.buffer[0] == null);
+
+    var t1: u8 = 0;
+    const r1 = destroy_buffer.put(&t1);
+    try testing.expect(destroy_buffer.head == 1);
+    try testing.expect(r1 == null);
+    try testing.expect(destroy_buffer.buffer[0].?.* == 0);
+
+    var t2: u8 = 1;
+    const r2 = destroy_buffer.put(&t2);
+    try testing.expect(destroy_buffer.head == 0);
+    try testing.expect(r2 == null);
+    try testing.expect(destroy_buffer.buffer[1].?.* == 1);
+
+    var t3: u8 = 2;
+    const r3 = destroy_buffer.put(&t3);
+    try testing.expect(destroy_buffer.head == 1);
+    try testing.expect(r3.?.* == 0);
+    try testing.expect(destroy_buffer.buffer[0].?.* == 2);
+}
+
+test "Queue#enqueue" {
+    var task_queue = Queue(u8, 2).init(testing.allocator);
+    defer task_queue.deinit();
+
+    task_queue.enqueue(0);
+    try testing.expect(task_queue.tail.entry == 0);
+    try testing.expect(task_queue.tail.use_counter == 0);
+    try testing.expect(task_queue.head.next.?.entry == 0);
+
+    task_queue.enqueue(1);
+    try testing.expect(task_queue.tail.entry == 1);
+    try testing.expect(task_queue.tail.use_counter == 0);
+    try testing.expect(task_queue.head.next.?.entry == 0);
+
+    task_queue.enqueue(2);
+    try testing.expect(task_queue.tail.entry == 2);
+    try testing.expect(task_queue.tail.use_counter == 0);
+    try testing.expect(task_queue.head.next.?.entry == 0);
+}
+
+test "Queue#dequeue" {
+    var task_queue = Queue(u8, 2).init(testing.allocator);
+    defer task_queue.deinit();
+
+    task_queue.enqueue(0);
+    task_queue.enqueue(1);
+    task_queue.enqueue(2);
+    try testing.expect(task_queue.head.next.?.entry == 0);
+
+    try testing.expect(task_queue.dequeue() == 0);
+    try testing.expect(task_queue.head.next.?.entry == 1);
+
+    try testing.expect(task_queue.dequeue() == 1);
+    try testing.expect(task_queue.head.next.?.entry == 2);
+
+    try testing.expect(task_queue.dequeue() == 2);
+    try testing.expect(task_queue.head.next == null);
+
+    task_queue.enqueue(3);
+    try testing.expect(task_queue.tail.entry == 3);
+    try testing.expect(task_queue.tail.use_counter == 0);
+    try testing.expect(task_queue.head.entry == 2);
+    try testing.expect(task_queue.head.use_counter == 0);
+
+    try testing.expect(task_queue.dequeue() == 3);
+    try testing.expect(task_queue.tail.use_counter == 0);
+    try testing.expect(task_queue.head.use_counter == 0);
+    try testing.expect(task_queue.dequeue() == null);
+}
+
 test "AppendDeleteList#prepend" {
     var list = try AppendDeleteList(u8, u8).init(testing.allocator, test_cleanup);
     defer list.deinit();
@@ -487,34 +707,6 @@ test "AppendDeleteList Iterator" {
     try testing.expect(node == null);
 }
 
-test "DestroyBuffer" {
-    var destroy_buffer = DestroyBuffer(u8, 2).init(testing.allocator);
-    defer {
-        testing.allocator.free(destroy_buffer.buffer);
-    }
-
-    try testing.expect(destroy_buffer.head == 0);
-    try testing.expect(destroy_buffer.buffer[0] == null);
-
-    var t1: u8 = 0;
-    const r1 = destroy_buffer.put(&t1);
-    try testing.expect(destroy_buffer.head == 1);
-    try testing.expect(r1 == null);
-    try testing.expect(destroy_buffer.buffer[0].?.* == 0);
-
-    var t2: u8 = 1;
-    const r2 = destroy_buffer.put(&t2);
-    try testing.expect(destroy_buffer.head == 0);
-    try testing.expect(r2 == null);
-    try testing.expect(destroy_buffer.buffer[1].?.* == 1);
-
-    var t3: u8 = 2;
-    const r3 = destroy_buffer.put(&t3);
-    try testing.expect(destroy_buffer.head == 1);
-    try testing.expect(r3.?.* == 0);
-    try testing.expect(destroy_buffer.buffer[0].?.* == 2);
-}
-
 // fn test_job(list: *AppendDeleteList(u64, u64), thread_number: usize) void {
 //     var active_ids = std.ArrayList(u64).init(testing.allocator);
 //     defer active_ids.deinit();
@@ -593,3 +785,67 @@ test "DestroyBuffer" {
 
 //     list.deinit();
 // }
+
+fn queue_test_job(queue: *Queue(u64, 64), thread_number: usize) void {
+    var operation: u8 = 0;
+    const max_iteration = 625000;
+    for (0..max_iteration) |i| {
+        if (i % 5000 == 0) {
+            std.debug.print("[TEST] {d}: {d}\n", .{ std.Thread.getCurrentId(), i });
+        }
+
+        if (operation == 0) {
+            queue.enqueue(thread_number);
+        } else {
+            _ = queue.dequeue();
+        }
+        operation = (operation + 1) % 2;
+    }
+    std.debug.print("[TEST] Thread {d} done\n", .{thread_number});
+}
+
+test "Queue concurrecny" {
+    var queue = Queue(u64, 64).init(testing.allocator);
+    defer queue.deinit();
+
+    var threads: [16]std.Thread = undefined;
+    for (0..16) |i| {
+        threads[i] = try std.Thread.spawn(.{}, queue_test_job, .{ &queue, i });
+    }
+
+    for (threads) |t| {
+        t.join();
+    }
+    std.debug.print("All work is done! Cleaning up...\n", .{});
+}
+
+fn destroy_buffer_test_job(buf: *DestroyBuffer(u64, 8), thread_number: usize) void {
+    const max_iteration = 625000;
+    var data: u64 = thread_number;
+    for (0..max_iteration) |i| {
+        if (i % 5000 == 0) {
+            std.debug.print("[TEST] {d}: {d}\n", .{ std.Thread.getCurrentId(), i });
+        }
+
+        var foo = testing.allocator.create(std.ArrayList(u64)) catch unreachable;
+        foo.* = std.ArrayList(u64).init(testing.allocator);
+        foo.deinit();
+        testing.allocator.destroy(foo);
+        _ = buf.put(&data);
+    }
+}
+
+test "DestroyBuffer concurrecny" {
+    var buf = DestroyBuffer(u64, 8).init(testing.allocator);
+
+    var threads: [16]std.Thread = undefined;
+    for (0..16) |i| {
+        threads[i] = try std.Thread.spawn(.{}, destroy_buffer_test_job, .{ &buf, i });
+    }
+
+    for (threads) |t| {
+        t.join();
+    }
+
+    testing.allocator.free(buf.buffer);
+}
