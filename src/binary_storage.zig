@@ -11,7 +11,7 @@ const utils = @import("./utils.zig");
 const constants = @import("./constants.zig");
 
 const ApplicationError = @import("./constants.zig").ApplicationError;
-const AppendDeleteList = @import("./blocking.zig").AppendDeleteList;
+const AppendDeleteList = @import("./lock_free.zig").AppendDeleteList;
 const Memtable = @import("./memtable.zig").Memtable;
 const SSTable = @import("./sstable.zig").SSTable;
 const TableFileManager = @import("./table_file_manager.zig").TableFileManager;
@@ -72,22 +72,11 @@ pub const BinaryStorage = struct {
 
             var memtable: *Memtable = undefined;
             {
-                var iter = self.storage.memtables.iterator() catch |e| {
-                    std.log.err("Error! Failed to falush a memtable {s}: {any}", .{ memtable.wal.path, e });
-                    return;
-                };
+                var iter = self.storage.memtables.iterator();
                 defer iter.deinit();
-                while (true) {
-                    const node = iter.next() catch |e| {
-                        std.log.err("Error! Failed to falush a memtable {s}: {any}", .{ memtable.wal.path, e });
-                        return;
-                    };
-                    if (node) |n| {
-                        if (n.entry.?.id == self.memtable_key) {
-                            memtable = n.entry.?.memtable;
-                            break;
-                        }
-                    } else {
+                while (iter.next()) |node| {
+                    if (node.entry.?.id == self.memtable_key) {
+                        memtable = node.entry.?.memtable;
                         break;
                     }
                 }
@@ -98,7 +87,7 @@ pub const BinaryStorage = struct {
                 return;
             };
 
-            _ = self.storage.memtables.remove(condition, self.memtable_key);
+            self.storage.memtables.mark_delete(condition, self.memtable_key);
         }
 
         fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
@@ -170,9 +159,9 @@ pub const BinaryStorage = struct {
         }
 
         {
-            var iter = try self.memtables.iterator();
+            var iter = self.memtables.iterator();
             defer iter.deinit();
-            while (try iter.next()) |n| {
+            while (iter.next()) |n| {
                 value = try n.entry.?.memtable.find(key);
                 if (value) |v| {
                     const result = try self.allocator.alloc(u8, v.len);
@@ -228,7 +217,7 @@ pub const BinaryStorage = struct {
             .id = memtable_key,
             .memtable = self.active_memtable,
         };
-        _ = try self.memtables.prepend(pair); // TODO: handle failure to prepand
+        try self.memtables.prepend(pair); // TODO: handle failure to prepand
         self.active_memtable = memtable;
         return memtable_key;
     }
@@ -296,10 +285,10 @@ fn clean_up(storage: *BinaryStorage) !void {
 
     try storage.active_memtable.wal.delete_file();
 
-    var iter = try storage.memtables.iterator();
+    var iter = storage.memtables.iterator();
     defer iter.deinit();
 
-    while (try iter.next()) |node| {
+    while (iter.next()) |node| {
         try node.entry.?.memtable.wal.delete_file();
     }
     var it = storage.tables.valueIterator();

@@ -60,11 +60,7 @@ const TestingConfigurator = @import("./configurator.zig").TestingConfigurator;
 const TaskQueue = @import("./task_queue.zig").TaskQueue;
 
 fn clean_up(typed_storage: *TypedStorage) void {
-    var iter = typed_storage.storage.memtables.iterator() catch {
-        const out = std.io.getStdOut().writer();
-        std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
-        return;
-    };
+    var iter = typed_storage.storage.memtables.iterator();
     defer iter.deinit();
 
     typed_storage.storage.active_memtable.wal.delete_file() catch {
@@ -73,20 +69,11 @@ fn clean_up(typed_storage: *TypedStorage) void {
         return;
     };
 
-    while (true) {
-        const node = iter.next() catch {
+    while (iter.next()) |node| {
+        node.entry.?.memtable.wal.delete_file() catch {
             const out = std.io.getStdOut().writer();
             std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
-            return;
         };
-        if (node) |n| {
-            n.entry.?.memtable.wal.delete_file() catch {
-                const out = std.io.getStdOut().writer();
-                std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
-            };
-        } else {
-            break;
-        }
     }
 
     var it = typed_storage.storage.table_file_manager.files.iterator();
