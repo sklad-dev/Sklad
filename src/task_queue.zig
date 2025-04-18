@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const DestroyBuffer = @import("./lock_free.zig").DestroyBuffer;
+const Queue = @import("./lock_free.zig").Queue;
 
 pub const Task = struct {
     context: *anyopaque,
@@ -16,145 +16,7 @@ pub const Task = struct {
     }
 };
 
-pub const TaskQueue = struct {
-    allocator: std.mem.Allocator,
-    head: *TaskNode,
-    tail: *TaskNode,
-    destroy_buffer: *DestroyBuffer(TaskNode, 64),
-
-    const TaskNode = struct {
-        task: Task,
-        next: ?*TaskNode,
-        prev: ?*TaskNode,
-        padding1: u8 align(std.atomic.cache_line) = 0,
-    };
-
-    pub fn init(allocator: std.mem.Allocator) TaskQueue {
-        var guard_task = NullTask{};
-
-        var prev_guard = allocator.create(TaskNode) catch unreachable;
-        prev_guard.* = TaskNode{
-            .task = guard_task.task(),
-            .next = null,
-            .prev = null,
-        };
-
-        var start_guard = allocator.create(TaskNode) catch unreachable;
-        start_guard.* = TaskNode{
-            .task = guard_task.task(),
-            .next = null,
-            .prev = null,
-        };
-
-        start_guard.prev = prev_guard;
-        prev_guard.next = start_guard;
-
-        const destroy_buffer = allocator.create(DestroyBuffer(TaskNode, 64)) catch unreachable;
-        destroy_buffer.* = DestroyBuffer(TaskNode, 64).init(allocator);
-
-        return TaskQueue{
-            .allocator = allocator,
-            .head = start_guard,
-            .tail = start_guard,
-            .destroy_buffer = destroy_buffer,
-        };
-    }
-
-    pub fn deinit(self: *TaskQueue) void {
-        // TODO: THIS IS NOT THREAD SAFE!
-        var head_pointer: ?*TaskNode = self.head;
-        if (head_pointer.?.prev) |prev_guard| {
-            self.allocator.destroy(prev_guard);
-        }
-        while (head_pointer != null) {
-            const next_node = head_pointer.?.next;
-            self.allocator.destroy(head_pointer.?);
-            head_pointer = next_node;
-        }
-        for (self.destroy_buffer.buffer) |node| {
-            if (node) |n| self.allocator.destroy(n);
-        }
-        self.allocator.free(self.destroy_buffer.buffer);
-        self.allocator.destroy(self.destroy_buffer);
-    }
-
-    pub fn enqueue(self: *TaskQueue, task: Task) void {
-        const node = self.allocator.create(TaskNode) catch unreachable;
-        node.* = TaskNode{
-            .task = task,
-            .next = null,
-            .prev = null,
-        };
-
-        while (true) {
-            var ltail = self.tail;
-            var lprev = ltail.prev.?;
-            if (lprev.next == null and lprev != ltail) {
-                lprev.next = ltail;
-            }
-            node.prev = ltail;
-            if (@cmpxchgWeak(
-                *TaskNode,
-                &self.tail,
-                ltail,
-                node,
-                .seq_cst,
-                .seq_cst,
-            ) == null) {
-                ltail.next = node;
-                return;
-            }
-        }
-    }
-
-    pub fn dequeue(self: *TaskQueue) ?Task {
-        while (true) {
-            const lhead = self.head;
-
-            const ltail = self.tail;
-            var lprev = ltail.prev;
-            if (lprev.?.next == null and lprev != ltail) {
-                lprev.?.next = ltail;
-            }
-
-            const lnext = lhead.next;
-            if (lhead == ltail or lnext == null) return null;
-            if (lnext.? == lhead) continue;
-            if (@cmpxchgWeak(
-                *TaskNode,
-                &self.head,
-                lhead,
-                lnext.?,
-                .seq_cst,
-                .seq_cst,
-            ) == null) {
-                if (self.destroy_buffer.put(lhead.prev.?)) |node| {
-                    self.allocator.destroy(node);
-                }
-                return lnext.?.task;
-            }
-        }
-    }
-};
-
-const NullTask = struct {
-    pub fn task(self: *NullTask) Task {
-        return .{
-            .context = self,
-            .run_fn = run,
-            .destroy_fn = destroy,
-        };
-    }
-
-    fn run(ptr: *anyopaque) void {
-        _ = ptr;
-    }
-
-    fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
-        _ = ptr;
-        _ = allocator;
-    }
-};
+pub const TaskQueue = Queue(Task, 64);
 
 // Tests
 const testing = std.testing;
@@ -204,18 +66,18 @@ test "TaskQueue#enqueue" {
 
     var t1 = TestTask{ .id = 0 };
     task_queue.enqueue(t1.task());
-    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.tail.task.context))) == &t1);
-    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.next.?.task.context))) == &t1);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.tail.entry.?.context))) == &t1);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.next.?.entry.?.context))) == &t1);
 
     var t2 = TestTask{ .id = 1 };
     task_queue.enqueue(t2.task());
-    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.tail.task.context))) == &t2);
-    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.next.?.task.context))) == &t1);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.tail.entry.?.context))) == &t2);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.next.?.entry.?.context))) == &t1);
 
     var t3 = TestTask{ .id = 2 };
     task_queue.enqueue(t3.task());
-    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.tail.task.context))) == &t3);
-    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.next.?.task.context))) == &t1);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.tail.entry.?.context))) == &t3);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.next.?.entry.?.context))) == &t1);
 }
 
 test "TaskQueue#dequeue" {
@@ -230,24 +92,24 @@ test "TaskQueue#dequeue" {
     task_queue.enqueue(t1.task());
     task_queue.enqueue(t2.task());
     task_queue.enqueue(t3.task());
-    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.next.?.task.context))) == &t1);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.next.?.entry.?.context))) == &t1);
 
     task = task_queue.dequeue();
     try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task.?.context))).id == t1.id);
-    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.next.?.task.context))) == &t2);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.next.?.entry.?.context))) == &t2);
 
     task = task_queue.dequeue();
     try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task.?.context))).id == t2.id);
-    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.next.?.task.context))) == &t3);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.next.?.entry.?.context))) == &t3);
 
     task = task_queue.dequeue();
     try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task.?.context))).id == t3.id);
-    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.task.context))) == &t3);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.entry.?.context))) == &t3);
 
     var t4 = TestTask{ .id = 3 };
     task_queue.enqueue(t4.task());
-    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.tail.task.context))) == &t4);
-    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.task.context))) == &t3);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.tail.entry.?.context))) == &t4);
+    try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task_queue.head.entry.?.context))) == &t3);
 
     task = task_queue.dequeue();
     try testing.expect(@as(*TestTask, @ptrCast(@alignCast(task.?.context))).id == t4.id);
