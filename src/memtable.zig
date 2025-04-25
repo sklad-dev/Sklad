@@ -148,9 +148,13 @@ pub const Memtable = struct {
         }
     }
 
-    pub inline fn find(self: *Memtable, key: data_types.BinaryData) !?data_types.BinaryData {
-        if (!utils.try_lock_for(&self.lock, 200)) return ApplicationError.ExecutionTimeout;
-        defer self.lock.unlock();
+    pub inline fn find(self: *Memtable, key: data_types.BinaryData, lock: bool) !?data_types.BinaryData {
+        if (lock) {
+            if (!utils.try_lock_for(&self.lock, 200)) return ApplicationError.ExecutionTimeout;
+        }
+        defer {
+            if (lock) self.lock.unlock();
+        }
 
         if (self.head == null) return null;
 
@@ -262,7 +266,7 @@ test "Memtable#add and find" {
     errdefer test_memtable.destroy();
 
     // Case: search in an empty memtable
-    try testing.expect(try test_memtable.find(&utils.int_to_bytes(u8, 1)) == null);
+    try testing.expect(try test_memtable.find(&utils.int_to_bytes(u8, 1), false) == null);
 
     // Case: a key is added succesfully to an empty memtable
     const test_value = utils.int_to_bytes(u8, 0);
@@ -286,9 +290,9 @@ test "Memtable#add and find" {
     }
 
     // Case: find
-    try testing.expect(try test_memtable.find(&utils.int_to_bytes(u8, 0)) != null);
-    try testing.expect(try test_memtable.find(&utils.int_to_bytes(u8, table_size / 2)) != null);
-    try testing.expect(try test_memtable.find(&utils.int_to_bytes(u8, table_size + 1)) == null);
+    try testing.expect(try test_memtable.find(&utils.int_to_bytes(u8, 0), false) != null);
+    try testing.expect(try test_memtable.find(&utils.int_to_bytes(u8, table_size / 2), false) != null);
+    try testing.expect(try test_memtable.find(&utils.int_to_bytes(u8, table_size + 1), false) == null);
 
     try test_memtable.wal.delete_file();
     test_memtable.destroy();

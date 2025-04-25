@@ -28,6 +28,7 @@ pub const BinaryStorage = struct {
     memtables_lock: std.Thread.Mutex = .{},
     table_file_manager: TableFileManager,
     tables: StringHashMap(*SSTable),
+    tables_lock: std.Thread.Mutex = .{},
 
     const Self = @This();
 
@@ -151,7 +152,7 @@ pub const BinaryStorage = struct {
     }
 
     pub fn find(self: *Self, key: []const u8) !?[]const u8 {
-        var value = try self.active_memtable.find(key);
+        var value = try self.active_memtable.find(key, true);
         if (value) |v| {
             const result = try self.allocator.alloc(u8, v.len);
             @memcpy(result, v);
@@ -162,7 +163,7 @@ pub const BinaryStorage = struct {
             var iter = self.memtables.iterator();
             defer iter.deinit();
             while (iter.next()) |n| {
-                value = try n.entry.?.memtable.find(key);
+                value = try n.entry.?.memtable.find(key, false);
                 if (value) |v| {
                     const result = try self.allocator.alloc(u8, v.len);
                     @memcpy(result, v);
@@ -176,32 +177,38 @@ pub const BinaryStorage = struct {
 
     fn find_in_tables(self: *Self, key: []const u8) !?[]const u8 {
         var result: ?[]const u8 = null;
-        var result_id: i16 = -1;
-        var it = self.table_file_manager.files.iterator();
-        while (it.next()) |entry| {
-            for (entry.value_ptr.*.items) |file_name| {
-                if (self.tables.contains(file_name) == false) {
-                    const table = try self.allocator.create(SSTable);
-                    table.* = try SSTable.open(file_name, self.allocator);
-                    try self.tables.put(
-                        file_name,
-                        table,
-                    );
-                }
+        var result_id: u16 = 0;
+        for (0..self.table_file_manager.files.len) |level| {
+            if (@atomicLoad(?*AppendDeleteList([]u8, []u8), &self.table_file_manager.files[level], .seq_cst)) |files| {
+                var it = files.iterator();
+                defer it.deinit();
+                while (it.next()) |node| {
+                    const file_name = node.entry.?.*;
+                    if (!utils.try_lock_for(&self.tables_lock, 200)) return ApplicationError.ExecutionTimeout;
+                    if (self.tables.contains(file_name) == false) {
+                        const table = try self.allocator.create(SSTable);
+                        table.* = try SSTable.open(file_name, self.allocator);
+                        try self.tables.put(
+                            file_name,
+                            table,
+                        );
+                    }
+                    self.tables_lock.unlock();
 
-                if (try self.tables.get(file_name).?.find(key)) |value| {
-                    const file_id = try self.table_file_manager.parse_file_id(file_name);
-                    if (file_id > result_id) {
-                        result_id = file_id;
-                        if (result) |r| self.allocator.free(r);
-                        result = value;
-                    } else {
-                        self.allocator.free(value);
+                    if (try self.tables.get(file_name).?.find(key)) |value| {
+                        const file_id = try self.table_file_manager.parse_file_id(file_name);
+                        if (file_id > result_id) {
+                            result_id = file_id;
+                            if (result) |r| self.allocator.free(r);
+                            result = value;
+                        } else {
+                            self.allocator.free(value);
+                        }
                     }
                 }
-            }
-            if (result) |r| {
-                return r;
+                if (result) |r| {
+                    return r;
+                }
             }
         }
         return null;
@@ -314,7 +321,7 @@ test "BinaryStorage#put" {
 
     try test_storage.put(&utils.int_to_bytes(u8, 1), &utils.int_to_bytes(u8, 42));
     try testing.expect(test_storage.active_memtable.size == 1);
-    const result = try test_storage.active_memtable.find(&utils.int_to_bytes(u8, 1));
+    const result = try test_storage.active_memtable.find(&utils.int_to_bytes(u8, 1), false);
     try testing.expect(std.mem.eql(u8, result.?, &utils.int_to_bytes(u8, 42)));
 
     try test_storage.active_memtable.wal.delete_file();
@@ -337,7 +344,7 @@ test "Restore memtable from wal" {
     defer storage2.stop();
 
     try testing.expect(storage2.active_memtable.size == 1);
-    const result = try storage2.active_memtable.find(&utils.int_to_bytes(u8, 1));
+    const result = try storage2.active_memtable.find(&utils.int_to_bytes(u8, 1), false);
     try testing.expect(std.mem.eql(u8, result.?, &utils.int_to_bytes(u8, 42)));
 
     try storage2.active_memtable.wal.delete_file();

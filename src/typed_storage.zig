@@ -76,13 +76,17 @@ fn clean_up(typed_storage: *TypedStorage) void {
         };
     }
 
-    var it = typed_storage.storage.table_file_manager.files.iterator();
-    while (it.next()) |entry| {
-        for (entry.value_ptr.*.items) |file_name| {
-            std.fs.cwd().deleteFile(file_name) catch {
-                const out = std.io.getStdOut().writer();
-                std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
-            };
+    for (0..typed_storage.storage.table_file_manager.files.len) |level| {
+        if (typed_storage.storage.table_file_manager.files[level]) |files| {
+            var it = files.iterator();
+            defer it.deinit();
+            while (it.next()) |node| {
+                const file_name = node.entry.?.*;
+                std.fs.cwd().deleteFile(file_name) catch {
+                    const out = std.io.getStdOut().writer();
+                    std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
+                };
+            }
         }
     }
 }
