@@ -17,12 +17,11 @@ pub fn main() !void {
     global_context.load_configuration(&conf);
     std.log.info("Configuration is loaded", .{});
 
-    var storage = try TypedStorage.init(allocator, conf.memtable_max_size());
+    var storage = try TypedStorage.init(allocator);
     defer storage.stop();
     std.log.info("Storage engine is initialized", .{});
 
     var task_queue = TaskQueue.init(allocator);
-    defer task_queue.deinit();
     std.log.info("Task queue is initialized", .{});
 
     global_context.init(&storage, &task_queue);
@@ -33,4 +32,6 @@ pub fn main() !void {
     const thread = try std.Thread.spawn(.{}, io.run_io_worker, .{});
     std.log.info("Listening port {d}", .{io.DEFAULT_PORT});
     thread.join();
+
+    task_queue.deinit();
 }

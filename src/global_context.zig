@@ -40,3 +40,17 @@ pub fn deinit_configuration_for_tests() void {
         CONFIGURATOR.store(null, .release);
     }
 }
+
+pub inline fn init_task_queue_for_tests(task_queue: *TaskQueue) void {
+    _ = TASK_QUEUE.cmpxchgStrong(null, task_queue, .seq_cst, .seq_cst);
+}
+
+pub inline fn clean_and_deinit_task_queue_for_tests() void {
+    if (get_task_queue()) |queue| {
+        while (queue.dequeue()) |task| {
+            task.destroy(testing.allocator);
+        }
+        queue.deinit();
+        TASK_QUEUE.store(null, .release);
+    }
+}

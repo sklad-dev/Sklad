@@ -11,9 +11,11 @@ const utils = @import("./utils.zig");
 const constants = @import("./constants.zig");
 
 const ApplicationError = @import("./constants.zig").ApplicationError;
+const AppendDeleteList = @import("./lock_free.zig").AppendDeleteList;
 const Memtable = @import("./memtable.zig").Memtable;
 const SSTable = @import("./sstable.zig").SSTable;
 const TableFileManager = @import("./table_file_manager.zig").TableFileManager;
+const Task = @import("./task_queue.zig").Task;
 const Wal = @import("./wal.zig").Wal;
 
 const StorageRecord = data_types.StorageRecord;
@@ -21,29 +23,92 @@ const StorageRecord = data_types.StorageRecord;
 pub const BinaryStorage = struct {
     allocator: std.mem.Allocator,
     path: []const u8,
-    max_memtable_size: u16,
-    memtables: ArrayList(*Memtable),
+    active_memtable: *Memtable,
+    memtables: AppendDeleteList(Pair, u64),
+    memtables_lock: std.Thread.Mutex = .{},
     table_file_manager: TableFileManager,
-    tables: StringHashMap(*SSTable),
 
     const Self = @This();
 
-    pub fn start(allocator: std.mem.Allocator, path: []const u8, max_memtable_size: u16) !Self {
-        var storage = Self{
+    pub const Pair = struct {
+        id: u64,
+        memtable: *Memtable,
+    };
+
+    pub fn pair_clean_up(allocator: std.mem.Allocator, pair: *Pair) void {
+        pair.memtable.destroy();
+        allocator.destroy(pair.memtable);
+        allocator.destroy(pair);
+    }
+
+    fn condition(value: ?*Pair, expected: u64) bool {
+        return value != null and value.?.id == expected;
+    }
+
+    pub const FlushTask = struct {
+        allocator: std.mem.Allocator,
+        memtable_key: u64,
+        storage: *BinaryStorage,
+
+        pub fn init(allocator: std.mem.Allocator, memtable_key: u64, storage: *BinaryStorage) !FlushTask {
+            return .{
+                .allocator = allocator,
+                .memtable_key = memtable_key,
+                .storage = storage,
+            };
+        }
+
+        pub fn task(self: *FlushTask) Task {
+            return .{
+                .context = self,
+                .run_fn = FlushTask.run,
+                .destroy_fn = FlushTask.destroy,
+            };
+        }
+
+        fn run(ptr: *anyopaque) void {
+            const self: *FlushTask = @ptrCast(@alignCast(ptr));
+
+            var memtable: *Memtable = undefined;
+            {
+                var iter = self.storage.memtables.iterator();
+                defer iter.deinit();
+                while (iter.next()) |node| {
+                    if (node.entry.?.id == self.memtable_key) {
+                        memtable = node.entry.?.memtable;
+                        break;
+                    }
+                }
+            }
+
+            self.storage.table_file_manager.flush_memtable(memtable) catch |e| {
+                std.log.err("Error! Failed to falush a memtable {s}: {any}", .{ memtable.wal.path, e });
+                return;
+            };
+
+            self.storage.memtables.mark_delete(condition, self.memtable_key);
+        }
+
+        fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+            const self: *FlushTask = @ptrCast(@alignCast(ptr));
+            allocator.destroy(self);
+        }
+    };
+
+    pub fn start(allocator: std.mem.Allocator, path: []const u8) !Self {
+        var table_file_manager = try TableFileManager.init(allocator, path);
+        const storage = Self{
             .allocator = allocator,
             .path = path,
-            .max_memtable_size = max_memtable_size,
-            .memtables = try ArrayList(*Memtable).initCapacity(allocator, 2),
-            .table_file_manager = try TableFileManager.init(allocator, path),
-            .tables = StringHashMap(*SSTable).init(allocator),
+            .active_memtable = try restore_memtables(&table_file_manager),
+            .memtables = try AppendDeleteList(Pair, u64).init(allocator, pair_clean_up),
+            .table_file_manager = table_file_manager,
         };
-        try storage.restore_memtables();
         return storage;
     }
 
     pub inline fn stop(self: *Self) void {
         self.deinit_memtables();
-        self.deinit_tables();
         self.table_file_manager.deinit();
     }
 
@@ -56,192 +121,198 @@ pub const BinaryStorage = struct {
             .value = value,
         };
 
-        if (self.memtables.items.len == 0) {
-            try self.add_memtable();
-        } else if (self.memtables.getLast().size >= self.max_memtable_size) {
-            const filled_memtable = self.memtables.pop().?;
-
-            const max_file_id = self.table_file_manager.level_counters.get(0) orelse -1;
-            const file_name_buf = try self.allocator.alloc(u8, self.path.len + 11 + utils.num_digits(i16, max_file_id + 1));
-            const file_name = try std.fmt.bufPrint(
-                file_name_buf,
-                "{s}/0.{d}.sstable",
-                .{ self.path, max_file_id + 1 },
-            );
-            var sstable = try SSTable.create(
-                self.allocator,
-                filled_memtable,
-                file_name,
-                global_context.get_configurator().?.sstable_sparse_index_step(),
-            );
-            try self.table_file_manager.add_file(0, file_name_buf);
-
-            sstable.close();
-            try filled_memtable.wal.delete_file();
-            filled_memtable.destroy();
-            self.allocator.destroy(filled_memtable);
-
-            try self.add_memtable();
+        var filled_memtable: ?*Memtable = null;
+        var filled_memtable_key: u64 = std.crypto.random.int(u64);
+        if (!utils.try_lock_for(&self.memtables_lock, 200)) return ApplicationError.ExecutionTimeout;
+        if (self.active_memtable.is_full()) {
+            filled_memtable = self.active_memtable;
+            filled_memtable_key = try self.switch_active_memtable();
         }
+        self.memtables_lock.unlock();
 
-        const current_memtable = self.memtables.getLast();
-        try current_memtable.wal.write(&record);
-        try current_memtable.add(key, value);
+        try self.active_memtable.wal.write(&record); // TODO: [Improvement] once the record is written to wal we can return success and do the rest in the background
+        try self.active_memtable.add(key, value);
+
+        if (filled_memtable) |_| {
+            const task_queue = global_context.get_task_queue();
+            var flush_task = try task_queue.?.allocator.create(FlushTask);
+
+            flush_task.* = FlushTask{
+                .allocator = self.allocator,
+                .memtable_key = filled_memtable_key,
+                .storage = self,
+            };
+
+            global_context.get_task_queue().?.enqueue(flush_task.task());
+        }
     }
 
     pub fn find(self: *Self, key: []const u8) !?[]const u8 {
-        var i = self.memtables.items.len;
-        while (i > 0) {
-            i -= 1;
-            const value = try self.memtables.items[i].find(key);
-            if (value) |v| {
-                const result = try self.allocator.alloc(u8, v.len);
-                @memcpy(result, v);
-                return result;
+        var value = try self.active_memtable.find(key, true);
+        if (value) |v| {
+            const result = try self.allocator.alloc(u8, v.len);
+            @memcpy(result, v);
+            return result;
+        }
+
+        {
+            var iter = self.memtables.iterator();
+            defer iter.deinit();
+            while (iter.next()) |n| {
+                value = try n.entry.?.memtable.find(key, false);
+                if (value) |v| {
+                    const result = try self.allocator.alloc(u8, v.len);
+                    @memcpy(result, v);
+                    return result;
+                }
             }
         }
+
         return try self.find_in_tables(key);
     }
 
     fn find_in_tables(self: *Self, key: []const u8) !?[]const u8 {
         var result: ?[]const u8 = null;
-        var result_id: i16 = -1;
-        var it = self.table_file_manager.files.iterator();
-        while (it.next()) |entry| {
-            for (entry.value_ptr.*.items) |file_name| {
-                if (self.tables.contains(file_name) == false) {
-                    const table = try self.allocator.create(SSTable);
-                    table.* = try SSTable.open(file_name, self.allocator);
-                    try self.tables.put(
-                        file_name,
-                        table,
-                    );
-                }
+        var result_id: u16 = 0;
+        for (0..self.table_file_manager.files.len) |level| {
+            if (@atomicLoad(?*AppendDeleteList([]u8, []u8), &self.table_file_manager.files[level], .seq_cst)) |files| {
+                var it = files.iterator();
+                defer it.deinit();
+                while (it.next()) |node| {
+                    const file_name = node.entry.?.*;
+                    const table = try SSTable.open(file_name, self.allocator);
+                    defer table.close();
 
-                if (try self.tables.get(file_name).?.find(key)) |value| {
-                    const file_id = try self.table_file_manager.parse_file_id(file_name);
-                    if (file_id > result_id) {
-                        result_id = file_id;
-                        if (result) |r| self.allocator.free(r);
-                        result = value;
-                    } else {
-                        self.allocator.free(value);
+                    if (try table.find(key)) |value| {
+                        const file_id = try self.table_file_manager.parse_file_id(file_name);
+                        if (file_id >= result_id) {
+                            result_id = file_id;
+                            if (result) |r| self.allocator.free(r);
+                            result = value;
+                        } else {
+                            self.allocator.free(value);
+                        }
                     }
                 }
-            }
-            if (result) |r| {
-                return r;
+                if (result) |r| {
+                    return r;
+                }
+            } else {
+                break;
             }
         }
         return null;
     }
 
-    fn add_memtable(self: *Self) !void {
-        const config = global_context.get_configurator().?;
-        const memtable = try self.allocator.create(Memtable);
-        memtable.* = try Memtable.init(
-            self.allocator,
-            std.crypto.random,
-            config.memtable_max_level(),
-            config.memtable_level_probability(),
-            self.path,
-        );
-        try self.memtables.append(memtable);
+    fn switch_active_memtable(self: *Self) !u64 {
+        errdefer self.memtables_lock.unlock();
+
+        const memtable = try Memtable.create(self.allocator, self.path);
+        const memtable_key: u64 = std.crypto.random.int(u64);
+        const pair = try self.allocator.create(Pair);
+        pair.* = .{
+            .id = memtable_key,
+            .memtable = self.active_memtable,
+        };
+        try self.memtables.prepend(pair); // TODO: handle failure to prepand
+        self.active_memtable = memtable;
+        return memtable_key;
     }
 
-    fn restore_memtables(self: *Self) !void {
-        var dir = try std.fs.cwd().openDir(self.path, .{
+    fn restore_memtables(table_file_manager: *TableFileManager) !*Memtable {
+        var dir = try std.fs.cwd().openDir(table_file_manager.path, .{
             .access_sub_paths = false,
             .iterate = true,
             .no_follow = true,
         });
         defer dir.close();
 
+        var memtable = try Memtable.create(table_file_manager.allocator, table_file_manager.path);
+
         var it = dir.iterate();
         while (try it.next()) |entry| {
-            if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".wal")) {
-                const wal_name = try self.allocator.alloc(u8, self.path.len + 9);
+            if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".wal") and !std.mem.eql(u8, memtable.wal.name(), entry.name)) {
+                const wal_name = try table_file_manager.allocator.alloc(u8, table_file_manager.path.len + 9);
                 const wal = try Wal.open(
-                    self.allocator,
+                    table_file_manager.allocator,
                     try std.fmt.bufPrint(
                         wal_name,
                         "{s}/{s}",
-                        .{ self.path, entry.name },
+                        .{ table_file_manager.path, entry.name },
                     ),
                 );
-                try self.restore_memtable(wal);
+                while (try Memtable.from_wal(wal, memtable) == true) {
+                    try table_file_manager.flush_memtable(memtable);
+                    memtable.destroy();
+                    table_file_manager.allocator.destroy(memtable);
+                    memtable = try Memtable.create(table_file_manager.allocator, table_file_manager.path);
+                }
+                wal.file.close();
+                try wal.delete_file();
+                wal.allocator.free(wal.path);
             }
         }
+
+        return memtable;
     }
 
-    fn restore_memtable(self: *Self, wal: Wal) !void {
-        const config = global_context.get_configurator().?;
-        const memtable = try self.allocator.create(Memtable);
-        memtable.* = try Memtable.from_wal(
-            wal,
-            self.allocator,
-            std.crypto.random,
-            config.memtable_max_level(),
-            config.memtable_level_probability(),
-        );
-
-        try self.memtables.append(memtable);
-    }
-
-    fn deinit_memtables(self: *const Self) void {
-        for (self.memtables.items) |t| {
-            t.destroy();
-            self.allocator.destroy(t);
-        }
+    fn deinit_memtables(self: *Self) void {
+        self.active_memtable.destroy();
+        self.allocator.destroy(self.active_memtable);
         self.memtables.deinit();
-    }
-
-    fn deinit_tables(self: *Self) void {
-        var it = self.tables.valueIterator();
-        while (it.next()) |table_ptr| {
-            table_ptr.*.*.close();
-            self.allocator.destroy(table_ptr.*);
-        }
-        self.tables.deinit();
     }
 };
 
 // Tests
 const testing = std.testing;
 const TestingConfigurator = @import("./configurator.zig").TestingConfigurator;
+const TaskQueue = @import("./task_queue.zig").TaskQueue;
 
 fn clean_up(storage: *BinaryStorage) !void {
-    for (storage.memtables.items) |t| {
-        try t.wal.delete_file();
+    try storage.active_memtable.wal.delete_file();
+
+    try storage.active_memtable.wal.delete_file();
+
+    var iter = storage.memtables.iterator();
+    defer iter.deinit();
+
+    while (iter.next()) |node| {
+        try node.entry.?.memtable.wal.delete_file();
     }
-    var it = storage.tables.valueIterator();
-    while (it.next()) |table_ptr| {
-        std.fs.cwd().deleteFile(table_ptr.*.path) catch {
-            const out = std.io.getStdOut().writer();
-            std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
-        };
+
+    for (0..storage.table_file_manager.files.len) |level| {
+        if (storage.table_file_manager.files[level]) |files| {
+            var it = files.iterator();
+            defer it.deinit();
+            while (it.next()) |node| {
+                const file_name = node.entry.?.*;
+                std.fs.cwd().deleteFile(file_name) catch {
+                    const out = std.io.getStdOut().writer();
+                    std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
+                };
+            }
+        }
     }
 }
 
-test "Add value" {
+test "BinaryStorage#put" {
     var configurator = try testing.allocator.create(TestingConfigurator);
     defer global_context.deinit_configuration_for_tests();
 
     configurator.* = TestingConfigurator.init();
+    configurator.max_size = 4;
     var conf = configurator.configurator();
     global_context.load_configuration(&conf);
 
-    var test_storage = try BinaryStorage.start(testing.allocator, "./", 4);
+    var test_storage = try BinaryStorage.start(testing.allocator, ".");
     defer test_storage.stop();
 
     try test_storage.put(&utils.int_to_bytes(u8, 1), &utils.int_to_bytes(u8, 42));
-    try testing.expect(test_storage.memtables.items.len == 1);
-    const result = try test_storage.memtables.getLast().find(&utils.int_to_bytes(u8, 1));
+    try testing.expect(test_storage.active_memtable.size == 1);
+    const result = try test_storage.active_memtable.find(&utils.int_to_bytes(u8, 1), false);
     try testing.expect(std.mem.eql(u8, result.?, &utils.int_to_bytes(u8, 42)));
 
-    for (test_storage.memtables.items) |t| {
-        try t.wal.delete_file();
-    }
+    try test_storage.active_memtable.wal.delete_file();
 }
 
 test "Restore memtable from wal" {
@@ -249,33 +320,38 @@ test "Restore memtable from wal" {
     defer global_context.deinit_configuration_for_tests();
 
     configurator.* = TestingConfigurator.init();
+    configurator.max_size = 4;
     var conf = configurator.configurator();
     global_context.load_configuration(&conf);
 
-    var storage1 = try BinaryStorage.start(testing.allocator, "./", 4);
+    var storage1 = try BinaryStorage.start(testing.allocator, ".");
     try storage1.put(&utils.int_to_bytes(u8, 1), &utils.int_to_bytes(u8, 42));
     storage1.stop();
 
-    var storage2 = try BinaryStorage.start(testing.allocator, "./", 4);
+    var storage2 = try BinaryStorage.start(testing.allocator, ".");
     defer storage2.stop();
 
-    try testing.expect(storage2.memtables.items.len == 1);
-    const result = try storage2.memtables.getLast().find(&utils.int_to_bytes(u8, 1));
+    try testing.expect(storage2.active_memtable.size == 1);
+    const result = try storage2.active_memtable.find(&utils.int_to_bytes(u8, 1), false);
     try testing.expect(std.mem.eql(u8, result.?, &utils.int_to_bytes(u8, 42)));
-    for (storage2.memtables.items) |t| {
-        try t.wal.delete_file();
-    }
+
+    try storage2.active_memtable.wal.delete_file();
 }
 
-test "Finding values" {
+test "BinaryStorage#find" {
     var configurator = try testing.allocator.create(TestingConfigurator);
     defer global_context.deinit_configuration_for_tests();
 
     configurator.* = TestingConfigurator.init();
+    configurator.max_size = 4;
     var conf = configurator.configurator();
     global_context.load_configuration(&conf);
 
-    var storage = try BinaryStorage.start(testing.allocator, "./", 4);
+    var task_queue = TaskQueue.init(testing.allocator);
+    global_context.init_task_queue_for_tests(&task_queue);
+    defer global_context.clean_and_deinit_task_queue_for_tests();
+
+    var storage = try BinaryStorage.start(testing.allocator, ".");
     defer storage.stop();
 
     const value = utils.int_to_bytes(u8, 42);
@@ -294,34 +370,28 @@ test "Finding values" {
     }
 
     for (1..10) |i| {
-        search_result = try storage.find(&utils.int_to_bytes(u8, @as(u8, @intCast(i))));
+        search_result = try storage.find(&utils.int_to_bytes(u8, @as(u8, @intCast(i)))); // HERE
         defer testing.allocator.free(search_result.?);
         try testing.expect(search_result != null);
     }
 
-    search_result = try storage.find_in_tables(&utils.int_to_bytes(u8, @as(u8, @intCast(1))));
-    try testing.expect(search_result != null);
-    testing.allocator.free(search_result.?);
-
-    search_result = try storage.find_in_tables(&utils.int_to_bytes(u8, @as(u8, @intCast(5))));
-    try testing.expect(search_result != null);
-    testing.allocator.free(search_result.?);
-
-    search_result = try storage.find_in_tables(&utils.int_to_bytes(u8, @as(u8, @intCast(9))));
-    try testing.expect(search_result == null);
-
     try clean_up(&storage);
 }
 
-test "Finding values: return the newest value" {
+test "BinaryStorage#find returns the newest value" {
     var configurator = try testing.allocator.create(TestingConfigurator);
     defer global_context.deinit_configuration_for_tests();
 
     configurator.* = TestingConfigurator.init();
+    configurator.max_size = 4;
     var conf = configurator.configurator();
     global_context.load_configuration(&conf);
 
-    var storage = try BinaryStorage.start(testing.allocator, "./", 4);
+    var task_queue = TaskQueue.init(testing.allocator);
+    global_context.init_task_queue_for_tests(&task_queue);
+    defer global_context.clean_and_deinit_task_queue_for_tests();
+
+    var storage = try BinaryStorage.start(testing.allocator, ".");
     defer storage.stop();
 
     for (0..8) |i| {
@@ -334,9 +404,13 @@ test "Finding values: return the newest value" {
         try storage.put(&utils.int_to_bytes(u8, v), &utils.int_to_bytes(u8, v * 2));
     }
 
-    const search_result = try storage.find(&utils.int_to_bytes(u8, @as(u8, @intCast(1))));
-    try testing.expect(std.mem.eql(u8, search_result.?, &utils.int_to_bytes(u8, 2)));
-    testing.allocator.free(search_result.?);
+    const r1 = try storage.find(&utils.int_to_bytes(u8, @as(u8, @intCast(1))));
+    defer testing.allocator.free(r1.?);
+    try testing.expect(std.mem.eql(u8, r1.?, &utils.int_to_bytes(u8, 2)));
+
+    const r2 = try storage.find(&utils.int_to_bytes(u8, @as(u8, @intCast(5))));
+    defer testing.allocator.free(r2.?);
+    try testing.expect(std.mem.eql(u8, r2.?, &utils.int_to_bytes(u8, 10)));
 
     try clean_up(&storage);
 }

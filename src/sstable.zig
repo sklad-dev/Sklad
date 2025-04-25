@@ -231,7 +231,7 @@ fn clean_up(storage: SSTable, memtable: m.Memtable) !void {
 }
 
 test "SSTable#create" {
-    var test_memtable = try m.Memtable.init(testing.allocator, std.crypto.random, 8, 0.125, "./");
+    var test_memtable = try m.Memtable.init(testing.allocator, std.crypto.random, 64, 8, 0.125, "./");
     defer test_memtable.destroy();
 
     const test_value = utils.int_to_bytes(u8, 0);
@@ -245,7 +245,7 @@ test "SSTable#create" {
 }
 
 test "SSTable#open" {
-    var test_memtable = try m.Memtable.init(testing.allocator, std.crypto.random, 8, 0.125, "./");
+    var test_memtable = try m.Memtable.init(testing.allocator, std.crypto.random, 64, 8, 0.125, "./");
     defer test_memtable.destroy();
 
     const test_value = utils.int_to_bytes(u8, 0);
@@ -272,7 +272,7 @@ test "SSTable#open" {
 }
 
 test "SSTable#find" {
-    var test_memtable = try m.Memtable.init(testing.allocator, std.crypto.random, 8, 0.125, "./");
+    var test_memtable = try m.Memtable.init(testing.allocator, std.crypto.random, 64, 8, 0.125, "./");
     defer test_memtable.destroy();
 
     const test_value = utils.int_to_bytes(u8, 0);

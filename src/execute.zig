@@ -98,7 +98,7 @@ const Executor = struct {
             defer r.allocator.free(r.data);
             self.send_get_result(r);
         } else {
-            self.io_context.send_response(?u8, ExecutionError, self.allocator, null, null);
+            self.io_context.send_response(i8, ExecutionError, self.allocator, -1, null);
         }
     }
 
