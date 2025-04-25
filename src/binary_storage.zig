@@ -27,8 +27,6 @@ pub const BinaryStorage = struct {
     memtables: AppendDeleteList(Pair, u64),
     memtables_lock: std.Thread.Mutex = .{},
     table_file_manager: TableFileManager,
-    tables: StringHashMap(*SSTable),
-    tables_lock: std.Thread.Mutex = .{},
 
     const Self = @This();
 
@@ -105,14 +103,12 @@ pub const BinaryStorage = struct {
             .active_memtable = try restore_memtables(&table_file_manager),
             .memtables = try AppendDeleteList(Pair, u64).init(allocator, pair_clean_up),
             .table_file_manager = table_file_manager,
-            .tables = StringHashMap(*SSTable).init(allocator),
         };
         return storage;
     }
 
     pub inline fn stop(self: *Self) void {
         self.deinit_memtables();
-        self.deinit_tables();
         self.table_file_manager.deinit();
     }
 
@@ -184,18 +180,10 @@ pub const BinaryStorage = struct {
                 defer it.deinit();
                 while (it.next()) |node| {
                     const file_name = node.entry.?.*;
-                    if (!utils.try_lock_for(&self.tables_lock, 200)) return ApplicationError.ExecutionTimeout;
-                    if (self.tables.contains(file_name) == false) {
-                        const table = try self.allocator.create(SSTable);
-                        table.* = try SSTable.open(file_name, self.allocator);
-                        try self.tables.put(
-                            file_name,
-                            table,
-                        );
-                    }
-                    self.tables_lock.unlock();
+                    const table = try SSTable.open(file_name, self.allocator);
+                    defer table.close();
 
-                    if (try self.tables.get(file_name).?.find(key)) |value| {
+                    if (try table.find(key)) |value| {
                         const file_id = try self.table_file_manager.parse_file_id(file_name);
                         if (file_id >= result_id) {
                             result_id = file_id;
@@ -273,15 +261,6 @@ pub const BinaryStorage = struct {
         self.allocator.destroy(self.active_memtable);
         self.memtables.deinit();
     }
-
-    fn deinit_tables(self: *Self) void {
-        var it = self.tables.valueIterator();
-        while (it.next()) |table_ptr| {
-            table_ptr.*.*.close();
-            self.allocator.destroy(table_ptr.*);
-        }
-        self.tables.deinit();
-    }
 };
 
 // Tests
@@ -300,12 +279,19 @@ fn clean_up(storage: *BinaryStorage) !void {
     while (iter.next()) |node| {
         try node.entry.?.memtable.wal.delete_file();
     }
-    var it = storage.tables.valueIterator();
-    while (it.next()) |table_ptr| {
-        std.fs.cwd().deleteFile(table_ptr.*.path) catch {
-            const out = std.io.getStdOut().writer();
-            std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
-        };
+
+    for (0..storage.table_file_manager.files.len) |level| {
+        if (storage.table_file_manager.files[level]) |files| {
+            var it = files.iterator();
+            defer it.deinit();
+            while (it.next()) |node| {
+                const file_name = node.entry.?.*;
+                std.fs.cwd().deleteFile(file_name) catch {
+                    const out = std.io.getStdOut().writer();
+                    std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
+                };
+            }
+        }
     }
 }
 
