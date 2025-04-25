@@ -197,7 +197,7 @@ pub const BinaryStorage = struct {
 
                     if (try self.tables.get(file_name).?.find(key)) |value| {
                         const file_id = try self.table_file_manager.parse_file_id(file_name);
-                        if (file_id > result_id) {
+                        if (file_id >= result_id) {
                             result_id = file_id;
                             if (result) |r| self.allocator.free(r);
                             result = value;
@@ -209,6 +209,8 @@ pub const BinaryStorage = struct {
                 if (result) |r| {
                     return r;
                 }
+            } else {
+                break;
             }
         }
         return null;
