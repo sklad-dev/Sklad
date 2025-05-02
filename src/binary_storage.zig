@@ -35,7 +35,7 @@ pub const BinaryStorage = struct {
         memtable: *Memtable,
     };
 
-    pub fn pair_clean_up(allocator: std.mem.Allocator, pair: *Pair) void {
+    pub fn pairCleanUp(allocator: std.mem.Allocator, pair: *Pair) void {
         pair.memtable.destroy();
         allocator.destroy(pair.memtable);
         allocator.destroy(pair);
@@ -81,12 +81,12 @@ pub const BinaryStorage = struct {
                 }
             }
 
-            self.storage.table_file_manager.flush_memtable(memtable) catch |e| {
+            self.storage.table_file_manager.flushMemtable(memtable) catch |e| {
                 std.log.err("Error! Failed to falush a memtable {s}: {any}", .{ memtable.wal.path, e });
                 return;
             };
 
-            self.storage.memtables.mark_delete(condition, self.memtable_key);
+            self.storage.memtables.markDelete(condition, self.memtable_key);
         }
 
         fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
@@ -100,15 +100,15 @@ pub const BinaryStorage = struct {
         const storage = Self{
             .allocator = allocator,
             .path = path,
-            .active_memtable = try restore_memtables(&table_file_manager),
-            .memtables = try AppendDeleteList(Pair, u64).init(allocator, pair_clean_up),
+            .active_memtable = try restoreMemtables(&table_file_manager),
+            .memtables = try AppendDeleteList(Pair, u64).init(allocator, pairCleanUp),
             .table_file_manager = table_file_manager,
         };
         return storage;
     }
 
     pub inline fn stop(self: *Self) void {
-        self.deinit_memtables();
+        self.deinitMemtables();
         self.table_file_manager.deinit();
     }
 
@@ -123,10 +123,10 @@ pub const BinaryStorage = struct {
 
         var filled_memtable: ?*Memtable = null;
         var filled_memtable_key: u64 = std.crypto.random.int(u64);
-        if (!utils.try_lock_for(&self.memtables_lock, 200)) return ApplicationError.ExecutionTimeout;
-        if (self.active_memtable.is_full()) {
+        if (!utils.tryLockFor(&self.memtables_lock, 200)) return ApplicationError.ExecutionTimeout;
+        if (self.active_memtable.isFull()) {
             filled_memtable = self.active_memtable;
-            filled_memtable_key = try self.switch_active_memtable();
+            filled_memtable_key = try self.switchActiveMemtable();
         }
         self.memtables_lock.unlock();
 
@@ -134,7 +134,7 @@ pub const BinaryStorage = struct {
         try self.active_memtable.add(key, value);
 
         if (filled_memtable) |_| {
-            const task_queue = global_context.get_task_queue();
+            const task_queue = global_context.getTaskQueue();
             var flush_task = try task_queue.?.allocator.create(FlushTask);
 
             flush_task.* = FlushTask{
@@ -143,7 +143,7 @@ pub const BinaryStorage = struct {
                 .storage = self,
             };
 
-            global_context.get_task_queue().?.enqueue(flush_task.task());
+            global_context.getTaskQueue().?.enqueue(flush_task.task());
         }
     }
 
@@ -168,10 +168,10 @@ pub const BinaryStorage = struct {
             }
         }
 
-        return try self.find_in_tables(key);
+        return try self.findInTables(key);
     }
 
-    fn find_in_tables(self: *Self, key: []const u8) !?[]const u8 {
+    fn findInTables(self: *Self, key: []const u8) !?[]const u8 {
         var result: ?[]const u8 = null;
         var result_id: u16 = 0;
         for (0..self.table_file_manager.files.len) |level| {
@@ -184,7 +184,7 @@ pub const BinaryStorage = struct {
                     defer table.close();
 
                     if (try table.find(key)) |value| {
-                        const file_id = try self.table_file_manager.parse_file_id(file_name);
+                        const file_id = try self.table_file_manager.parseFileId(file_name);
                         if (file_id >= result_id) {
                             result_id = file_id;
                             if (result) |r| self.allocator.free(r);
@@ -204,7 +204,7 @@ pub const BinaryStorage = struct {
         return null;
     }
 
-    fn switch_active_memtable(self: *Self) !u64 {
+    fn switchActiveMemtable(self: *Self) !u64 {
         errdefer self.memtables_lock.unlock();
 
         const memtable = try Memtable.create(self.allocator, self.path);
@@ -219,7 +219,7 @@ pub const BinaryStorage = struct {
         return memtable_key;
     }
 
-    fn restore_memtables(table_file_manager: *TableFileManager) !*Memtable {
+    fn restoreMemtables(table_file_manager: *TableFileManager) !*Memtable {
         var dir = try std.fs.cwd().openDir(table_file_manager.path, .{
             .access_sub_paths = false,
             .iterate = true,
@@ -241,14 +241,14 @@ pub const BinaryStorage = struct {
                         .{ table_file_manager.path, entry.name },
                     ),
                 );
-                while (try Memtable.from_wal(wal, memtable) == true) {
-                    try table_file_manager.flush_memtable(memtable);
+                while (try Memtable.fromWal(wal, memtable) == true) {
+                    try table_file_manager.flushMemtable(memtable);
                     memtable.destroy();
                     table_file_manager.allocator.destroy(memtable);
                     memtable = try Memtable.create(table_file_manager.allocator, table_file_manager.path);
                 }
                 wal.file.close();
-                try wal.delete_file();
+                try wal.deleteFile();
                 wal.allocator.free(wal.path);
             }
         }
@@ -256,7 +256,7 @@ pub const BinaryStorage = struct {
         return memtable;
     }
 
-    fn deinit_memtables(self: *Self) void {
+    fn deinitMemtables(self: *Self) void {
         self.active_memtable.destroy();
         self.allocator.destroy(self.active_memtable);
         self.memtables.deinit();
@@ -268,16 +268,16 @@ const testing = std.testing;
 const TestingConfigurator = @import("./configurator.zig").TestingConfigurator;
 const TaskQueue = @import("./task_queue.zig").TaskQueue;
 
-fn clean_up(storage: *BinaryStorage) !void {
-    try storage.active_memtable.wal.delete_file();
+fn cleanup(storage: *BinaryStorage) !void {
+    try storage.active_memtable.wal.deleteFile();
 
-    try storage.active_memtable.wal.delete_file();
+    try storage.active_memtable.wal.deleteFile();
 
     var iter = storage.memtables.iterator();
     defer iter.deinit();
 
     while (iter.next()) |node| {
-        try node.entry.?.memtable.wal.delete_file();
+        try node.entry.?.memtable.wal.deleteFile();
     }
 
     for (0..storage.table_file_manager.files.len) |level| {
@@ -297,120 +297,120 @@ fn clean_up(storage: *BinaryStorage) !void {
 
 test "BinaryStorage#put" {
     var configurator = try testing.allocator.create(TestingConfigurator);
-    defer global_context.deinit_configuration_for_tests();
+    defer global_context.deinitConfigurationForTests();
 
     configurator.* = TestingConfigurator.init();
     configurator.max_size = 4;
     var conf = configurator.configurator();
-    global_context.load_configuration(&conf);
+    global_context.loadConfiguration(&conf);
 
     var test_storage = try BinaryStorage.start(testing.allocator, ".");
     defer test_storage.stop();
 
-    try test_storage.put(&utils.int_to_bytes(u8, 1), &utils.int_to_bytes(u8, 42));
+    try test_storage.put(&utils.intToBytes(u8, 1), &utils.intToBytes(u8, 42));
     try testing.expect(test_storage.active_memtable.size == 1);
-    const result = try test_storage.active_memtable.find(&utils.int_to_bytes(u8, 1), false);
-    try testing.expect(std.mem.eql(u8, result.?, &utils.int_to_bytes(u8, 42)));
+    const result = try test_storage.active_memtable.find(&utils.intToBytes(u8, 1), false);
+    try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u8, 42)));
 
-    try test_storage.active_memtable.wal.delete_file();
+    try test_storage.active_memtable.wal.deleteFile();
 }
 
 test "Restore memtable from wal" {
     var configurator = try testing.allocator.create(TestingConfigurator);
-    defer global_context.deinit_configuration_for_tests();
+    defer global_context.deinitConfigurationForTests();
 
     configurator.* = TestingConfigurator.init();
     configurator.max_size = 4;
     var conf = configurator.configurator();
-    global_context.load_configuration(&conf);
+    global_context.loadConfiguration(&conf);
 
     var storage1 = try BinaryStorage.start(testing.allocator, ".");
-    try storage1.put(&utils.int_to_bytes(u8, 1), &utils.int_to_bytes(u8, 42));
+    try storage1.put(&utils.intToBytes(u8, 1), &utils.intToBytes(u8, 42));
     storage1.stop();
 
     var storage2 = try BinaryStorage.start(testing.allocator, ".");
     defer storage2.stop();
 
     try testing.expect(storage2.active_memtable.size == 1);
-    const result = try storage2.active_memtable.find(&utils.int_to_bytes(u8, 1), false);
-    try testing.expect(std.mem.eql(u8, result.?, &utils.int_to_bytes(u8, 42)));
+    const result = try storage2.active_memtable.find(&utils.intToBytes(u8, 1), false);
+    try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u8, 42)));
 
-    try storage2.active_memtable.wal.delete_file();
+    try storage2.active_memtable.wal.deleteFile();
 }
 
 test "BinaryStorage#find" {
     var configurator = try testing.allocator.create(TestingConfigurator);
-    defer global_context.deinit_configuration_for_tests();
+    defer global_context.deinitConfigurationForTests();
 
     configurator.* = TestingConfigurator.init();
     configurator.max_size = 4;
     var conf = configurator.configurator();
-    global_context.load_configuration(&conf);
+    global_context.loadConfiguration(&conf);
 
     var task_queue = TaskQueue.init(testing.allocator);
-    global_context.init_task_queue_for_tests(&task_queue);
-    defer global_context.clean_and_deinit_task_queue_for_tests();
+    global_context.initTaskQueueForTests(&task_queue);
+    defer global_context.cleanAndDeinitTaskQueueForTests();
 
     var storage = try BinaryStorage.start(testing.allocator, ".");
     defer storage.stop();
 
-    const value = utils.int_to_bytes(u8, 42);
-    try storage.put(&utils.int_to_bytes(u8, 1), &value);
+    const value = utils.intToBytes(u8, 42);
+    try storage.put(&utils.intToBytes(u8, 1), &value);
 
-    var search_result = try storage.find(&utils.int_to_bytes(u8, 1));
+    var search_result = try storage.find(&utils.intToBytes(u8, 1));
     try testing.expect(std.mem.eql(u8, search_result.?, &value));
     testing.allocator.free(search_result.?);
 
-    search_result = try storage.find(&utils.int_to_bytes(u8, 2));
+    search_result = try storage.find(&utils.intToBytes(u8, 2));
     try testing.expect(search_result == null);
 
     for (2..10) |i| {
         const v = @as(u8, @intCast(i));
-        try storage.put(&utils.int_to_bytes(u8, v), &utils.int_to_bytes(u8, v));
+        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v));
     }
 
     for (1..10) |i| {
-        search_result = try storage.find(&utils.int_to_bytes(u8, @as(u8, @intCast(i)))); // HERE
+        search_result = try storage.find(&utils.intToBytes(u8, @as(u8, @intCast(i)))); // HERE
         defer testing.allocator.free(search_result.?);
         try testing.expect(search_result != null);
     }
 
-    try clean_up(&storage);
+    try cleanup(&storage);
 }
 
 test "BinaryStorage#find returns the newest value" {
     var configurator = try testing.allocator.create(TestingConfigurator);
-    defer global_context.deinit_configuration_for_tests();
+    defer global_context.deinitConfigurationForTests();
 
     configurator.* = TestingConfigurator.init();
     configurator.max_size = 4;
     var conf = configurator.configurator();
-    global_context.load_configuration(&conf);
+    global_context.loadConfiguration(&conf);
 
     var task_queue = TaskQueue.init(testing.allocator);
-    global_context.init_task_queue_for_tests(&task_queue);
-    defer global_context.clean_and_deinit_task_queue_for_tests();
+    global_context.initTaskQueueForTests(&task_queue);
+    defer global_context.cleanAndDeinitTaskQueueForTests();
 
     var storage = try BinaryStorage.start(testing.allocator, ".");
     defer storage.stop();
 
     for (0..8) |i| {
         const v = @as(u8, @intCast(i));
-        try storage.put(&utils.int_to_bytes(u8, v), &utils.int_to_bytes(u8, v));
+        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v));
     }
 
     for (0..8) |i| {
         const v = @as(u8, @intCast(i));
-        try storage.put(&utils.int_to_bytes(u8, v), &utils.int_to_bytes(u8, v * 2));
+        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v * 2));
     }
 
-    const r1 = try storage.find(&utils.int_to_bytes(u8, @as(u8, @intCast(1))));
+    const r1 = try storage.find(&utils.intToBytes(u8, @as(u8, @intCast(1))));
     defer testing.allocator.free(r1.?);
-    try testing.expect(std.mem.eql(u8, r1.?, &utils.int_to_bytes(u8, 2)));
+    try testing.expect(std.mem.eql(u8, r1.?, &utils.intToBytes(u8, 2)));
 
-    const r2 = try storage.find(&utils.int_to_bytes(u8, @as(u8, @intCast(5))));
+    const r2 = try storage.find(&utils.intToBytes(u8, @as(u8, @intCast(5))));
     defer testing.allocator.free(r2.?);
-    try testing.expect(std.mem.eql(u8, r2.?, &utils.int_to_bytes(u8, 10)));
+    try testing.expect(std.mem.eql(u8, r2.?, &utils.intToBytes(u8, 10)));
 
-    try clean_up(&storage);
+    try cleanup(&storage);
 }

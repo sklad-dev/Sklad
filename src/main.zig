@@ -14,7 +14,7 @@ pub fn main() !void {
 
     var json_conf = try JsonConfigurator.init(allocator, DEFAULT_CONFIGURATION_FILE_PATH);
     var conf = json_conf.configurator();
-    global_context.load_configuration(&conf);
+    global_context.loadConfiguration(&conf);
     std.log.info("Configuration is loaded", .{});
 
     var storage = try TypedStorage.init(allocator);
@@ -26,10 +26,10 @@ pub fn main() !void {
 
     global_context.init(&storage, &task_queue);
 
-    var worker_thread = try std.Thread.spawn(.{}, thread_pool.run_task, .{});
+    var worker_thread = try std.Thread.spawn(.{}, thread_pool.runTask, .{});
     worker_thread.detach();
 
-    const thread = try std.Thread.spawn(.{}, io.run_io_worker, .{});
+    const thread = try std.Thread.spawn(.{}, io.runIoWorker, .{});
     std.log.info("Listening port {d}", .{io.DEFAULT_PORT});
     thread.join();
 

@@ -2,8 +2,8 @@ const std = @import("std");
 const global_context = @import("./global_context.zig");
 const IoTask = @import("./io.zig").IO.IoTask;
 
-pub fn run_task() void {
-    const task_queue = global_context.get_task_queue().?;
+pub fn runTask() void {
+    const task_queue = global_context.getTaskQueue().?;
     while (true) {
         const task = task_queue.dequeue();
         if (task) |t| {

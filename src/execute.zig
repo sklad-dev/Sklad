@@ -45,7 +45,7 @@ pub const ExecuteTask = struct {
 
         self.executor.execute(&self.expression) catch |e| {
             std.log.err("Error! Query execution failed: {any}, query: \"{s}\"", .{ e, self.query });
-            self.io_context.send_response(i8, ExecutionError, self.allocator, -1, ExecutionError.ExecutionFailed);
+            self.io_context.sendResponse(i8, ExecutionError, self.allocator, -1, ExecutionError.ExecutionFailed);
         };
     }
 
@@ -70,7 +70,7 @@ const Executor = struct {
         return .{
             .allocator = allocator,
             .io_context = io_context,
-            .storage = global_context.get_typed_storage().?,
+            .storage = global_context.getTypedStorage().?,
         };
     }
 
@@ -80,68 +80,68 @@ const Executor = struct {
 
     pub fn execute(self: *Executor, expression: *parse.Expression) !void {
         switch (expression.*) {
-            .set => try self.execute_set_expression(&expression.*.set),
-            .get => try self.execute_get_expression(&expression.*.get),
+            .set => try self.executeSetExpression(&expression.*.set),
+            .get => try self.executeGetExpression(&expression.*.get),
         }
     }
 
-    fn execute_set_expression(self: *Executor, expression: *parse.SetExpression) !void {
+    fn executeSetExpression(self: *Executor, expression: *parse.SetExpression) !void {
         for (expression.pairs.items) |pair| {
             try self.storage.set(pair.key.value, pair.value.value);
         }
-        self.io_context.send_response(i8, ExecutionError, self.allocator, 0, null);
+        self.io_context.sendResponse(i8, ExecutionError, self.allocator, 0, null);
     }
 
-    fn execute_get_expression(self: *Executor, expression: *parse.GetExpression) !void {
+    fn executeGetExpression(self: *Executor, expression: *parse.GetExpression) !void {
         const result = try self.storage.get(expression.key.value);
         if (result) |r| {
             defer r.allocator.free(r.data);
-            self.send_get_result(r);
+            self.sendGetResult(r);
         } else {
-            self.io_context.send_response(i8, ExecutionError, self.allocator, -1, null);
+            self.io_context.sendResponse(i8, ExecutionError, self.allocator, -1, null);
         }
     }
 
-    fn send_get_result(self: *const Executor, result: TypedBinaryData) void {
+    fn sendGetResult(self: *const Executor, result: TypedBinaryData) void {
         switch (result.data_type) {
             .boolean => {
-                const v = utils.int_from_bytes(u8, result.data, 0);
-                self.io_context.send_response([]const u8, ExecutionError, self.allocator, if (v == 1) "true" else "false", null);
+                const v = utils.intFromBytes(u8, result.data, 0);
+                self.io_context.sendResponse([]const u8, ExecutionError, self.allocator, if (v == 1) "true" else "false", null);
             },
             .smallint => {
-                const v = utils.int_from_bytes(i8, result.data, 0);
-                self.io_context.send_response(i8, ExecutionError, self.allocator, v, null);
+                const v = utils.intFromBytes(i8, result.data, 0);
+                self.io_context.sendResponse(i8, ExecutionError, self.allocator, v, null);
             },
             .int => {
-                const v = utils.int_from_bytes(i32, result.data, 0);
-                self.io_context.send_response(i32, ExecutionError, self.allocator, v, null);
+                const v = utils.intFromBytes(i32, result.data, 0);
+                self.io_context.sendResponse(i32, ExecutionError, self.allocator, v, null);
             },
             .bigint => {
-                const v = utils.int_from_bytes(i64, result.data, 0);
-                self.io_context.send_response(i64, ExecutionError, self.allocator, v, null);
+                const v = utils.intFromBytes(i64, result.data, 0);
+                self.io_context.sendResponse(i64, ExecutionError, self.allocator, v, null);
             },
             .smallserial => {
-                const v = utils.int_from_bytes(u8, result.data, 0);
-                self.io_context.send_response(u8, ExecutionError, self.allocator, v, null);
+                const v = utils.intFromBytes(u8, result.data, 0);
+                self.io_context.sendResponse(u8, ExecutionError, self.allocator, v, null);
             },
             .serial => {
-                const v = utils.int_from_bytes(u32, result.data, 0);
-                self.io_context.send_response(u32, ExecutionError, self.allocator, v, null);
+                const v = utils.intFromBytes(u32, result.data, 0);
+                self.io_context.sendResponse(u32, ExecutionError, self.allocator, v, null);
             },
             .bigserial => {
-                const v = utils.int_from_bytes(u64, result.data, 0);
-                self.io_context.send_response(u64, ExecutionError, self.allocator, v, null);
+                const v = utils.intFromBytes(u64, result.data, 0);
+                self.io_context.sendResponse(u64, ExecutionError, self.allocator, v, null);
             },
             .float => {
-                const v = utils.int_from_bytes(u32, result.data, 0);
-                self.io_context.send_response(f32, ExecutionError, self.allocator, @as(f32, @bitCast(v)), null);
+                const v = utils.intFromBytes(u32, result.data, 0);
+                self.io_context.sendResponse(f32, ExecutionError, self.allocator, @as(f32, @bitCast(v)), null);
             },
             .bigfloat => {
-                const v = utils.int_from_bytes(u64, result.data, 0);
-                self.io_context.send_response(f64, ExecutionError, self.allocator, @as(f64, @bitCast(v)), null);
+                const v = utils.intFromBytes(u64, result.data, 0);
+                self.io_context.sendResponse(f64, ExecutionError, self.allocator, @as(f64, @bitCast(v)), null);
             },
             .string => {
-                self.io_context.send_response([]const u8, ExecutionError, self.allocator, result.data, null);
+                self.io_context.sendResponse([]const u8, ExecutionError, self.allocator, result.data, null);
             },
         }
     }

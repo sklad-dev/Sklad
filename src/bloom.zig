@@ -5,7 +5,7 @@ pub const BloomFilter = struct {
     allocator: std.mem.Allocator,
     filter: []u8,
 
-    pub fn may_contain(self: *const BloomFilter, key: []const u8) bool {
+    pub fn mayContain(self: *const BloomFilter, key: []const u8) bool {
         if (self.filter.len < 2) {
             return false;
         }
@@ -76,9 +76,9 @@ test "test" {
     var filter = try BloomFilter.init(testing.allocator, 2, 10);
     defer filter.deinit();
 
-    filter.add(&utils.int_to_bytes(u64, val1));
-    filter.add(&utils.int_to_bytes(u64, val2));
+    filter.add(&utils.intToBytes(u64, val1));
+    filter.add(&utils.intToBytes(u64, val2));
 
-    try testing.expect(filter.may_contain(&utils.int_to_bytes(u64, val1)) == true);
-    try testing.expect(filter.may_contain(&utils.int_to_bytes(u64, val3)) == false);
+    try testing.expect(filter.mayContain(&utils.intToBytes(u64, val1)) == true);
+    try testing.expect(filter.mayContain(&utils.intToBytes(u64, val3)) == false);
 }

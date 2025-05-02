@@ -8,7 +8,7 @@ var CONFIGURATOR = std.atomic.Value(?*Configurator).init(null);
 var TYPED_STORAGE = std.atomic.Value(?*TypedStorage).init(null);
 var TASK_QUEUE = std.atomic.Value(?*TaskQueue).init(null);
 
-pub inline fn load_configuration(configurator: *Configurator) void {
+pub inline fn loadConfiguration(configurator: *Configurator) void {
     _ = CONFIGURATOR.cmpxchgStrong(null, configurator, .seq_cst, .seq_cst);
 }
 
@@ -17,15 +17,15 @@ pub inline fn init(graph_storage: *TypedStorage, task_queue: *TaskQueue) void {
     _ = TASK_QUEUE.cmpxchgStrong(null, task_queue, .seq_cst, .seq_cst);
 }
 
-pub inline fn get_configurator() ?*Configurator {
+pub inline fn getConfigurator() ?*Configurator {
     return CONFIGURATOR.load(.acquire);
 }
 
-pub inline fn get_typed_storage() ?*TypedStorage {
+pub inline fn getTypedStorage() ?*TypedStorage {
     return TYPED_STORAGE.load(.acquire);
 }
 
-pub inline fn get_task_queue() ?*TaskQueue {
+pub inline fn getTaskQueue() ?*TaskQueue {
     return TASK_QUEUE.load(.acquire);
 }
 
@@ -33,20 +33,20 @@ pub inline fn get_task_queue() ?*TaskQueue {
 const testing = std.testing;
 const TestingConfigurator = @import("./configurator.zig").TestingConfigurator;
 
-pub fn deinit_configuration_for_tests() void {
-    if (get_configurator()) |conf| {
+pub fn deinitConfigurationForTests() void {
+    if (getConfigurator()) |conf| {
         const ptr: *TestingConfigurator = @ptrCast(@alignCast(conf.ptr));
         testing.allocator.destroy(ptr);
         CONFIGURATOR.store(null, .release);
     }
 }
 
-pub inline fn init_task_queue_for_tests(task_queue: *TaskQueue) void {
+pub inline fn initTaskQueueForTests(task_queue: *TaskQueue) void {
     _ = TASK_QUEUE.cmpxchgStrong(null, task_queue, .seq_cst, .seq_cst);
 }
 
-pub inline fn clean_and_deinit_task_queue_for_tests() void {
-    if (get_task_queue()) |queue| {
+pub inline fn cleanAndDeinitTaskQueueForTests() void {
+    if (getTaskQueue()) |queue| {
         while (queue.dequeue()) |task| {
             task.destroy(testing.allocator);
         }

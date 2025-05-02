@@ -10,7 +10,7 @@ const CommandProcessingTask = @import("./parse.zig").CommandProcessingTask;
 
 pub const DEFAULT_PORT: u16 = 7733;
 
-pub fn run_io_worker() void {
+pub fn runIoWorker() void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
         _ = gpa.deinit();
@@ -54,7 +54,7 @@ pub const IO = struct {
         address: std.net.Address,
         socket: std.posix.socket_t,
 
-        pub fn send_response(self: *const IoContext, comptime T: type, comptime E: type, allocator: std.mem.Allocator, data: T, err: ?E) void {
+        pub fn sendResponse(self: *const IoContext, comptime T: type, comptime E: type, allocator: std.mem.Allocator, data: T, err: ?E) void {
             const response = Response(T, E){
                 .data = data,
                 .errors = err,
@@ -81,7 +81,7 @@ pub const IO = struct {
             var buffer: [4096]u8 = [_]u8{0} ** 4096;
             const bytes_read = posix.read(self.io_context.socket, &buffer) catch |e| {
                 std.log.err("Error! Failed to read a message: {any}", .{e});
-                self.io_context.send_response(i8, IoError, self.allocator, -1, IoError.RequestReadingError);
+                self.io_context.sendResponse(i8, IoError, self.allocator, -1, IoError.RequestReadingError);
                 std.posix.close(self.io_context.socket);
                 return;
             };
@@ -94,13 +94,13 @@ pub const IO = struct {
                     .{},
                 ) catch |e| {
                     std.log.err("Error! Failed to parse a request: {any}", .{e});
-                    self.io_context.send_response(i8, IoError, self.allocator, -1, IoError.RequestProcessingError);
+                    self.io_context.sendResponse(i8, IoError, self.allocator, -1, IoError.RequestProcessingError);
                     std.posix.close(self.io_context.socket);
                     return;
                 };
                 defer request.deinit();
 
-                const task_queue = global_context.get_task_queue();
+                const task_queue = global_context.getTaskQueue();
                 var new_task = task_queue.?.allocator.create(CommandProcessingTask) catch |e| {
                     std.log.err("Error! Failed to allocate a task to process the command: {any}", .{e});
                     std.posix.close(self.io_context.socket);
@@ -118,9 +118,9 @@ pub const IO = struct {
 
                 @memcpy(new_task.query, request.value.command);
 
-                global_context.get_task_queue().?.enqueue(new_task.task());
+                global_context.getTaskQueue().?.enqueue(new_task.task());
             } else {
-                self.io_context.send_response(i8, IoError, self.allocator, -1, IoError.RequestTooLong);
+                self.io_context.sendResponse(i8, IoError, self.allocator, -1, IoError.RequestTooLong);
             }
         }
 
@@ -186,7 +186,7 @@ pub const IO = struct {
                 continue;
             };
 
-            const task_queue = global_context.get_task_queue();
+            const task_queue = global_context.getTaskQueue();
             var io_task = task_queue.?.allocator.create(IoTask) catch |e| {
                 std.log.err("Error! Failed to allocate an IO task: {any}", .{e});
                 std.posix.close(socket);
@@ -201,7 +201,7 @@ pub const IO = struct {
                 },
             };
 
-            global_context.get_task_queue().?.enqueue(io_task.task());
+            global_context.getTaskQueue().?.enqueue(io_task.task());
         }
     }
 

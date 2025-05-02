@@ -15,8 +15,8 @@ pub const ValueType = enum(u8) {
     bigfloat, //f64
     string, // variable length string
 
-    pub fn from_bytes(bytes: []const u8) ValueType {
-        return @enumFromInt(utils.int_from_bytes(u8, bytes, 0));
+    pub fn fromBytes(bytes: []const u8) ValueType {
+        return @enumFromInt(utils.intFromBytes(u8, bytes, 0));
     }
 };
 
@@ -27,12 +27,12 @@ pub const TypedBinaryData = struct {
     data_type: ValueType,
     data: BinaryData,
 
-    pub fn from_bytes(allocator: std.mem.Allocator, source: []const u8) !TypedBinaryData {
+    pub fn fromBytes(allocator: std.mem.Allocator, source: []const u8) !TypedBinaryData {
         const result = try allocator.alloc(u8, source.len - 1);
         @memcpy(result, source[1..]);
         return .{
             .allocator = allocator,
-            .data_type = ValueType.from_bytes(source),
+            .data_type = ValueType.fromBytes(source),
             .data = result,
         };
     }
@@ -46,9 +46,9 @@ pub const StorageRecord = struct {
     value: BinaryData,
 
     pub fn write(self: *const StorageRecord, file: File) !void {
-        try utils.write_number(@TypeOf(self.key_size), file, self.key_size);
+        try utils.writeNumber(@TypeOf(self.key_size), file, self.key_size);
         try file.writeAll(self.key);
-        try utils.write_number(@TypeOf(self.value_size), file, self.value_size);
+        try utils.writeNumber(@TypeOf(self.value_size), file, self.value_size);
         try file.writeAll(self.value);
     }
 
@@ -58,10 +58,10 @@ pub const StorageRecord = struct {
     }
 
     pub fn read(allocator: Allocator, file: File) !StorageRecord {
-        const key_size: u16 = try utils.read_number(u16, file);
+        const key_size: u16 = try utils.readNumber(u16, file);
         const key: []u8 = try allocator.alloc(u8, key_size);
         _ = try file.read(key[0..]);
-        const value_size: u16 = try utils.read_number(u16, file);
+        const value_size: u16 = try utils.readNumber(u16, file);
         const value: []u8 = try allocator.alloc(u8, value_size);
         _ = try file.read(value[0..]);
         return .{
@@ -73,7 +73,7 @@ pub const StorageRecord = struct {
         };
     }
 
-    pub inline fn read_from_offset(allocator: Allocator, file: File, offset: u32) !StorageRecord {
+    pub inline fn readFromOffset(allocator: Allocator, file: File, offset: u32) !StorageRecord {
         try file.seekTo(@intCast(offset));
         const result = try read(allocator, file);
         return result;

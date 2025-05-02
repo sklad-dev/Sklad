@@ -45,7 +45,7 @@ const TestTask = struct {
     }
 };
 
-fn visualize_queue(queue: *TaskQueue) void {
+fn visualizeQueue(queue: *TaskQueue) void {
     var head_pointer: ?*TaskQueue.TaskNode = queue.head;
     if (head_pointer.?.prev) |prev_guard| {
         std.debug.print("[PREV_GUARD] {*}\n", .{prev_guard});
@@ -117,7 +117,7 @@ test "TaskQueue#dequeue" {
     try testing.expect(task == null);
 }
 
-// fn run_task_test(task_queue: *TaskQueue) void {
+// fn runTaskTest(task_queue: *TaskQueue) void {
 //     var idle_cycles_counter: u8 = 0;
 //     while (true) {
 //         const task = task_queue.dequeue();
@@ -143,7 +143,7 @@ test "TaskQueue#dequeue" {
 //     }
 // }
 
-// fn add_task_test(task_queue: *TaskQueue) void {
+// fn addTaskTest(task_queue: *TaskQueue) void {
 //     for (0..1000) |i| {
 //         if (i % 500 == 0) {
 //             std.debug.print("[TEST] {d}: {d}\n", .{ std.Thread.getCurrentId(), i });
@@ -155,7 +155,7 @@ test "TaskQueue#dequeue" {
 //     }
 // }
 
-// fn check_task_queue(task_queue: *TaskQueue) void {
+// fn checkTaskQueue(task_queue: *TaskQueue) void {
 //     while (task_queue.head != task_queue.tail) {}
 //     return;
 // }
@@ -165,15 +165,15 @@ test "TaskQueue#dequeue" {
 
 //     var worker_threads: [4]std.Thread = undefined;
 //     for (0..4) |i| {
-//         worker_threads[i] = try std.Thread.spawn(.{}, run_task_test, .{&task_queue});
+//         worker_threads[i] = try std.Thread.spawn(.{}, runTaskTest, .{&task_queue});
 //     }
 
 //     var threads: [16]std.Thread = undefined;
 //     for (0..16) |i| {
-//         threads[i] = try std.Thread.spawn(.{}, add_task_test, .{&task_queue});
+//         threads[i] = try std.Thread.spawn(.{}, addTaskTest, .{&task_queue});
 //     }
 
-//     const check_thread = try std.Thread.spawn(.{}, check_task_queue, .{&task_queue});
+//     const check_thread = try std.Thread.spawn(.{}, checkTaskQueue, .{&task_queue});
 
 //     for (threads) |t| {
 //         t.join();

@@ -29,7 +29,7 @@ pub const Expression = union(ExpressionType) {
 
     pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !Expression {
         query.current_pos = 0;
-        if (query.next_token()) |token| {
+        if (query.nextToken()) |token| {
             switch (token.kind) {
                 .set_keyword => return Expression{
                     .set = try SetExpression.parse(allocator, query),
@@ -51,11 +51,11 @@ pub const SetExpression = struct {
 
     pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !SetExpression {
         var pairs = std.ArrayList(KeyValuePairNode).init(allocator);
-        while (query.peak_next_token()) |token| {
+        while (query.peakNextToken()) |token| {
             switch (token.kind) {
                 .string_value, .numeric_value, .bool_value => try pairs.append(try KeyValuePairNode.parse(allocator, query)),
                 .comma => {
-                    _ = query.next_token();
+                    _ = query.nextToken();
                     continue;
                 },
                 else => return ParserError.UnexpectedToken,
@@ -80,7 +80,7 @@ pub const GetExpression = struct {
     key: ValueNode,
 
     pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !GetExpression {
-        if (query.peak_next_token()) |token| {
+        if (query.peakNextToken()) |token| {
             switch (token.kind) {
                 .string_value, .numeric_value, .bool_value => return .{
                     .allocator = allocator,
@@ -123,7 +123,7 @@ pub const ValueNode = struct {
     value: TypedBinaryData,
 
     pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !ValueNode {
-        const key_token = try query.expect_token(&[_]lex.Token.Kind{ .string_value, .numeric_value, .bool_value });
+        const key_token = try query.expectToken(&[_]lex.Token.Kind{ .string_value, .numeric_value, .bool_value });
         switch (key_token.kind) {
             .string_value => {
                 return .{
@@ -131,7 +131,7 @@ pub const ValueNode = struct {
                     .value = .{
                         .allocator = allocator,
                         .data_type = ValueType.string,
-                        .data = try value_from_str(allocator, .string, key_token.string()),
+                        .data = try valueFromStr(allocator, .string, key_token.string()),
                     },
                 };
             },
@@ -143,12 +143,12 @@ pub const ValueNode = struct {
                         .value = .{
                             .allocator = allocator,
                             .data_type = ValueType.bigfloat,
-                            .data = try value_from_str(allocator, .bigfloat, value_string),
+                            .data = try valueFromStr(allocator, .bigfloat, value_string),
                         },
                     };
                 } else {
                     if (std.mem.startsWith(u8, value_string, "-")) {
-                        if (value_from_str(allocator, .smallint, value_string)) |value| {
+                        if (valueFromStr(allocator, .smallint, value_string)) |value| {
                             return .{
                                 .allocator = allocator,
                                 .value = .{
@@ -158,7 +158,7 @@ pub const ValueNode = struct {
                                 },
                             };
                         } else |_| {
-                            if (value_from_str(allocator, .int, value_string)) |value| {
+                            if (valueFromStr(allocator, .int, value_string)) |value| {
                                 return .{
                                     .allocator = allocator,
                                     .value = .{
@@ -168,7 +168,7 @@ pub const ValueNode = struct {
                                     },
                                 };
                             } else |_| {
-                                if (value_from_str(allocator, .bigint, value_string)) |value| {
+                                if (valueFromStr(allocator, .bigint, value_string)) |value| {
                                     return .{
                                         .allocator = allocator,
                                         .value = .{
@@ -183,7 +183,7 @@ pub const ValueNode = struct {
                             }
                         }
                     } else {
-                        if (value_from_str(allocator, .smallserial, value_string)) |value| {
+                        if (valueFromStr(allocator, .smallserial, value_string)) |value| {
                             return .{
                                 .allocator = allocator,
                                 .value = .{
@@ -193,7 +193,7 @@ pub const ValueNode = struct {
                                 },
                             };
                         } else |_| {
-                            if (value_from_str(allocator, .serial, value_string)) |value| {
+                            if (valueFromStr(allocator, .serial, value_string)) |value| {
                                 return .{
                                     .allocator = allocator,
                                     .value = .{
@@ -203,7 +203,7 @@ pub const ValueNode = struct {
                                     },
                                 };
                             } else |_| {
-                                if (value_from_str(allocator, .bigserial, value_string)) |value| {
+                                if (valueFromStr(allocator, .bigserial, value_string)) |value| {
                                     return .{
                                         .allocator = allocator,
                                         .value = .{
@@ -226,7 +226,7 @@ pub const ValueNode = struct {
                     .value = .{
                         .allocator = allocator,
                         .data_type = ValueType.boolean,
-                        .data = try value_from_str(allocator, .boolean, key_token.string()),
+                        .data = try valueFromStr(allocator, .boolean, key_token.string()),
                     },
                 };
             },
@@ -252,7 +252,7 @@ pub const TokenizedQuery = struct {
         };
     }
 
-    pub fn next_token(self: *TokenizedQuery) ?lex.Token {
+    pub fn nextToken(self: *TokenizedQuery) ?lex.Token {
         if (self.current_pos > self.tokens.items.len - 1) {
             return null;
         }
@@ -260,14 +260,14 @@ pub const TokenizedQuery = struct {
         return self.tokens.items[self.current_pos];
     }
 
-    pub fn peak_next_token(self: *TokenizedQuery) ?lex.Token {
+    pub fn peakNextToken(self: *TokenizedQuery) ?lex.Token {
         if (self.current_pos > self.tokens.items.len - 1) {
             return null;
         }
         return self.tokens.items[self.current_pos];
     }
 
-    pub fn expect_token(self: *TokenizedQuery, token_kinds: []const lex.Token.Kind) !lex.Token {
+    pub fn expectToken(self: *TokenizedQuery, token_kinds: []const lex.Token.Kind) !lex.Token {
         if (self.current_pos > self.tokens.items.len - 1) {
             return ParserError.UnexpectedEndOfQuery;
         }
@@ -314,22 +314,22 @@ pub const CommandProcessingTask = struct {
         var lexer = lex.Lexer.init(self.query, &tokens);
         const lex_result = lexer.lex();
         if (lex_result > 0) {
-            self.io_context.send_response(u64, lex.LexingError, self.allocator, lex_result, lex.LexingError.InvalidToken);
+            self.io_context.sendResponse(u64, lex.LexingError, self.allocator, lex_result, lex.LexingError.InvalidToken);
             std.posix.close(self.io_context.socket);
         }
 
         var tokenized_query = TokenizedQuery.init(self.allocator, &tokens);
         var expression = Expression.parse(self.allocator, &tokenized_query) catch |e| {
             std.log.err("Error! Query parsing failed: {any}, query: \"{s}\"", .{ e, self.query });
-            self.io_context.send_response(i8, ParserError, self.allocator, -1, ParserError.InvalidQuery);
+            self.io_context.sendResponse(i8, ParserError, self.allocator, -1, ParserError.InvalidQuery);
             std.posix.close(self.io_context.socket);
             return;
         };
 
-        const task_queue = global_context.get_task_queue();
+        const task_queue = global_context.getTaskQueue();
         var execute_task = task_queue.?.allocator.create(ExecuteTask) catch |e| {
             std.log.err("Error! Failed to allocate a parser task: {any}", .{e});
-            self.handle_parse_error(&expression);
+            self.handleParseError(&expression);
             return;
         };
         execute_task.* = ExecuteTask.init(
@@ -339,11 +339,11 @@ pub const CommandProcessingTask = struct {
             expression,
         ) catch |e| {
             std.log.err("Error! Failed to create a parser task: {any}", .{e});
-            self.handle_parse_error(&expression);
+            self.handleParseError(&expression);
             return;
         };
 
-        global_context.get_task_queue().?.enqueue(execute_task.task());
+        global_context.getTaskQueue().?.enqueue(execute_task.task());
     }
 
     fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
@@ -351,27 +351,27 @@ pub const CommandProcessingTask = struct {
         allocator.destroy(self);
     }
 
-    fn handle_parse_error(self: *CommandProcessingTask, expression: *Expression) void {
+    fn handleParseError(self: *CommandProcessingTask, expression: *Expression) void {
         switch (expression.*) {
             .set => expression.set.destroy(),
             .get => expression.get.destroy(),
         }
-        self.io_context.send_response(i8, ApplicationError, self.allocator, -1, ApplicationError.InternalError);
+        self.io_context.sendResponse(i8, ApplicationError, self.allocator, -1, ApplicationError.InternalError);
         std.posix.close(self.io_context.socket);
     }
 };
 
-fn value_from_str(allocator: std.mem.Allocator, value_type: ValueType, value_str: []const u8) ![]u8 {
+fn valueFromStr(allocator: std.mem.Allocator, value_type: ValueType, value_str: []const u8) ![]u8 {
     const tmp: []const u8 = switch (value_type) {
-        .boolean => &try utils.to_bytes(bool, (std.mem.eql(u8, value_str, "true"))),
-        .smallint => &try utils.to_bytes(i8, try std.fmt.parseInt(i8, value_str, 10)),
-        .int => &try utils.to_bytes(i32, try std.fmt.parseInt(i32, value_str, 10)),
-        .bigint => &try utils.to_bytes(i64, try std.fmt.parseInt(i64, value_str, 10)),
-        .smallserial => &try utils.to_bytes(u8, try std.fmt.parseInt(u8, value_str, 10)),
-        .serial => &try utils.to_bytes(u32, try std.fmt.parseInt(u32, value_str, 10)),
-        .bigserial => &try utils.to_bytes(u64, try std.fmt.parseInt(u64, value_str, 10)),
-        .float => &try utils.to_bytes(f32, try std.fmt.parseFloat(f32, value_str)),
-        .bigfloat => &try utils.to_bytes(f64, try std.fmt.parseFloat(f64, value_str)),
+        .boolean => &try utils.toBytes(bool, (std.mem.eql(u8, value_str, "true"))),
+        .smallint => &try utils.toBytes(i8, try std.fmt.parseInt(i8, value_str, 10)),
+        .int => &try utils.toBytes(i32, try std.fmt.parseInt(i32, value_str, 10)),
+        .bigint => &try utils.toBytes(i64, try std.fmt.parseInt(i64, value_str, 10)),
+        .smallserial => &try utils.toBytes(u8, try std.fmt.parseInt(u8, value_str, 10)),
+        .serial => &try utils.toBytes(u32, try std.fmt.parseInt(u32, value_str, 10)),
+        .bigserial => &try utils.toBytes(u64, try std.fmt.parseInt(u64, value_str, 10)),
+        .float => &try utils.toBytes(f32, try std.fmt.parseFloat(f32, value_str)),
+        .bigfloat => &try utils.toBytes(f64, try std.fmt.parseFloat(f64, value_str)),
         .string => value_str,
     };
     const value = try allocator.alloc(u8, tmp.len);

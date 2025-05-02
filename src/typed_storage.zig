@@ -12,7 +12,7 @@ pub const TypedStorage = struct {
     storage: BinaryStorage,
 
     pub fn init(allocator: std.mem.Allocator) !TypedStorage {
-        try utils.make_dir_if_not_exists(DATABASE_STORAGE);
+        try utils.makeDirIfNotExists(DATABASE_STORAGE);
 
         return .{
             .allocator = allocator,
@@ -39,7 +39,7 @@ pub const TypedStorage = struct {
         const result = try self.storage.find(binary_key);
         if (result) |r| {
             defer self.storage.allocator.free(r);
-            return try TypedBinaryData.from_bytes(self.allocator, r);
+            return try TypedBinaryData.fromBytes(self.allocator, r);
         }
 
         return null;
@@ -59,18 +59,18 @@ const global_context = @import("./global_context.zig");
 const TestingConfigurator = @import("./configurator.zig").TestingConfigurator;
 const TaskQueue = @import("./task_queue.zig").TaskQueue;
 
-fn clean_up(typed_storage: *TypedStorage) void {
+fn cleanup(typed_storage: *TypedStorage) void {
     var iter = typed_storage.storage.memtables.iterator();
     defer iter.deinit();
 
-    typed_storage.storage.active_memtable.wal.delete_file() catch {
+    typed_storage.storage.active_memtable.wal.deleteFile() catch {
         const out = std.io.getStdOut().writer();
         std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
         return;
     };
 
     while (iter.next()) |node| {
-        node.entry.?.memtable.wal.delete_file() catch {
+        node.entry.?.memtable.wal.deleteFile() catch {
             const out = std.io.getStdOut().writer();
             std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
         };
@@ -91,52 +91,52 @@ fn clean_up(typed_storage: *TypedStorage) void {
     }
 }
 
-inline fn build_typed_data(comptime T: type, value_type: ValueType, value: T) !TypedBinaryData {
+inline fn buildTypedData(comptime T: type, value_type: ValueType, value: T) !TypedBinaryData {
     return .{
         .allocator = testing.allocator,
         .data_type = value_type,
-        .data = &(try utils.to_bytes(T, value)),
+        .data = &(try utils.toBytes(T, value)),
     };
 }
 
 test "NodeStorage#set" {
     var configurator = try testing.allocator.create(TestingConfigurator);
-    defer global_context.deinit_configuration_for_tests();
+    defer global_context.deinitConfigurationForTests();
 
     configurator.* = TestingConfigurator.init();
     configurator.max_size = 4;
     var conf = configurator.configurator();
-    global_context.load_configuration(&conf);
+    global_context.loadConfiguration(&conf);
 
     var task_queue = TaskQueue.init(testing.allocator);
-    global_context.init_task_queue_for_tests(&task_queue);
-    defer global_context.clean_and_deinit_task_queue_for_tests();
+    global_context.initTaskQueueForTests(&task_queue);
+    defer global_context.cleanAndDeinitTaskQueueForTests();
 
     var test_storage = try TypedStorage.init(testing.allocator);
     defer test_storage.stop();
-    defer clean_up(&test_storage);
+    defer cleanup(&test_storage);
 
     try test_storage.set(
-        try build_typed_data(u8, .smallint, 2),
-        try build_typed_data(u8, .smallint, 2),
+        try buildTypedData(u8, .smallint, 2),
+        try buildTypedData(u8, .smallint, 2),
     );
     try testing.expect(test_storage.storage.active_memtable.size == 1);
 
     try test_storage.set(
-        try build_typed_data(u64, .bigserial, 2),
-        try build_typed_data(u64, .bigserial, 2),
+        try buildTypedData(u64, .bigserial, 2),
+        try buildTypedData(u64, .bigserial, 2),
     );
     try testing.expect(test_storage.storage.active_memtable.size == 2);
 
     try test_storage.set(
-        try build_typed_data(i32, .int, -5),
-        try build_typed_data(i32, .int, 5),
+        try buildTypedData(i32, .int, -5),
+        try buildTypedData(i32, .int, 5),
     );
     try testing.expect(test_storage.storage.active_memtable.size == 3);
 
     try test_storage.set(
-        try build_typed_data(f32, .float, -5.5),
-        try build_typed_data(f32, .float, 5.5),
+        try buildTypedData(f32, .float, -5.5),
+        try buildTypedData(f32, .float, 5.5),
     );
     try testing.expect(test_storage.storage.active_memtable.size == 4);
 
@@ -151,25 +151,25 @@ test "NodeStorage#set" {
 
 test "NodeStorage#get" {
     var configurator = try testing.allocator.create(TestingConfigurator);
-    defer global_context.deinit_configuration_for_tests();
+    defer global_context.deinitConfigurationForTests();
 
     configurator.* = TestingConfigurator.init();
     configurator.max_size = 4;
     var conf = configurator.configurator();
-    global_context.load_configuration(&conf);
+    global_context.loadConfiguration(&conf);
 
     var task_queue = TaskQueue.init(testing.allocator);
-    global_context.init_task_queue_for_tests(&task_queue);
-    defer global_context.clean_and_deinit_task_queue_for_tests();
+    global_context.initTaskQueueForTests(&task_queue);
+    defer global_context.cleanAndDeinitTaskQueueForTests();
 
     var test_storage = try TypedStorage.init(testing.allocator);
     defer test_storage.stop();
-    defer clean_up(&test_storage);
+    defer cleanup(&test_storage);
 
-    const key = try build_typed_data(u8, .smallint, 2);
-    const value = try build_typed_data(f32, .float, 1.23);
+    const key = try buildTypedData(u8, .smallint, 2);
+    const value = try buildTypedData(f32, .float, 1.23);
     try test_storage.set(key, value);
-    const result = try test_storage.get(try build_typed_data(u8, .smallint, 2));
+    const result = try test_storage.get(try buildTypedData(u8, .smallint, 2));
     defer testing.allocator.free(result.?.data);
 
     try testing.expect(std.mem.eql(u8, result.?.data, value.data));

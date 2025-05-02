@@ -2,7 +2,7 @@ const std = @import("std");
 const data_types = @import("./data_types.zig");
 
 const ApplicationError = @import("./constants.zig").ApplicationError;
-const try_lock_for = @import("./utils.zig").try_lock_for;
+const tryLockFor = @import("./utils.zig").tryLockFor;
 
 const StorageRecord = data_types.StorageRecord;
 
@@ -25,32 +25,32 @@ pub const Wal = struct {
         };
     }
 
-    pub fn close_and_free(self: *const Wal) void {
+    pub fn closeAndFree(self: *const Wal) void {
         self.file.close();
         self.allocator.free(self.path);
     }
 
-    pub inline fn is_empty(self: *const Wal) !bool {
+    pub inline fn isEmpty(self: *const Wal) !bool {
         const info = try self.file.stat();
         return info.size == 0;
     }
 
     pub fn write(self: *Wal, record: *const StorageRecord) !void {
-        if (!try_lock_for(&self.lock, 200)) return ApplicationError.ExecutionTimeout;
+        if (!tryLockFor(&self.lock, 200)) return ApplicationError.ExecutionTimeout;
         defer self.lock.unlock();
 
         try self.file.seekFromEnd(0);
         try record.write(self.file);
     }
 
-    pub fn delete_file(self: *const Wal) !void {
+    pub fn deleteFile(self: *const Wal) !void {
         std.fs.cwd().deleteFile(self.path) catch {
             const out = std.io.getStdOut().writer();
             try std.fmt.format(out, "failed to delete wal file {s}\n", .{self.path});
         };
     }
 
-    pub fn read_record(self: *const Wal, allocator: std.mem.Allocator) !StorageRecord {
+    pub fn readRecord(self: *const Wal, allocator: std.mem.Allocator) !StorageRecord {
         const record = try StorageRecord.read(allocator, self.file);
         return record;
     }

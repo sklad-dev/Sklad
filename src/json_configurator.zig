@@ -40,35 +40,35 @@ pub const JsonConfigurator = struct {
     pub fn configurator(self: *JsonConfigurator) Configurator {
         return .{
             .ptr = self,
-            .memtable_max_size_fn = memtable_max_size,
-            .memtable_max_level_fn = memtable_max_level,
-            .memtable_level_probability_fn = memtable_level_probability,
-            .sstable_sparse_index_step_fn = sstable_sparse_index_step,
-            .sstable_bloom_bits_per_key_fn = sstable_bloom_bits_per_key,
+            .memtable_max_size_fn = memtableMaxSize,
+            .memtable_max_level_fn = memtableMaxLevel,
+            .memtable_level_probability_fn = memtableLevelProbability,
+            .sstable_sparse_index_step_fn = sstableSparseIndexStep,
+            .sstable_bloom_bits_per_key_fn = sstableBloomBitsPerKey,
         };
     }
 
-    pub fn memtable_max_size(ptr: *anyopaque) u16 {
+    pub fn memtableMaxSize(ptr: *anyopaque) u16 {
         const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
         return self.config.memtable.max_size;
     }
 
-    pub fn memtable_max_level(ptr: *anyopaque) u8 {
+    pub fn memtableMaxLevel(ptr: *anyopaque) u8 {
         const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
         return self.config.memtable.max_level;
     }
 
-    pub fn memtable_level_probability(ptr: *anyopaque) f32 {
+    pub fn memtableLevelProbability(ptr: *anyopaque) f32 {
         const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
         return self.config.memtable.level_probability;
     }
 
-    pub fn sstable_sparse_index_step(ptr: *anyopaque) u32 {
+    pub fn sstableSparseIndexStep(ptr: *anyopaque) u32 {
         const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
         return self.config.sstable.sparse_index_step;
     }
 
-    pub fn sstable_bloom_bits_per_key(ptr: *anyopaque) u32 {
+    pub fn sstableBloomBitsPerKey(ptr: *anyopaque) u32 {
         const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
         return self.config.sstable.bloom_bits_per_key;
     }

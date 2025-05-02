@@ -29,23 +29,23 @@ pub const TableFileManager = struct {
             .files = [_]?*AppendDeleteList(String, String){null} ** 256,
             .level_counters = [_]u16{0} ** 256,
         };
-        try manager.map_sstable_files();
+        try manager.mapSstableFiles();
         return manager;
     }
 
     pub fn deinit(self: *TableFileManager) void {
-        self.deinit_files();
+        self.deinitFiles();
     }
 
-    pub inline fn parse_file_id(self: *TableFileManager, file_name: []u8) !u16 {
+    pub inline fn parseFileId(self: *TableFileManager, file_name: []u8) !u16 {
         const first_dot = std.mem.indexOfScalarPos(u8, file_name, self.path.len, '.').?;
         const second_dot = std.mem.indexOfScalarPos(u8, file_name, first_dot + 1, '.').?;
         return try std.fmt.parseInt(u16, file_name[first_dot + 1 .. second_dot], 10);
     }
 
-    pub fn flush_memtable(self: *TableFileManager, memtable: *Memtable) !void {
+    pub fn flushMemtable(self: *TableFileManager, memtable: *Memtable) !void {
         const max_file_id = @atomicRmw(u16, &self.level_counters[0], .Add, 1, .seq_cst);
-        const file_name_buf = try self.allocator.alloc(u8, self.path.len + 11 + utils.num_digits(u16, max_file_id));
+        const file_name_buf = try self.allocator.alloc(u8, self.path.len + 11 + utils.numDigits(u16, max_file_id));
         const file_name = try std.fmt.bufPrint(
             file_name_buf,
             "{s}/0.{d}.sstable",
@@ -55,17 +55,17 @@ pub const TableFileManager = struct {
             self.allocator,
             memtable,
             file_name,
-            global_context.get_configurator().?.sstable_sparse_index_step(),
+            global_context.getConfigurator().?.sstableSparseIndexStep(),
         );
         const file_name_ptr = try self.allocator.create([]u8);
         file_name_ptr.* = file_name;
-        try self.add_file_at_level(0, file_name_ptr);
+        try self.addFileAtLevel(0, file_name_ptr);
 
         sstable.close();
-        try memtable.wal.delete_file();
+        try memtable.wal.deleteFile();
     }
 
-    fn add_file_at_level(self: *TableFileManager, level: u8, file: *[]u8) !void {
+    fn addFileAtLevel(self: *TableFileManager, level: u8, file: *[]u8) !void {
         var files_at_level = @atomicLoad(?*AppendDeleteList(String, String), &self.files[level], .seq_cst);
         if (files_at_level == null) {
             const level_list = try self.allocator.create(AppendDeleteList(String, String));
@@ -79,7 +79,7 @@ pub const TableFileManager = struct {
         try files_at_level.?.prepend(file);
     }
 
-    fn map_sstable_files(self: *TableFileManager) !void {
+    fn mapSstableFiles(self: *TableFileManager) !void {
         var dir = try std.fs.cwd().openDir(self.path, .{
             .access_sub_paths = false,
             .iterate = true,
@@ -109,12 +109,12 @@ pub const TableFileManager = struct {
                 );
                 const file_name_ptr = try self.allocator.create([]u8);
                 file_name_ptr.* = file_name_copy;
-                try self.add_file_at_level(level_id, file_name_ptr);
+                try self.addFileAtLevel(level_id, file_name_ptr);
             }
         }
     }
 
-    fn deinit_files(self: *TableFileManager) void {
+    fn deinitFiles(self: *TableFileManager) void {
         for (0..256) |i| {
             if (self.files[i]) |file_list| {
                 file_list.deinit();
@@ -127,7 +127,7 @@ pub const TableFileManager = struct {
 // Tests
 const testing = std.testing;
 
-fn create_files() !void {
+fn createFiles() !void {
     for (0..4) |i| {
         for (0..4) |j| {
             const file_name_buf = try testing.allocator.alloc(u8, 15);
@@ -143,7 +143,7 @@ fn create_files() !void {
     }
 }
 
-fn clean_up(table_manager: *const TableFileManager) void {
+fn cleanup(table_manager: *const TableFileManager) void {
     for (0..table_manager.files.len) |level| {
         if (table_manager.files[level]) |files| {
             var it = files.iterator();
@@ -161,7 +161,7 @@ fn clean_up(table_manager: *const TableFileManager) void {
 
 test "TableFileManager#init" {
     // Test that the manager correctly handles existing files
-    try create_files();
+    try createFiles();
 
     var manager = try TableFileManager.init(testing.allocator, "./");
 
@@ -183,6 +183,6 @@ test "TableFileManager#init" {
     }
     try testing.expect(manager.level_counters[4] == 0);
 
-    clean_up(&manager);
+    cleanup(&manager);
     manager.deinit();
 }
