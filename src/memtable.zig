@@ -208,11 +208,7 @@ pub const Memtable = struct {
     }
 
     inline fn pickLevel(self: *const Memtable) u8 {
-        var level: u8 = 1;
-        while (level < self.max_level and self.rng.float(f32) > (1 - self.level_probability)) {
-            level += 1;
-        }
-        return level;
+        return @min(self.max_level, @as(u8, @intCast(@ctz(self.rng.int(u32) & ((@as(u32, 1) << @intCast(self.max_level)) - 1)) + 1)));
     }
 
     fn createHead(self: *Memtable) !void {

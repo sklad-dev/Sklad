@@ -130,7 +130,7 @@ pub const BinaryStorage = struct {
         }
         self.memtables_lock.unlock();
 
-        try self.active_memtable.wal.write(&record); // TODO: [Improvement] once the record is written to wal we can return success and do the rest in the background
+        try self.active_memtable.wal.write(&record);
         try self.active_memtable.add(key, value);
 
         if (filled_memtable) |_| {
