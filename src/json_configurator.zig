@@ -12,9 +12,8 @@ pub const JsonConfigurator = struct {
     };
 
     const MemtableConfiguration = struct {
-        max_size: u16,
+        max_size: u64,
         max_level: u8,
-        level_probability: f32,
     };
 
     const SSTableConfiguration = struct {
@@ -42,13 +41,12 @@ pub const JsonConfigurator = struct {
             .ptr = self,
             .memtable_max_size_fn = memtableMaxSize,
             .memtable_max_level_fn = memtableMaxLevel,
-            .memtable_level_probability_fn = memtableLevelProbability,
             .sstable_sparse_index_step_fn = sstableSparseIndexStep,
             .sstable_bloom_bits_per_key_fn = sstableBloomBitsPerKey,
         };
     }
 
-    pub fn memtableMaxSize(ptr: *anyopaque) u16 {
+    pub fn memtableMaxSize(ptr: *anyopaque) u64 {
         const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
         return self.config.memtable.max_size;
     }
@@ -56,11 +54,6 @@ pub const JsonConfigurator = struct {
     pub fn memtableMaxLevel(ptr: *anyopaque) u8 {
         const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
         return self.config.memtable.max_level;
-    }
-
-    pub fn memtableLevelProbability(ptr: *anyopaque) f32 {
-        const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
-        return self.config.memtable.level_probability;
     }
 
     pub fn sstableSparseIndexStep(ptr: *anyopaque) u32 {

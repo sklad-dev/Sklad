@@ -4,7 +4,6 @@ const global_context = @import("./global_context.zig");
 const io = @import("./io.zig");
 const ApplicationError = @import("./constants.zig").ApplicationError;
 const Task = @import("./task_queue.zig").Task;
-const ParserTask = @import("./parse.zig").ParserTask;
 
 pub const LexingError = error{
     InvalidToken,

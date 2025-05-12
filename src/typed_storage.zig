@@ -100,11 +100,10 @@ inline fn buildTypedData(comptime T: type, value_type: ValueType, value: T) !Typ
 }
 
 test "NodeStorage#set" {
-    var configurator = try testing.allocator.create(TestingConfigurator);
     defer global_context.deinitConfigurationForTests();
 
+    var configurator = try testing.allocator.create(TestingConfigurator);
     configurator.* = TestingConfigurator.init();
-    configurator.max_size = 4;
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 
@@ -146,15 +145,14 @@ test "NodeStorage#set" {
         .data = "Hello, world!",
     };
     try test_storage.set(data, data);
-    try testing.expect(test_storage.storage.active_memtable.size == 1);
+    try testing.expect(test_storage.storage.active_memtable.size == 5);
 }
 
 test "NodeStorage#get" {
-    var configurator = try testing.allocator.create(TestingConfigurator);
     defer global_context.deinitConfigurationForTests();
 
+    var configurator = try testing.allocator.create(TestingConfigurator);
     configurator.* = TestingConfigurator.init();
-    configurator.max_size = 4;
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 

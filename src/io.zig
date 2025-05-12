@@ -53,6 +53,7 @@ pub const IO = struct {
     pub const IoContext = struct {
         address: std.net.Address,
         socket: std.posix.socket_t,
+        start_time: i64,
 
         pub fn sendResponse(self: *const IoContext, comptime T: type, comptime E: type, allocator: std.mem.Allocator, data: T, err: ?E) void {
             const response = Response(T, E){
@@ -186,6 +187,7 @@ pub const IO = struct {
                 continue;
             };
 
+            const start_time = std.time.milliTimestamp();
             const task_queue = global_context.getTaskQueue();
             var io_task = task_queue.?.allocator.create(IoTask) catch |e| {
                 std.log.err("Error! Failed to allocate an IO task: {any}", .{e});
@@ -198,6 +200,7 @@ pub const IO = struct {
                 .io_context = .{
                     .address = client_address,
                     .socket = socket,
+                    .start_time = start_time,
                 },
             };
 

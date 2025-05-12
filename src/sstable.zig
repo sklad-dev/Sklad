@@ -1,7 +1,7 @@
 const std = @import("std");
 const data_types = @import("./data_types.zig");
-const m = @import("./memtable.zig");
-const b = @import("./bloom.zig");
+const Memtable = @import("./memtable.zig").Memtable;
+const BloomFilter = @import("./bloom.zig").BloomFilter;
 const utils = @import("./utils.zig");
 
 const StorageRecord = data_types.StorageRecord;
@@ -10,13 +10,13 @@ pub const SSTable = struct {
     allocator: std.mem.Allocator,
     path: []const u8,
     file: std.fs.File,
-    bloom_filter: ?b.BloomFilter,
+    bloom_filter: ?BloomFilter,
     min_key: ?[]u8,
     max_key: ?[]u8,
     index_start_offset: u32,
     index_end_offset: u32,
 
-    pub fn create(allocator: std.mem.Allocator, memtable: *m.Memtable, path: []const u8, sparse_index_step: u32) !SSTable {
+    pub fn create(allocator: std.mem.Allocator, memtable: *Memtable, path: []const u8, sparse_index_step: u32) !SSTable {
         const file = try std.fs.cwd().createFile(path, .{
             .read = true,
             .truncate = false,
@@ -25,7 +25,7 @@ pub const SSTable = struct {
         var offsets = std.ArrayList(u32).init(allocator);
         defer offsets.deinit();
 
-        var bloom_filter = try b.BloomFilter.init(allocator, @intCast(memtable.size), 20);
+        var bloom_filter = try BloomFilter.init(allocator, @intCast(memtable.size), 20);
 
         var sstable = SSTable{
             .allocator = allocator,
@@ -39,7 +39,7 @@ pub const SSTable = struct {
         };
 
         var i: u16 = 0;
-        var it = memtable.*.iterator();
+        var it = memtable.iterator();
         var min_key: data_types.BinaryData = undefined;
         var max_key: data_types.BinaryData = undefined;
         while (it.next()) |record| {
@@ -116,7 +116,7 @@ pub const SSTable = struct {
         return SSTable{
             .path = path,
             .file = file,
-            .bloom_filter = b.BloomFilter{
+            .bloom_filter = BloomFilter{
                 .allocator = allocator,
                 .filter = filter,
             },
@@ -159,7 +159,7 @@ pub const SSTable = struct {
         while (low <= high) {
             const high_block_offset: u32 = try self.readBlockOffsetFromIndex(high);
             const high_record = try StorageRecord.readFromOffset(self.allocator, self.file, high_block_offset);
-            defer high_record.destroy();
+            defer high_record.destroy(self.allocator);
 
             if (utils.compareBitwise(key, high_record.key) > 0) {
                 return @as(i64, @intCast(high_block_offset));
@@ -171,7 +171,7 @@ pub const SSTable = struct {
             if (mid == low) return @as(i64, @intCast(block_offset));
 
             const record = try StorageRecord.readFromOffset(self.allocator, self.file, block_offset);
-            defer record.destroy();
+            defer record.destroy(self.allocator);
 
             if (utils.compareBitwise(key, record.key) == 0) {
                 return @as(i64, @intCast(block_offset));
@@ -190,7 +190,7 @@ pub const SSTable = struct {
         var offset = block_offset;
         while (offset < block_offset + block_size) {
             const record = try StorageRecord.readFromOffset(self.allocator, self.file, offset);
-            defer record.destroy();
+            defer record.destroy(self.allocator);
 
             if (utils.compareBitwise(key, record.key) < 0) {
                 return null;
@@ -222,7 +222,7 @@ const testing = std.testing;
 
 const TEST_SSTABLE_PATH = "./test.sstable";
 
-fn cleanup(storage: SSTable, memtable: m.Memtable) !void {
+fn cleanup(storage: SSTable, memtable: Memtable) !void {
     std.fs.cwd().deleteFile(storage.path) catch {
         const out = std.io.getStdOut().writer();
         try std.fmt.format(out, "failed to clean up after the test\n", .{});
@@ -231,7 +231,7 @@ fn cleanup(storage: SSTable, memtable: m.Memtable) !void {
 }
 
 test "SSTable#create" {
-    var test_memtable = try m.Memtable.init(testing.allocator, std.crypto.random, 64, 8, 0.125, "./");
+    var test_memtable = try Memtable.init(testing.allocator, std.crypto.random, 69632, 8, "./");
     defer test_memtable.destroy();
 
     const test_value = utils.intToBytes(u8, 0);
@@ -245,7 +245,7 @@ test "SSTable#create" {
 }
 
 test "SSTable#open" {
-    var test_memtable = try m.Memtable.init(testing.allocator, std.crypto.random, 64, 8, 0.125, "./");
+    var test_memtable = try Memtable.init(testing.allocator, std.crypto.random, 69632, 8, "./");
     defer test_memtable.destroy();
 
     const test_value = utils.intToBytes(u8, 0);
@@ -272,7 +272,7 @@ test "SSTable#open" {
 }
 
 test "SSTable#find" {
-    var test_memtable = try m.Memtable.init(testing.allocator, std.crypto.random, 64, 8, 0.125, "./");
+    var test_memtable = try Memtable.init(testing.allocator, std.crypto.random, 69632, 8, "./");
     defer test_memtable.destroy();
 
     const test_value = utils.intToBytes(u8, 0);

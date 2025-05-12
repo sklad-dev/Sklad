@@ -114,7 +114,6 @@ pub const BinaryStorage = struct {
 
     pub fn put(self: *Self, key: []const u8, value: []const u8) !void {
         const record = StorageRecord{
-            .allocator = self.allocator,
             .key_size = @as(u16, @intCast(key.len)),
             .key = key,
             .value_size = @as(u16, @intCast(value.len)),
@@ -124,7 +123,7 @@ pub const BinaryStorage = struct {
         var filled_memtable: ?*Memtable = null;
         var filled_memtable_key: u64 = std.crypto.random.int(u64);
         if (!utils.tryLockFor(&self.memtables_lock, 200)) return ApplicationError.ExecutionTimeout;
-        if (self.active_memtable.isFull()) {
+        if (!self.active_memtable.canAdd(key.len + value.len)) {
             filled_memtable = self.active_memtable;
             filled_memtable_key = try self.switchActiveMemtable();
         }
@@ -148,7 +147,7 @@ pub const BinaryStorage = struct {
     }
 
     pub fn find(self: *Self, key: []const u8) !?[]const u8 {
-        var value = try self.active_memtable.find(key, true);
+        var value = self.active_memtable.find(key);
         if (value) |v| {
             const result = try self.allocator.alloc(u8, v.len);
             @memcpy(result, v);
@@ -159,7 +158,7 @@ pub const BinaryStorage = struct {
             var iter = self.memtables.iterator();
             defer iter.deinit();
             while (iter.next()) |n| {
-                value = try n.entry.?.memtable.find(key, false);
+                value = n.entry.?.memtable.find(key);
                 if (value) |v| {
                     const result = try self.allocator.alloc(u8, v.len);
                     @memcpy(result, v);
@@ -296,11 +295,10 @@ fn cleanup(storage: *BinaryStorage) !void {
 }
 
 test "BinaryStorage#put" {
-    var configurator = try testing.allocator.create(TestingConfigurator);
     defer global_context.deinitConfigurationForTests();
 
+    var configurator = try testing.allocator.create(TestingConfigurator);
     configurator.* = TestingConfigurator.init();
-    configurator.max_size = 4;
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 
@@ -309,18 +307,17 @@ test "BinaryStorage#put" {
 
     try test_storage.put(&utils.intToBytes(u8, 1), &utils.intToBytes(u8, 42));
     try testing.expect(test_storage.active_memtable.size == 1);
-    const result = try test_storage.active_memtable.find(&utils.intToBytes(u8, 1), false);
+    const result = test_storage.active_memtable.find(&utils.intToBytes(u8, 1));
     try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u8, 42)));
 
     try test_storage.active_memtable.wal.deleteFile();
 }
 
 test "Restore memtable from wal" {
-    var configurator = try testing.allocator.create(TestingConfigurator);
     defer global_context.deinitConfigurationForTests();
 
+    var configurator = try testing.allocator.create(TestingConfigurator);
     configurator.* = TestingConfigurator.init();
-    configurator.max_size = 4;
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 
@@ -332,18 +329,17 @@ test "Restore memtable from wal" {
     defer storage2.stop();
 
     try testing.expect(storage2.active_memtable.size == 1);
-    const result = try storage2.active_memtable.find(&utils.intToBytes(u8, 1), false);
+    const result = storage2.active_memtable.find(&utils.intToBytes(u8, 1));
     try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u8, 42)));
 
     try storage2.active_memtable.wal.deleteFile();
 }
 
 test "BinaryStorage#find" {
-    var configurator = try testing.allocator.create(TestingConfigurator);
     defer global_context.deinitConfigurationForTests();
 
+    var configurator = try testing.allocator.create(TestingConfigurator);
     configurator.* = TestingConfigurator.init();
-    configurator.max_size = 4;
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 
@@ -370,7 +366,7 @@ test "BinaryStorage#find" {
     }
 
     for (1..10) |i| {
-        search_result = try storage.find(&utils.intToBytes(u8, @as(u8, @intCast(i)))); // HERE
+        search_result = try storage.find(&utils.intToBytes(u8, @as(u8, @intCast(i))));
         defer testing.allocator.free(search_result.?);
         try testing.expect(search_result != null);
     }
@@ -379,11 +375,10 @@ test "BinaryStorage#find" {
 }
 
 test "BinaryStorage#find returns the newest value" {
-    var configurator = try testing.allocator.create(TestingConfigurator);
     defer global_context.deinitConfigurationForTests();
 
+    var configurator = try testing.allocator.create(TestingConfigurator);
     configurator.* = TestingConfigurator.init();
-    configurator.max_size = 4;
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 

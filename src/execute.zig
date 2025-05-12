@@ -41,7 +41,11 @@ pub const ExecuteTask = struct {
 
     fn run(ptr: *anyopaque) void {
         const self: *ExecuteTask = @ptrCast(@alignCast(ptr));
-        defer std.posix.close(self.io_context.socket);
+        defer {
+            const exec_time = std.time.milliTimestamp() - self.io_context.start_time;
+            std.log.info("{d}", .{exec_time});
+            std.posix.close(self.io_context.socket);
+        }
 
         self.executor.execute(&self.expression) catch |e| {
             std.log.err("Error! Query execution failed: {any}, query: \"{s}\"", .{ e, self.query });

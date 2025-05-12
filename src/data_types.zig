@@ -39,7 +39,6 @@ pub const TypedBinaryData = struct {
 };
 
 pub const StorageRecord = struct {
-    allocator: std.mem.Allocator,
     key_size: u16,
     key: BinaryData,
     value_size: u16,
@@ -52,9 +51,9 @@ pub const StorageRecord = struct {
         try file.writeAll(self.value);
     }
 
-    pub fn destroy(self: *const StorageRecord) void {
-        self.allocator.free(self.key);
-        self.allocator.free(self.value);
+    pub fn destroy(self: *const StorageRecord, allocator: std.mem.Allocator) void {
+        allocator.free(self.key);
+        allocator.free(self.value);
     }
 
     pub fn read(allocator: Allocator, file: File) !StorageRecord {
@@ -65,7 +64,6 @@ pub const StorageRecord = struct {
         const value: []u8 = try allocator.alloc(u8, value_size);
         _ = try file.read(value[0..]);
         return .{
-            .allocator = allocator,
             .key_size = key_size,
             .key = key,
             .value_size = value_size,
