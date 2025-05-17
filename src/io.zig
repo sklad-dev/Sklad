@@ -1,7 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
 
-const query = @import("./query.zig");
 const global_context = @import("./global_context.zig");
 
 const ApplicationError = @import("./constants.zig").ApplicationError;
