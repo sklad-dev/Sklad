@@ -104,10 +104,10 @@ pub const TableFileManager = struct {
                     self.level_counters[level_id] = file_id;
                 }
 
-                const file_name_copy = try self.allocator.alloc(u8, self.path.len + file_name.len);
+                const file_name_copy = try self.allocator.alloc(u8, self.path.len + file_name.len + 1);
                 _ = try std.fmt.bufPrint(
                     file_name_copy,
-                    "{s}{s}",
+                    "{s}/{s}",
                     .{ self.path, file_name },
                 );
                 const file_name_ptr = try self.allocator.create([]u8);

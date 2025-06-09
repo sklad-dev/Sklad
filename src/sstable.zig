@@ -19,6 +19,7 @@ pub const SSTable = struct {
     max_key_start_offset: u32,
     min_key: ?[]const u8,
     max_key: ?[]const u8,
+    index_buffer: ?[]const u8,
     index_records_num: u32,
 
     pub const DataBlock = struct {
@@ -64,6 +65,7 @@ pub const SSTable = struct {
             .max_key_start_offset = 0,
             .min_key = null,
             .max_key = null,
+            .index_buffer = null,
             .index_records_num = 0,
         };
 
@@ -187,19 +189,23 @@ pub const SSTable = struct {
 
         try file.seekFromEnd(-16);
         const bloom_start_offset = try utils.readNumber(u32, file);
+        const bloom_size: u32 = min_key_start_offset - bloom_start_offset;
+        const filter = try allocator.alloc(u8, bloom_size);
 
         try file.seekFromEnd(-20);
-        const bloom_size: u32 = @as(u32, @intCast(try file.getPos())) - bloom_start_offset;
         const index_start_offset: u32 = try utils.readNumber(u32, file);
-
-        const filter = try allocator.alloc(u8, bloom_size);
-        _ = try file.readAll(filter);
 
         try file.seekTo(@intCast(bloom_start_offset - 4));
         const index_records_num: u32 = try utils.readNumber(u32, file);
 
+        try file.seekTo(bloom_start_offset);
+        _ = try file.readAll(filter);
+
         const min_key_buf = try readKeyFromOffset(allocator, file, min_key_start_offset);
         const max_key_buf = try readKeyFromOffset(allocator, file, max_key_start_offset);
+        const index_buffer = try allocator.alloc(u8, bloom_start_offset - index_start_offset);
+        try file.seekTo(index_start_offset);
+        _ = try file.readAll(index_buffer);
 
         return SSTable{
             .allocator = allocator,
@@ -216,6 +222,7 @@ pub const SSTable = struct {
             .max_key_start_offset = max_key_start_offset,
             .min_key = min_key_buf,
             .max_key = max_key_buf,
+            .index_buffer = index_buffer,
             .index_records_num = index_records_num,
         };
     }
@@ -231,6 +238,9 @@ pub const SSTable = struct {
         }
         if (self.bloom_filter != null) {
             self.bloom_filter.?.deinit();
+        }
+        if (self.index_buffer != null) {
+            self.allocator.free(self.index_buffer.?);
         }
         self.file.close();
     }
@@ -252,41 +262,39 @@ pub const SSTable = struct {
         var high: u32 = self.index_records_num - 1;
         while (low <= high) {
             const high_index_record_offset: u32 = try self.readIndexRecordOffset(high);
-            const high_index_record_min_key = try readKeyFromOffset(
-                self.allocator,
-                self.file,
-                high_index_record_offset,
-            );
-            defer self.allocator.free(high_index_record_min_key);
+            const high_index_record_min_key = readKeyFromBuffer(self.index_buffer.?, high_index_record_offset);
 
             if (utils.compareBitwise(key, high_index_record_min_key) >= 0) {
-                try self.file.seekTo(@intCast(high_index_record_offset + 2 + high_index_record_min_key.len));
-                const data_block_offset: u32 = try utils.readNumber(u32, self.file);
+                const data_block_offset: u32 = utils.intFromBytes(
+                    u32,
+                    self.index_buffer.?,
+                    high_index_record_offset + 2 + high_index_record_min_key.len,
+                );
                 return @intCast(data_block_offset);
             }
 
             const mid = low + (high - low) / 2;
             const index_record_offset: u32 = try self.readIndexRecordOffset(mid);
             if (mid == low) {
-                try self.file.seekTo(@intCast(index_record_offset));
-                const key_size: u16 = try utils.readNumber(u16, self.file);
-                try self.file.seekTo(@as(u64, @intCast(index_record_offset)) + @as(u64, @intCast(key_size)) + 2);
-                const data_block_offset: u32 = try utils.readNumber(u32, self.file);
+                const key_size: u16 = utils.intFromBytes(u16, self.index_buffer.?, index_record_offset);
+                const data_block_offset: u32 = utils.intFromBytes(
+                    u32,
+                    self.index_buffer.?,
+                    index_record_offset + 2 + key_size,
+                );
                 return @intCast(data_block_offset);
             }
 
-            const index_record_min_key = try readKeyFromOffset(
-                self.allocator,
-                self.file,
-                index_record_offset,
-            );
-            defer self.allocator.free(index_record_min_key);
-
-            if (utils.compareBitwise(key, index_record_min_key) == 0) {
-                try self.file.seekTo(@intCast(index_record_offset + 2 + index_record_min_key.len));
-                const data_block_offset: u32 = try utils.readNumber(u32, self.file);
+            const index_record_min_key = readKeyFromBuffer(self.index_buffer.?, index_record_offset);
+            const compare_result = utils.compareBitwise(key, index_record_min_key);
+            if (compare_result == 0) {
+                const data_block_offset: u32 = utils.intFromBytes(
+                    u32,
+                    self.index_buffer.?,
+                    index_record_offset + 2 + index_record_min_key.len,
+                );
                 return @intCast(data_block_offset);
-            } else if (utils.compareBitwise(key, index_record_min_key) < 0) {
+            } else if (compare_result < 0) {
                 high = mid;
             } else {
                 low = mid;
@@ -296,19 +304,33 @@ pub const SSTable = struct {
     }
 
     fn findInBlock(self: *const SSTable, key: data_types.BinaryData, block_offset: u32) !?data_types.BinaryData {
-        var offset = block_offset;
-        while (offset < block_offset + self.block_size) {
-            const record = try StorageRecord.readFromOffset(self.allocator, self.file, offset);
-            defer record.destroy(self.allocator);
+        const block_buffer: []u8 = try self.allocator.alloc(u8, self.block_size);
+        defer self.allocator.free(block_buffer);
 
-            if (utils.compareBitwise(key, record.key) < 0) {
-                return null;
-            } else if (utils.compareBitwise(key, record.key) == 0) {
+        try self.file.seekTo(block_offset);
+        _ = try self.file.readAll(block_buffer);
+
+        const num_elements: u32 = utils.intFromBytes(u32, block_buffer, block_buffer.len - 4);
+        var low: u32 = 0;
+        var high: u32 = num_elements - 1;
+        while (low <= high) {
+            const mid = low + (high - low) / 2;
+            const record_offset: u16 = utils.intFromBytes(
+                u16,
+                block_buffer,
+                block_buffer.len - 4 - 2 * (num_elements - mid),
+            );
+            const record = readRecordFromOffset(block_buffer, record_offset);
+            const compare_result = utils.compareBitwise(key, record.key);
+            if (compare_result == 0) {
                 const result = try self.allocator.alloc(u8, record.value.len);
                 @memcpy(result, record.value);
                 return result;
+            } else if (compare_result < 0) {
+                high = mid - 1;
+            } else {
+                low = mid + 1;
             }
-            offset = @as(u32, @intCast(try self.file.getPos()));
         }
 
         return null;
@@ -322,10 +344,22 @@ pub const SSTable = struct {
         return key;
     }
 
+    inline fn readKeyFromBuffer(index_buffer: []const u8, offset: u32) []const u8 {
+        const key_size: u16 = utils.intFromBytes(u16, index_buffer, offset);
+        return index_buffer[offset + 2 .. offset + 2 + key_size];
+    }
+
+    inline fn readRecordFromOffset(buffer: []const u8, offset: u32) StorageRecord {
+        const key_size: u16 = utils.intFromBytes(u16, buffer, offset);
+        const value_size: u16 = utils.intFromBytes(u16, buffer, offset + 2 + key_size);
+        return .{
+            .key = buffer[offset + 2 .. offset + 2 + key_size],
+            .value = buffer[offset + key_size + 4 .. offset + key_size + 4 + value_size],
+        };
+    }
+
     inline fn readIndexRecordOffset(self: *const SSTable, record_number: u32) !u32 {
-        try self.file.seekTo(@intCast(self.bloom_start_offset - 4 - 2 * (self.index_records_num - record_number)));
-        const record_offset: u16 = try utils.readNumber(u16, self.file);
-        return self.index_start_offset + @as(u32, @intCast(record_offset));
+        return utils.intFromBytes(u16, self.index_buffer.?, self.index_buffer.?.len - 4 - 2 * (self.index_records_num - record_number));
     }
 };
 
