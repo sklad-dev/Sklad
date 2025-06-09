@@ -39,15 +39,13 @@ pub const TypedBinaryData = struct {
 };
 
 pub const StorageRecord = struct {
-    key_size: u16,
     key: BinaryData,
-    value_size: u16,
     value: BinaryData,
 
     pub fn write(self: *const StorageRecord, file: File) !void {
-        try utils.writeNumber(@TypeOf(self.key_size), file, self.key_size);
+        try utils.writeNumber(u16, file, @as(u16, @intCast(self.key.len)));
         try file.writeAll(self.key);
-        try utils.writeNumber(@TypeOf(self.value_size), file, self.value_size);
+        try utils.writeNumber(u16, file, @as(u16, @intCast(self.value.len)));
         try file.writeAll(self.value);
     }
 
@@ -64,9 +62,7 @@ pub const StorageRecord = struct {
         const value: []u8 = try allocator.alloc(u8, value_size);
         _ = try file.read(value[0..]);
         return .{
-            .key_size = key_size,
             .key = key,
-            .value_size = value_size,
             .value = value,
         };
     }

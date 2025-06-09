@@ -114,9 +114,7 @@ pub const BinaryStorage = struct {
 
     pub fn put(self: *Self, key: []const u8, value: []const u8) !void {
         const record = StorageRecord{
-            .key_size = @as(u16, @intCast(key.len)),
             .key = key,
-            .value_size = @as(u16, @intCast(value.len)),
             .value = value,
         };
 

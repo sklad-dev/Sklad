@@ -26,14 +26,14 @@ pub const SSTable = struct {
         offset: u32 = 0,
 
         pub fn writeDataEntry(self: *DataBlock, record: *const StorageRecord) void {
-            @memcpy(self.buffer[self.offset .. self.offset + 2], &utils.intToBytes(u16, record.key_size));
+            @memcpy(self.buffer[self.offset .. self.offset + 2], &utils.intToBytes(u16, @intCast(record.key.len)));
             self.offset += 2;
-            @memcpy(self.buffer[self.offset..(self.offset + @as(u32, record.key_size))], record.key);
-            self.offset += @intCast(record.key_size);
-            @memcpy(self.buffer[self.offset .. self.offset + 2], &utils.intToBytes(u16, record.value_size));
+            @memcpy(self.buffer[self.offset..(self.offset + @as(u32, @intCast(record.key.len)))], record.key);
+            self.offset += @intCast(record.key.len);
+            @memcpy(self.buffer[self.offset .. self.offset + 2], &utils.intToBytes(u16, @intCast(record.value.len)));
             self.offset += 2;
-            @memcpy(self.buffer[self.offset..(self.offset + @as(u32, record.value_size))], record.value);
-            self.offset += @intCast(record.value_size);
+            @memcpy(self.buffer[self.offset..(self.offset + @as(u32, @intCast(record.value.len)))], record.value);
+            self.offset += @intCast(record.value.len);
         }
     };
 
@@ -119,16 +119,17 @@ pub const SSTable = struct {
         var iterator = memtable.iterator();
         while (iterator.next()) |node| : (i += 1) {
             const record = StorageRecord{
-                .key_size = @as(u16, @intCast(node.key.?.len)),
                 .key = node.key.?,
-                .value_size = @as(u16, @intCast(node.value.?.len)),
                 .value = node.value.?,
             };
             if (i == 0) self.min_key = record.key;
             if (i == memtable.size - 1) self.max_key = record.key;
 
             self.bloom_filter.?.add(record.key);
-            const record_size_with_offset: u32 = @as(u32, record.key_size) + @as(u32, record.value_size) + 4 + 4 + (@as(u32, @intCast(block_offsets.items.len)) + 1) * 2;
+            const record_size_with_offset: u32 = @as(u32, @intCast(record.key.len)) +
+                @as(u32, @intCast(record.value.len)) +
+                8 +
+                (@as(u32, @intCast(block_offsets.items.len)) + 1) * 2;
             if (data_block.offset + record_size_with_offset > block_size) {
                 try self.writeDataBLock(&data_block, &block_offsets);
                 try index_records.append(.{
@@ -303,7 +304,7 @@ pub const SSTable = struct {
             if (utils.compareBitwise(key, record.key) < 0) {
                 return null;
             } else if (utils.compareBitwise(key, record.key) == 0) {
-                const result = try self.allocator.alloc(u8, record.value_size);
+                const result = try self.allocator.alloc(u8, record.value.len);
                 @memcpy(result, record.value);
                 return result;
             }

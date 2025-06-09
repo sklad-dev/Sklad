@@ -158,7 +158,7 @@ pub const Memtable = struct {
     pub fn fromWal(wal: Wal, memtable: *Memtable) !bool {
         while (wal.readRecord(memtable.allocator)) |record| {
             defer record.destroy(memtable.allocator);
-            if (memtable.canAdd(record.key_size + record.value_size)) {
+            if (memtable.canAdd(record.key.len + record.value.len)) {
                 try memtable.wal.write(&record);
                 try memtable.add(record.key, record.value);
             } else {
