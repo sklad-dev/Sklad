@@ -45,17 +45,17 @@ Configuration file example:
         "max_level": 8
     },
     "sstable": {
-        "sparse_index_step": 256,
+        "block_size": 4096,
         "bloom_bits_per_key": 20
     }
 }
 ```
 
 ### Parameters:
-* **memtable.max_size** - maximum size of a memtable. After reaching the maximum size, the memtable is flushed to a SSTable file on disk
-* **max_level** - the memtable is implemented as a skip-list; this parameter sets the maximum height of a skip-list node's tower
-* **sstable.sparse_index_step** - determines how many data blocks are skipped between entries in the index
-* **sstable.bloom_bits_per_key** - how many bits to use for each stored key
+* **memtable.max_size** - (u64) maximum size of a memtable. After reaching the maximum size, the memtable is flushed to a SSTable file on disk
+* **max_level** - (u8) the memtable is implemented as a skip-list; this parameter sets the maximum height of a skip-list node's tower
+* **sstable.block_size** - (u32) the size of SSTable data block
+* **sstable.bloom_bits_per_key** - (u8) how many bits to use for each stored key
 
 ## 🏗️ Architecture
 Sklad is built around an asynchronous task queue with a small pool of worker threads. This design allows the system to handle a large number of concurrent requests without overwhelming system resources.
@@ -63,3 +63,11 @@ Sklad is built around an asynchronous task queue with a small pool of worker thr
 Wherever possible, the project uses lock-free data structures and algorithms to minimize contention and improve concurrency, serving as a core design principle throughout the system.
 
 The storage layer is implemented using an LSM-tree (Log-Structured Merge Tree) to optimize write performance.
+
+### More:
+1) [SSTable file structure](docs/sstable.md)
+
+## Todo
+* Value separation
+* Prefix compression
+* Optimize disk IO

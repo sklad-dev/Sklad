@@ -51,17 +51,20 @@ pub const TableFileManager = struct {
             "{s}/0.{d}.sstable",
             .{ self.path, max_file_id },
         );
+
+        const configurator = global_context.getConfigurator().?;
         var sstable = try SSTable.create(
             self.allocator,
             memtable,
             file_name,
-            global_context.getConfigurator().?.sstableSparseIndexStep(),
+            configurator.sstableBlockSize(),
+            configurator.sstableBloomBitsPerKey(),
         );
         const file_name_ptr = try self.allocator.create([]u8);
         file_name_ptr.* = file_name;
         try self.addFileAtLevel(0, file_name_ptr);
 
-        sstable.close();
+        sstable.close(false);
         try memtable.wal.deleteFile();
     }
 

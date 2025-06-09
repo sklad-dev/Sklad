@@ -1,7 +1,7 @@
 const std = @import("std");
 
 // S have to be power of 2 so it is possible to use bitwise and to compute modulo
-pub fn DestroyBuffer(E: type, S: u64) type {
+pub fn RingBuffer(E: type, S: u64) type {
     return struct {
         head: u64,
         buffer: []?*E,
@@ -35,7 +35,7 @@ pub fn Queue(E: type, S: u64) type {
         allocator: std.mem.Allocator,
         head: *Node,
         tail: *Node,
-        destroy_buffer: *DestroyBuffer(Node, S),
+        destroy_buffer: *RingBuffer(Node, S),
 
         const Node = struct {
             entry: ?E,
@@ -65,8 +65,8 @@ pub fn Queue(E: type, S: u64) type {
             start_guard.prev = prev_guard;
             prev_guard.next = start_guard;
 
-            const destroy_buffer = allocator.create(DestroyBuffer(Node, S)) catch unreachable;
-            destroy_buffer.* = DestroyBuffer(Node, S).init(allocator);
+            const destroy_buffer = allocator.create(RingBuffer(Node, S)) catch unreachable;
+            destroy_buffer.* = RingBuffer(Node, S).init(allocator);
 
             return Self{
                 .allocator = allocator,
@@ -517,8 +517,8 @@ fn testCondition(T: type, C: type) type {
     };
 }
 
-test "DestroyBuffer" {
-    var destroy_buffer = DestroyBuffer(u8, 2).init(testing.allocator);
+test "RingBuffer" {
+    var destroy_buffer = RingBuffer(u8, 2).init(testing.allocator);
     defer {
         testing.allocator.free(destroy_buffer.buffer);
     }
@@ -797,7 +797,7 @@ test "AppendDeleteList Iterator" {
 //     std.debug.print("All work is done! Cleaning up...\n", .{});
 // }
 
-// fn destroyBufferTestJob(buf: *DestroyBuffer(u64, 8), thread_number: usize) void {
+// fn destroyBufferTestJob(buf: *RingBuffer(u64, 8), thread_number: usize) void {
 //     const max_iteration = 625000;
 //     var data: u64 = thread_number;
 //     for (0..max_iteration) |i| {
@@ -808,8 +808,8 @@ test "AppendDeleteList Iterator" {
 //     }
 // }
 
-// test "DestroyBuffer concurrecny" {
-//     var buf = DestroyBuffer(u64, 8).init(testing.allocator);
+// test "RingBuffer concurrecny" {
+//     var buf = RingBuffer(u64, 8).init(testing.allocator);
 
 //     var threads: [16]std.Thread = undefined;
 //     for (0..16) |i| {

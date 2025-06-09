@@ -11,16 +11,16 @@ pub inline fn generateId(rng: std.Random) [2]u8 {
 }
 
 pub inline fn writeNumber(comptime T: type, file: std.fs.File, number: T) !void {
-    try file.writer().writeInt(T, number, std.builtin.Endian.big);
+    try file.writer().writeInt(T, number, .big);
 }
 
 pub inline fn readNumber(comptime T: type, file: std.fs.File) !T {
-    const value: T = try file.reader().readInt(T, std.builtin.Endian.big);
+    const value: T = try file.reader().readInt(T, .big);
     return value;
 }
 
 pub inline fn intFromBytes(comptime T: type, buffer: []const u8, offset: usize) T {
-    return std.mem.readInt(T, buffer[offset .. offset + @sizeOf(T)], std.builtin.Endian.big);
+    return std.mem.readInt(T, buffer[offset .. offset + @sizeOf(T)][0..@sizeOf(T)], .big);
 }
 
 pub inline fn toBytes(comptime T: type, value: T) ![@sizeOf(@TypeOf(value))]u8 {
@@ -35,7 +35,7 @@ pub inline fn toBytes(comptime T: type, value: T) ![@sizeOf(@TypeOf(value))]u8 {
 
 pub inline fn intToBytes(comptime T: type, value: T) [@sizeOf(T)]u8 {
     var buffer: [@sizeOf(T)]u8 = undefined;
-    std.mem.writeInt(T, &buffer, value, std.builtin.Endian.big);
+    std.mem.writeInt(T, &buffer, value, .big);
     return buffer;
 }
 

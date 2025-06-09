@@ -2,8 +2,8 @@ pub const Configurator = struct {
     ptr: *anyopaque,
     memtable_max_size_fn: *const fn (ptr: *anyopaque) u64,
     memtable_max_level_fn: *const fn (ptr: *anyopaque) u8,
-    sstable_sparse_index_step_fn: *const fn (ptr: *anyopaque) u32,
-    sstable_bloom_bits_per_key_fn: *const fn (ptr: *anyopaque) u32,
+    sstable_block_size_fn: *const fn (ptr: *anyopaque) u32,
+    sstable_bloom_bits_per_key_fn: *const fn (ptr: *anyopaque) u8,
 
     pub fn memtableMaxSize(self: *const Configurator) u64 {
         return self.memtable_max_size_fn(self.ptr);
@@ -13,11 +13,11 @@ pub const Configurator = struct {
         return self.memtable_max_level_fn(self.ptr);
     }
 
-    pub fn sstableSparseIndexStep(self: *const Configurator) u32 {
-        return self.sstable_sparse_index_step_fn(self.ptr);
+    pub fn sstableBlockSize(self: *const Configurator) u32 {
+        return self.sstable_block_size_fn(self.ptr);
     }
 
-    pub fn sstableBloomBitsPerKey(self: *const Configurator) u32 {
+    pub fn sstableBloomBitsPerKey(self: *const Configurator) u8 {
         return self.sstable_bloom_bits_per_key_fn(self.ptr);
     }
 };
@@ -26,7 +26,7 @@ pub const TestingConfigurator = struct {
     max_size: u64,
     max_level: u8,
     index_step: u32,
-    bits_per_key: u32,
+    bits_per_key: u8,
 
     pub fn init() TestingConfigurator {
         return .{
@@ -42,7 +42,7 @@ pub const TestingConfigurator = struct {
             .ptr = self,
             .memtable_max_size_fn = memtableMaxSize,
             .memtable_max_level_fn = memtableMaxLevel,
-            .sstable_sparse_index_step_fn = sstableSparseIndexStep,
+            .sstable_block_size_fn = sstableBlockSize,
             .sstable_bloom_bits_per_key_fn = sstableBloomBitsPerKey,
         };
     }
@@ -57,12 +57,12 @@ pub const TestingConfigurator = struct {
         return self.max_level;
     }
 
-    pub fn sstableSparseIndexStep(ptr: *anyopaque) u32 {
+    pub fn sstableBlockSize(ptr: *anyopaque) u32 {
         const self: *TestingConfigurator = @ptrCast(@alignCast(ptr));
         return self.index_step;
     }
 
-    pub fn sstableBloomBitsPerKey(ptr: *anyopaque) u32 {
+    pub fn sstableBloomBitsPerKey(ptr: *anyopaque) u8 {
         const self: *TestingConfigurator = @ptrCast(@alignCast(ptr));
         return self.bits_per_key;
     }

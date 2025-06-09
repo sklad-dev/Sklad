@@ -100,7 +100,7 @@ pub const BinaryStorage = struct {
         const storage = Self{
             .allocator = allocator,
             .path = path,
-            .active_memtable = try restoreMemtables(&table_file_manager),
+            .active_memtable = try restoreMemtables(&table_file_manager), // TODO: pass allocator and the path
             .memtables = try AppendDeleteList(Pair, u64).init(allocator, pairCleanUp),
             .table_file_manager = table_file_manager,
         };
@@ -180,7 +180,7 @@ pub const BinaryStorage = struct {
                 while (it.next()) |node| {
                     const file_name = node.entry.?.*;
                     const table = try SSTable.open(file_name, self.allocator);
-                    defer table.close();
+                    defer table.close(true);
 
                     if (try table.find(key)) |value| {
                         const file_id = try self.table_file_manager.parseFileId(file_name);

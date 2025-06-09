@@ -17,8 +17,8 @@ pub const JsonConfigurator = struct {
     };
 
     const SSTableConfiguration = struct {
-        sparse_index_step: u32,
-        bloom_bits_per_key: u32,
+        block_size: u32,
+        bloom_bits_per_key: u8,
     };
 
     pub fn init(allocator: std.mem.Allocator, path: []const u8) !JsonConfigurator {
@@ -41,7 +41,7 @@ pub const JsonConfigurator = struct {
             .ptr = self,
             .memtable_max_size_fn = memtableMaxSize,
             .memtable_max_level_fn = memtableMaxLevel,
-            .sstable_sparse_index_step_fn = sstableSparseIndexStep,
+            .sstable_block_size_fn = sstableBlockSize,
             .sstable_bloom_bits_per_key_fn = sstableBloomBitsPerKey,
         };
     }
@@ -56,12 +56,12 @@ pub const JsonConfigurator = struct {
         return self.config.memtable.max_level;
     }
 
-    pub fn sstableSparseIndexStep(ptr: *anyopaque) u32 {
+    pub fn sstableBlockSize(ptr: *anyopaque) u32 {
         const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
-        return self.config.sstable.sparse_index_step;
+        return self.config.sstable.block_size;
     }
 
-    pub fn sstableBloomBitsPerKey(ptr: *anyopaque) u32 {
+    pub fn sstableBloomBitsPerKey(ptr: *anyopaque) u8 {
         const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
         return self.config.sstable.bloom_bits_per_key;
     }

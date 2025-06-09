@@ -6,7 +6,6 @@ const utils = @import("./utils.zig");
 const getConfigurator = @import("./global_context.zig").getConfigurator;
 const Wal = @import("./wal.zig").Wal;
 const BinaryData = data_types.BinaryData;
-const StorageRecord = data_types.StorageRecord;
 
 pub const Arena = struct {
     allocator: std.mem.Allocator,
@@ -70,20 +69,15 @@ pub const Memtable = struct {
         tower: []u64,
     };
 
-    const MemtableIterator = struct {
+    pub const Iterator = struct {
         arena: *const Arena,
         current: ?*Node,
 
-        pub inline fn next(self: *MemtableIterator) ?StorageRecord {
+        pub inline fn next(self: *Iterator) ?*Node {
             if (self.current) |c| {
                 self.current = @alignCast(@ptrCast(&self.arena.arena[c.tower[0]]));
-                if (c.key) |key| {
-                    return StorageRecord{
-                        .key_size = @as(u16, @intCast(key.len)),
-                        .key = key,
-                        .value_size = @as(u16, @intCast(c.value.?.len)),
-                        .value = c.value.?,
-                    };
+                if (c.key != null) {
+                    return c;
                 }
             } else {
                 return null;
@@ -269,9 +263,9 @@ pub const Memtable = struct {
         return new_node_offset <= self.max_size;
     }
 
-    pub inline fn iterator(self: *const Memtable) MemtableIterator {
+    pub inline fn iterator(self: *const Memtable) Iterator {
         const head: *Node = @alignCast(@ptrCast(&self.arena.arena[0]));
-        return MemtableIterator{
+        return Iterator{
             .arena = &self.arena,
             .current = @alignCast(@ptrCast(&self.arena.arena[head.tower[0]])),
         };
@@ -383,15 +377,15 @@ test "Memtable#add" {
 
     var iterator = memtable.iterator();
     var i: u64 = 0;
-    while (iterator.next()) |record| : (i += 1) {
+    while (iterator.next()) |node| : (i += 1) {
         test_key = utils.intToBytes(u8, @as(u8, @intCast(i)));
         if (i == 0) {
             test_value = utils.intToBytes(u8, @as(u8, @intCast(11)));
         } else {
             test_value = utils.intToBytes(u8, @as(u8, @intCast(i)));
         }
-        try testing.expect(std.mem.eql(u8, record.key, test_key[0..]));
-        try testing.expect(std.mem.eql(u8, record.value, test_value[0..]));
+        try testing.expect(std.mem.eql(u8, node.key.?, test_key[0..]));
+        try testing.expect(std.mem.eql(u8, node.value.?, test_value[0..]));
     }
 
     try memtable.wal.deleteFile();

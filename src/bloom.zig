@@ -33,9 +33,8 @@ pub const BloomFilter = struct {
         var num_hashes: u8 = @intFromFloat(float_bpk * 0.69); // 0.69 is approximately ln(2)
         num_hashes = @min(30, @max(1, num_hashes));
 
-        var filter_size_bits: u32 = @max(64, num_records * bits_per_key);
+        const filter_size_bits: u32 = @max(64, num_records * bits_per_key);
         const filter_size_bytes: u32 = ((filter_size_bits + 7) / 8);
-        filter_size_bits = filter_size_bytes * 8;
 
         const buf = try allocator.alloc(u8, filter_size_bytes + 1);
         @memset(buf, 0);
