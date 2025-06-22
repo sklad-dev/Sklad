@@ -7,8 +7,6 @@ const Token = lex.Token;
 pub const KV_BUILTINS = [_]Builtin{
     .{ .name = "set", .kind = Token.Kind.keyword },
     .{ .name = "get", .kind = Token.Kind.keyword },
-    .{ .name = "true", .kind = Token.Kind.keyword },
-    .{ .name = "false", .kind = Token.Kind.keyword },
 };
 
 pub inline fn kvLexer(source: []const u8, token_sequence: *std.ArrayList(Token)) lex.Lexer {
