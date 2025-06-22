@@ -36,6 +36,13 @@ pub const TypedBinaryData = struct {
             .data = result,
         };
     }
+
+    pub inline fn toBytes(self: *const TypedBinaryData) ![]u8 {
+        const key_buffer = try self.allocator.alloc(u8, 1 + self.data.len);
+        key_buffer[0] = @intFromEnum(self.data_type);
+        @memcpy(key_buffer[1..], self.data);
+        return key_buffer;
+    }
 };
 
 pub const StorageRecord = struct {

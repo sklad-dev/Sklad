@@ -3,7 +3,7 @@
 </p>
 
 # Sklad
-Sklad is an experimental project to build a novel wide-column data store.
+Sklad is an experimental project to build a novel HTAP data store.
 
 ## 👷‍♀️ Building Sklad
 Building Sklad is very straightforward. Install Zig toolchain and run

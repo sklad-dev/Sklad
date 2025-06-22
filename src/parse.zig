@@ -3,13 +3,17 @@ const std = @import("std");
 const global_context = @import("./global_context.zig");
 const io = @import("./io.zig");
 const lex = @import("./lex.zig");
+const lexers = @import("./lexers.zig");
 const utils = @import("./utils.zig");
 
 const ApplicationError = @import("./constants.zig").ApplicationError;
-const ValueType = @import("./data_types.zig").ValueType;
-const TypedBinaryData = @import("./data_types.zig").TypedBinaryData;
-const Task = @import("./task_queue.zig").Task;
 const ExecuteTask = @import("./execute.zig").ExecuteTask;
+const Task = @import("./task_queue.zig").Task;
+const TypedBinaryData = @import("./data_types.zig").TypedBinaryData;
+const ValueType = @import("./data_types.zig").ValueType;
+
+const LexingError = lex.LexingError;
+const Token = lex.Token;
 
 pub const ParserError = error{
     InvalidQuery,
@@ -31,11 +35,18 @@ pub const Expression = union(ExpressionType) {
         query.current_pos = 0;
         if (query.nextToken()) |token| {
             switch (token.kind) {
-                .set_keyword => return Expression{
-                    .set = try SetExpression.parse(allocator, query),
-                },
-                .get_keyword => return Expression{
-                    .get = try GetExpression.parse(allocator, query),
+                .keyword => {
+                    if (std.mem.eql(u8, token.string(), "set")) {
+                        return Expression{
+                            .set = try SetExpression.parse(allocator, query),
+                        };
+                    } else if (std.mem.eql(u8, token.string(), "get")) {
+                        return Expression{
+                            .get = try GetExpression.parse(allocator, query),
+                        };
+                    } else {
+                        return ParserError.UnexpectedToken;
+                    }
                 },
                 else => return ParserError.UnexpectedToken,
             }
@@ -123,7 +134,7 @@ pub const ValueNode = struct {
     value: TypedBinaryData,
 
     pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !ValueNode {
-        const key_token = try query.expectToken(&[_]lex.Token.Kind{ .string_value, .numeric_value, .bool_value });
+        const key_token = try query.expectToken(&[_]Token.Kind{ .string_value, .numeric_value, .bool_value });
         switch (key_token.kind) {
             .string_value => {
                 return .{
@@ -241,10 +252,10 @@ pub const ValueNode = struct {
 
 pub const TokenizedQuery = struct {
     allocator: std.mem.Allocator,
-    tokens: *std.ArrayList(lex.Token),
+    tokens: *std.ArrayList(Token),
     current_pos: u64,
 
-    pub fn init(allocator: std.mem.Allocator, tokens: *std.ArrayList(lex.Token)) TokenizedQuery {
+    pub fn init(allocator: std.mem.Allocator, tokens: *std.ArrayList(Token)) TokenizedQuery {
         return .{
             .allocator = allocator,
             .tokens = tokens,
@@ -252,7 +263,7 @@ pub const TokenizedQuery = struct {
         };
     }
 
-    pub fn nextToken(self: *TokenizedQuery) ?lex.Token {
+    pub fn nextToken(self: *TokenizedQuery) ?Token {
         if (self.current_pos > self.tokens.items.len - 1) {
             return null;
         }
@@ -260,14 +271,14 @@ pub const TokenizedQuery = struct {
         return self.tokens.items[self.current_pos];
     }
 
-    pub fn peakNextToken(self: *TokenizedQuery) ?lex.Token {
+    pub fn peakNextToken(self: *TokenizedQuery) ?Token {
         if (self.current_pos > self.tokens.items.len - 1) {
             return null;
         }
         return self.tokens.items[self.current_pos];
     }
 
-    pub fn expectToken(self: *TokenizedQuery, token_kinds: []const lex.Token.Kind) !lex.Token {
+    pub fn expectToken(self: *TokenizedQuery, token_kinds: []const Token.Kind) !Token {
         if (self.current_pos > self.tokens.items.len - 1) {
             return ParserError.UnexpectedEndOfQuery;
         }
@@ -308,13 +319,13 @@ pub const CommandProcessingTask = struct {
     fn run(ptr: *anyopaque) void {
         const self: *CommandProcessingTask = @ptrCast(@alignCast(ptr));
 
-        var tokens = std.ArrayList(lex.Token).init(self.allocator);
+        var tokens = std.ArrayList(Token).init(self.allocator);
         defer tokens.deinit();
 
-        var lexer = lex.Lexer.init(self.query, &tokens);
+        var lexer = lexers.kvLexer(self.query, &tokens);
         const lex_result = lexer.lex();
         if (lex_result > 0) {
-            self.io_context.sendResponse(u64, lex.LexingError, self.allocator, lex_result, lex.LexingError.InvalidToken);
+            self.io_context.sendResponse(u64, LexingError, self.allocator, lex_result, LexingError.InvalidToken);
             std.posix.close(self.io_context.socket);
         }
 
@@ -383,11 +394,11 @@ fn valueFromStr(allocator: std.mem.Allocator, value_type: ValueType, value_str: 
 const testing = std.testing;
 
 test "Parse set query" {
-    var tokens = std.ArrayList(lex.Token).init(testing.allocator);
+    var tokens = std.ArrayList(Token).init(testing.allocator);
     defer tokens.deinit();
 
     const insert_query = "set 'test' 4, 'another test' 12.45, 'falsy' false";
-    var lexer = lex.Lexer.init(insert_query, &tokens);
+    var lexer = lexers.kvLexer(insert_query, &tokens);
     try testing.expect(lexer.lex() == 0);
 
     var query = TokenizedQuery.init(testing.allocator, &tokens);
@@ -397,11 +408,11 @@ test "Parse set query" {
 }
 
 test "Parse get query" {
-    var tokens = std.ArrayList(lex.Token).init(testing.allocator);
+    var tokens = std.ArrayList(Token).init(testing.allocator);
     defer tokens.deinit();
 
     const insert_node_query = "get 'test'";
-    var lexer = lex.Lexer.init(insert_node_query, &tokens);
+    var lexer = lexers.kvLexer(insert_node_query, &tokens);
     try testing.expect(lexer.lex() == 0);
 
     var query = TokenizedQuery.init(testing.allocator, &tokens);
