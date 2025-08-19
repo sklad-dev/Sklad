@@ -158,6 +158,8 @@ pub fn Queue(E: type, S: u64) type {
                                 if (node.use_counter == 0) {
                                     self.allocator.destroy(node);
                                     break;
+                                } else {
+                                    std.atomic.spinLoopHint();
                                 }
                             }
                         }
@@ -216,25 +218,9 @@ pub fn AppendOnlyQueue(E: type) type {
 
         pub fn enqueue(self: *Self, entry: *E) void {
             const node = self.allocator.create(Node) catch unreachable;
-            node.* = Node{
-                .entry = entry,
-                .next = null,
-            };
-
-            while (true) {
-                const ltail = @atomicLoad(*Node, &self.tail, .seq_cst);
-                if (@cmpxchgWeak(
-                    *Node,
-                    &self.tail,
-                    ltail,
-                    node,
-                    .seq_cst,
-                    .seq_cst,
-                ) == null) {
-                    @atomicStore(?*Node, &ltail.next, node, .seq_cst);
-                    return;
-                }
-            }
+            node.* = Node{ .entry = entry, .next = null };
+            const prev = @atomicRmw(*Node, &self.tail, .Xchg, node, .acq_rel);
+            @atomicStore(?*Node, &prev.next, node, .release);
         }
     };
 }
@@ -494,6 +480,97 @@ pub fn AppendDeleteList(E: type, C: type) type {
     };
 }
 
+pub fn BoundedQueue(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        const Slot = struct {
+            seq: usize,
+            value: T,
+        };
+
+        allocator: std.mem.Allocator,
+        buf: []Slot,
+        mask: usize, // capacity - 1
+        head: usize,
+        tail: usize,
+
+        // capacity must be a power of two
+        pub fn init(allocator: std.mem.Allocator, capacity: usize) !Self {
+            if (capacity == 0 or (capacity & (capacity - 1)) != 0) {
+                return error.CapacityMustBePowerOfTwo;
+            }
+
+            const buf = try allocator.alloc(Slot, capacity);
+
+            var i: usize = 0;
+            while (i < capacity) : (i += 1) {
+                buf[i].seq = i;
+            }
+
+            return .{
+                .allocator = allocator,
+                .buf = buf,
+                .mask = capacity - 1,
+                .head = 0,
+                .tail = 0,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.allocator.free(self.buf);
+        }
+
+        pub fn enqueue(self: *Self, value: T) bool {
+            while (true) {
+                const pos = @atomicLoad(usize, &self.tail, .monotonic);
+                const slot = &self.buf[pos & self.mask];
+
+                const seq = @atomicLoad(usize, &slot.seq, .acquire);
+                const diff = @as(isize, @intCast(seq)) - @as(isize, @intCast(pos));
+
+                if (diff == 0) {
+                    if (@cmpxchgStrong(usize, &self.tail, pos, pos + 1, .acq_rel, .monotonic) == null) {
+                        slot.value = value;
+                        @atomicStore(usize, &slot.seq, pos + 1, .release);
+                        return true;
+                    }
+                    continue;
+                } else if (diff < 0) {
+                    return false;
+                } else {
+                    std.atomic.spinLoopHint();
+                }
+            }
+        }
+
+        pub fn dequeue(self: *Self) ?T {
+            const pos = @atomicLoad(usize, &self.head, .monotonic);
+            const slot = &self.buf[pos & self.mask];
+
+            const seq = @atomicLoad(usize, &slot.seq, .acquire);
+            const expected = pos + 1;
+
+            const diff = @as(isize, @intCast(seq)) - @as(isize, @intCast(expected));
+            if (diff == 0) {
+                const out = slot.value;
+                @atomicStore(usize, &self.head, pos + 1, .release);
+                @atomicStore(usize, &slot.seq, pos + 1 + (self.mask + 1 - 1), .release);
+                return out;
+            } else if (diff < 0) {
+                return null;
+            } else {
+                std.atomic.spinLoopHint();
+                return null;
+            }
+        }
+
+        pub fn isEmpty(self: *Self) bool {
+            return @atomicLoad(usize, &self.head, .acquire);
+        }
+    };
+}
+
 // Testing
 const testing = std.testing;
 
@@ -714,6 +791,58 @@ test "AppendDeleteList Iterator" {
     try testing.expect(node == null);
 }
 
+test "BoundedQueue#enqueue" {
+    var q = try BoundedQueue(u64).init(testing.allocator, 4);
+    defer q.deinit();
+
+    var result: bool = undefined;
+    for (0..4) |i| {
+        result = q.enqueue(i);
+        try testing.expect(result == true);
+        try testing.expect(q.buf[i].value == i);
+    }
+
+    result = q.enqueue(4);
+    try testing.expect(result == false);
+}
+
+test "BoundedQueue#dequeue" {
+    var q = try BoundedQueue(u64).init(testing.allocator, 4);
+    defer q.deinit();
+
+    for (0..4) |i| {
+        _ = q.enqueue(i);
+    }
+
+    var result: ?u64 = undefined;
+    for (0..4) |i| {
+        result = q.dequeue();
+        try testing.expect(result == i);
+    }
+
+    result = q.dequeue();
+    try testing.expect(result == null);
+}
+
+test "BoundedQueue circular" {
+    var q = try BoundedQueue(u64).init(testing.allocator, 4);
+    defer q.deinit();
+
+    for (0..4) |i| {
+        _ = q.enqueue(i);
+    }
+
+    for (0..3) |_| {
+        _ = q.dequeue();
+    }
+
+    try testing.expect(q.enqueue(4) == true);
+    try testing.expect(q.enqueue(5) == true);
+    try testing.expect(q.enqueue(6) == true);
+    try testing.expect(q.dequeue() == 3);
+    try testing.expect(q.enqueue(7) == true);
+}
+
 // fn testJob(list: *AppendDeleteList(u64, u64), thread_number: usize) void {
 //     var active_ids = std.ArrayList(u64).init(testing.allocator);
 //     defer active_ids.deinit();
@@ -749,7 +878,7 @@ test "AppendDeleteList Iterator" {
 //     }
 // }
 
-// test "AppendDeleteList concurrecny" {
+// test "AppendDeleteList concurrency" {
 //     var list = try AppendDeleteList(u64, u64).init(testing.allocator, testCleanupU64);
 
 //     var threads: [16]std.Thread = undefined;
@@ -782,7 +911,7 @@ test "AppendDeleteList Iterator" {
 //     std.debug.print("[TEST] Thread {d} done\n", .{thread_number});
 // }
 
-// test "Queue concurrecny" {
+// test "Queue concurrency" {
 //     var queue = Queue(u64, 64).init(testing.allocator);
 //     defer queue.deinit();
 
@@ -808,7 +937,7 @@ test "AppendDeleteList Iterator" {
 //     }
 // }
 
-// test "RingBuffer concurrecny" {
+// test "RingBuffer concurrency" {
 //     var buf = RingBuffer(u64, 8).init(testing.allocator);
 
 //     var threads: [16]std.Thread = undefined;
@@ -836,7 +965,7 @@ test "AppendDeleteList Iterator" {
 //     }
 // }
 
-// test "AppendOnlyQueue concurrecny" {
+// test "AppendOnlyQueue concurrency" {
 //     var queue = AppendOnlyQueue(u64).init(testing.allocator, testCleanupU64);
 //     defer queue.deinit();
 
@@ -848,4 +977,43 @@ test "AppendDeleteList Iterator" {
 //     for (threads) |t| {
 //         t.join();
 //     }
+// }
+
+// var should_exit = std.atomic.Value(bool).init(false);
+
+// fn boundedQueueEnqueueTestJob(queue: *BoundedQueue(u64), thread_number: usize) void {
+//     const max_iteration = 625000;
+//     const rand = std.crypto.random;
+
+//     for (0..max_iteration) |i| {
+//         if (i % 1000 == 0) {
+//             std.debug.print("[TEST] {d}: {d}\n", .{ std.Thread.getCurrentId(), i });
+//         }
+
+//         _ = queue.enqueue(thread_number);
+//         std.time.sleep(rand.intRangeAtMost(u64, 5, 20));
+//     }
+// }
+
+// fn boundedQueueDequeueTestJob(queue: *BoundedQueue(u64)) void {
+//     while (!should_exit.load(.monotonic)) {
+//         _ = queue.dequeue();
+//     }
+// }
+
+// test "BoundedQueue concurrency" {
+//     var queue = try BoundedQueue(u64).init(testing.allocator, 4096);
+//     defer queue.deinit();
+
+//     var enqueue_threads: [8]std.Thread = undefined;
+//     for (0..8) |i| {
+//         enqueue_threads[i] = try std.Thread.spawn(.{}, boundedQueueEnqueueTestJob, .{ &queue, i });
+//     }
+
+//     _ = try std.Thread.spawn(.{}, boundedQueueDequeueTestJob, .{&queue});
+
+//     for (enqueue_threads) |t| {
+//         t.join();
+//     }
+//     should_exit.store(true, .monotonic);
 // }
