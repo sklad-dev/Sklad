@@ -1,13 +1,15 @@
 const std = @import("std");
 
 const global_context = @import("./global_context.zig");
-const TypedStorage = @import("./typed_storage.zig").TypedStorage;
 const io = @import("./io.zig");
 const parse = @import("./parse.zig");
 const utils = @import("./utils.zig");
-const TypedBinaryData = @import("./data_types.zig").TypedBinaryData;
-const ValueType = @import("./data_types.zig").ValueType;
+
+const MetricKind = @import("./metrics.zig").MetricKind;
 const Task = @import("./task_queue.zig").Task;
+const TypedBinaryData = @import("./data_types.zig").TypedBinaryData;
+const TypedStorage = @import("./typed_storage.zig").TypedStorage;
+const ValueType = @import("./data_types.zig").ValueType;
 
 pub const ExecutionError = error{
     ExecutionFailed,
@@ -36,14 +38,19 @@ pub const ExecuteTask = struct {
             .context = self,
             .run_fn = run,
             .destroy_fn = destroy,
+            .enqued_at = std.time.microTimestamp(),
         };
     }
 
     fn run(ptr: *anyopaque) void {
         const self: *ExecuteTask = @ptrCast(@alignCast(ptr));
         defer {
-            const exec_time = std.time.milliTimestamp() - self.io_context.start_time;
-            std.log.info("{d}", .{exec_time});
+            const exec_time = std.time.microTimestamp() - self.io_context.start_time;
+            _ = global_context.getMetricsAggregator().?.record(.{
+                .timestamp = std.time.microTimestamp(),
+                .value = @intCast(exec_time),
+                .kind = @intFromEnum(MetricKind.requestProcessingTime),
+            });
             std.posix.close(self.io_context.socket);
         }
 

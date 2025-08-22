@@ -313,6 +313,7 @@ pub const CommandProcessingTask = struct {
             .context = self,
             .run_fn = run,
             .destroy_fn = destroy,
+            .enqued_at = std.time.microTimestamp(),
         };
     }
 

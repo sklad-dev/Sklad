@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const global_context = @import("./global_context.zig");
+const MetricKind = @import("./metrics.zig").MetricKind;
 const Queue = @import("./lock_free.zig").Queue;
 
 pub const Task = struct {
@@ -7,8 +9,25 @@ pub const Task = struct {
     run_fn: *const fn (ptr: *anyopaque) void,
     destroy_fn: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator) void,
 
-    pub fn run(self: *const Task) void {
+    enqued_at: i64 = 0,
+    picked_at: i64 = 0,
+
+    pub fn run(self: *Task) void {
+        self.picked_at = std.time.microTimestamp();
+        _ = global_context.getMetricsAggregator().?.record(.{
+            .timestamp = std.time.microTimestamp(),
+            .value = @intCast(self.picked_at - self.enqued_at),
+            .kind = @intFromEnum(MetricKind.queueWaitTime),
+        });
+
         self.run_fn(self.context);
+
+        const exec_time = std.time.microTimestamp() - self.picked_at;
+        _ = global_context.getMetricsAggregator().?.record(.{
+            .timestamp = std.time.microTimestamp(),
+            .value = @intCast(exec_time),
+            .kind = @intFromEnum(MetricKind.taskProcessingTime),
+        });
     }
 
     pub fn destroy(self: *const Task, allocator: std.mem.Allocator) void {

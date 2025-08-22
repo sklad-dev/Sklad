@@ -1,7 +1,13 @@
 const std = @import("std");
 
 // S have to be power of 2 so it is possible to use bitwise and to compute modulo
-pub fn RingBuffer(E: type, S: u64) type {
+pub fn DestroyBuffer(E: type, comptime S: usize) type {
+    comptime {
+        if (S == 0 or (S & (S - 1)) != 0) {
+            @compileError("DestroyBuffer: S must be a non-zero power of two");
+        }
+    }
+
     return struct {
         head: u64,
         buffer: []?*E,
@@ -9,10 +15,9 @@ pub fn RingBuffer(E: type, S: u64) type {
         const Self = @This();
 
         pub fn init(allocator: std.mem.Allocator) Self {
-            var buffer = allocator.alloc(?*E, S) catch unreachable;
-            for (0..buffer.len) |i| {
-                buffer[i] = null;
-            }
+            const buffer = allocator.alloc(?*E, S) catch unreachable;
+            @memset(buffer, null);
+
             return .{
                 .head = 0,
                 .buffer = buffer,
@@ -20,9 +25,9 @@ pub fn RingBuffer(E: type, S: u64) type {
         }
 
         pub inline fn put(self: *Self, entry: *E) ?*E {
-            const index = @atomicRmw(u64, &self.head, .Add, 1, .seq_cst);
-            _ = @atomicRmw(u64, &self.head, .And, S - 1, .seq_cst);
-            const to_delete = @atomicRmw(?*E, &self.buffer[index % S], .Xchg, entry, .seq_cst);
+            const old_index = @atomicRmw(u64, &self.head, .Add, 1, .monotonic);
+            const slot = @as(usize, @intCast(old_index & (S - 1)));
+            const to_delete = @atomicRmw(?*E, &self.buffer[slot], .Xchg, entry, .acq_rel);
             return to_delete;
         }
     };
@@ -35,14 +40,14 @@ pub fn Queue(E: type, S: u64) type {
         allocator: std.mem.Allocator,
         head: *Node,
         tail: *Node,
-        destroy_buffer: *RingBuffer(Node, S),
+        destroy_buffer: *DestroyBuffer(Node, S),
 
         const Node = struct {
             entry: ?E,
             next: ?*Node,
             prev: ?*Node,
             use_counter: u32,
-            padding1: u8 align(std.atomic.cache_line) = 0,
+            _padding: u8 align(std.atomic.cache_line) = 0,
         };
 
         pub fn init(allocator: std.mem.Allocator) Self {
@@ -65,8 +70,8 @@ pub fn Queue(E: type, S: u64) type {
             start_guard.prev = prev_guard;
             prev_guard.next = start_guard;
 
-            const destroy_buffer = allocator.create(RingBuffer(Node, S)) catch unreachable;
-            destroy_buffer.* = RingBuffer(Node, S).init(allocator);
+            const destroy_buffer = allocator.create(DestroyBuffer(Node, S)) catch unreachable;
+            destroy_buffer.* = DestroyBuffer(Node, S).init(allocator);
 
             return Self{
                 .allocator = allocator,
@@ -186,7 +191,7 @@ pub fn AppendOnlyQueue(E: type) type {
         const Node = struct {
             entry: ?*E,
             next: ?*Node,
-            padding1: u8 align(std.atomic.cache_line) = 0,
+            _padding: u8 align(std.atomic.cache_line) = 0,
         };
 
         pub fn init(allocator: std.mem.Allocator, node_cleanup_fn: NodeCleanupFn) Self {
@@ -256,7 +261,7 @@ pub fn AppendDeleteList(E: type, C: type) type {
         pub const Node = struct {
             entry: ?*E,
             next: MarkablePointer,
-            padding: u8 align(std.atomic.cache_line) = 0,
+            _padding: u8 align(std.atomic.cache_line) = 0,
             node_cleanup_fn: NodeCleanupFn,
         };
 
@@ -490,10 +495,12 @@ pub fn BoundedQueue(comptime T: type) type {
         };
 
         allocator: std.mem.Allocator,
-        buf: []Slot,
+        buf: []Slot, // Note for later, should it be SoA instead?
         mask: usize, // capacity - 1
         head: usize,
+        _pad1: [std.atomic.cache_line - @sizeOf(usize)]u8 = undefined,
         tail: usize,
+        _pad2: [std.atomic.cache_line - @sizeOf(usize)]u8 = undefined,
 
         // capacity must be a power of two
         pub fn init(allocator: std.mem.Allocator, capacity: usize) !Self {
@@ -594,8 +601,8 @@ fn testCondition(T: type, C: type) type {
     };
 }
 
-test "RingBuffer" {
-    var destroy_buffer = RingBuffer(u8, 2).init(testing.allocator);
+test "DestroyBuffer" {
+    var destroy_buffer = DestroyBuffer(u8, 2).init(testing.allocator);
     defer {
         testing.allocator.free(destroy_buffer.buffer);
     }
@@ -611,13 +618,13 @@ test "RingBuffer" {
 
     var t2: u8 = 1;
     const r2 = destroy_buffer.put(&t2);
-    try testing.expect(destroy_buffer.head == 0);
+    try testing.expect(destroy_buffer.head == 2);
     try testing.expect(r2 == null);
     try testing.expect(destroy_buffer.buffer[1].?.* == 1);
 
     var t3: u8 = 2;
     const r3 = destroy_buffer.put(&t3);
-    try testing.expect(destroy_buffer.head == 1);
+    try testing.expect(destroy_buffer.head == 3);
     try testing.expect(r3.?.* == 0);
     try testing.expect(destroy_buffer.buffer[0].?.* == 2);
 }
@@ -926,7 +933,7 @@ test "BoundedQueue circular" {
 //     std.debug.print("All work is done! Cleaning up...\n", .{});
 // }
 
-// fn destroyBufferTestJob(buf: *RingBuffer(u64, 8), thread_number: usize) void {
+// fn destroyBufferTestJob(buf: *DestroyBuffer(u64, 8), thread_number: usize) void {
 //     const max_iteration = 625000;
 //     var data: u64 = thread_number;
 //     for (0..max_iteration) |i| {
@@ -937,8 +944,8 @@ test "BoundedQueue circular" {
 //     }
 // }
 
-// test "RingBuffer concurrency" {
-//     var buf = RingBuffer(u64, 8).init(testing.allocator);
+// test "DestroyBuffer concurrency" {
+//     var buf = DestroyBuffer(u64, 8).init(testing.allocator);
 
 //     var threads: [16]std.Thread = undefined;
 //     for (0..16) |i| {

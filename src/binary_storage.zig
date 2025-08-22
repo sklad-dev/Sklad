@@ -13,6 +13,7 @@ const constants = @import("./constants.zig");
 const ApplicationError = @import("./constants.zig").ApplicationError;
 const AppendDeleteList = @import("./lock_free.zig").AppendDeleteList;
 const Memtable = @import("./memtable.zig").Memtable;
+const MetricKind = @import("./metrics.zig").MetricKind;
 const SSTable = @import("./sstable.zig").SSTable;
 const TableFileManager = @import("./table_file_manager.zig").TableFileManager;
 const Task = @import("./task_queue.zig").Task;
@@ -63,6 +64,7 @@ pub const BinaryStorage = struct {
                 .context = self,
                 .run_fn = FlushTask.run,
                 .destroy_fn = FlushTask.destroy,
+                .enqued_at = std.time.microTimestamp(),
             };
         }
 
@@ -85,6 +87,12 @@ pub const BinaryStorage = struct {
                 std.log.err("Error! Failed to falush a memtable {s}: {any}", .{ memtable.wal.path, e });
                 return;
             };
+
+            _ = global_context.getMetricsAggregator().?.record(.{
+                .timestamp = std.time.microTimestamp(),
+                .value = 1,
+                .kind = @intFromEnum(MetricKind.memtableCounter),
+            });
 
             self.storage.memtables.markDelete(condition, self.memtable_key);
         }

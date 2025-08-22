@@ -4,8 +4,9 @@ const posix = std.posix;
 const global_context = @import("./global_context.zig");
 
 const ApplicationError = @import("./constants.zig").ApplicationError;
-const Task = @import("./task_queue.zig").Task;
 const CommandProcessingTask = @import("./parse.zig").CommandProcessingTask;
+const MetricKind = @import("./metrics.zig").MetricKind;
+const Task = @import("./task_queue.zig").Task;
 
 pub const DEFAULT_PORT: u16 = 7733;
 
@@ -134,6 +135,7 @@ pub const IO = struct {
                 .context = self,
                 .run_fn = run,
                 .destroy_fn = destroy,
+                .enqued_at = std.time.microTimestamp(),
             };
         }
     };
@@ -186,7 +188,13 @@ pub const IO = struct {
                 continue;
             };
 
-            const start_time = std.time.milliTimestamp();
+            _ = global_context.getMetricsAggregator().?.record(.{
+                .timestamp = std.time.microTimestamp(),
+                .value = 1,
+                .kind = @intFromEnum(MetricKind.requestCounter),
+            });
+
+            const start_time = std.time.microTimestamp();
             const task_queue = global_context.getTaskQueue();
             var io_task = task_queue.?.allocator.create(IoTask) catch |e| {
                 std.log.err("Error! Failed to allocate an IO task: {any}", .{e});
