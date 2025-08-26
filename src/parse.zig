@@ -295,12 +295,12 @@ pub const TokenizedQuery = struct {
     }
 };
 
-pub const CommandProcessingTask = struct {
+pub const QueryProcessingTask = struct {
     allocator: std.mem.Allocator,
     io_context: io.IO.IoContext,
     query: []u8,
 
-    pub fn init(allocator: std.mem.Allocator, query_size: u64, io_context: io.IO.IoContext) !CommandProcessingTask {
+    pub fn init(allocator: std.mem.Allocator, query_size: u64, io_context: io.IO.IoContext) !QueryProcessingTask {
         return .{
             .allocator = allocator,
             .io_context = io_context,
@@ -308,7 +308,7 @@ pub const CommandProcessingTask = struct {
         };
     }
 
-    pub fn task(self: *CommandProcessingTask) Task {
+    pub fn task(self: *QueryProcessingTask) Task {
         return .{
             .context = self,
             .run_fn = run,
@@ -318,7 +318,7 @@ pub const CommandProcessingTask = struct {
     }
 
     fn run(ptr: *anyopaque) void {
-        const self: *CommandProcessingTask = @ptrCast(@alignCast(ptr));
+        const self: *QueryProcessingTask = @ptrCast(@alignCast(ptr));
 
         var tokens = std.ArrayList(Token).init(self.allocator);
         defer tokens.deinit();
@@ -359,11 +359,11 @@ pub const CommandProcessingTask = struct {
     }
 
     fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
-        const self: *CommandProcessingTask = @ptrCast(@alignCast(ptr));
+        const self: *QueryProcessingTask = @ptrCast(@alignCast(ptr));
         allocator.destroy(self);
     }
 
-    fn handleParseError(self: *CommandProcessingTask, expression: *Expression) void {
+    fn handleParseError(self: *QueryProcessingTask, expression: *Expression) void {
         switch (expression.*) {
             .set => expression.set.destroy(),
             .get => expression.get.destroy(),

@@ -8,7 +8,7 @@ const JsonConfigurator = @import("./json_configurator.zig").JsonConfigurator;
 const TypedStorage = @import("./typed_storage.zig").TypedStorage;
 const TaskQueue = @import("./task_queue.zig").TaskQueue;
 const MetricsAggregator = @import("./metrics.zig").MetricsAggregator;
-const metricsTask = @import("./metrics.zig").metricsTask;
+const runMetricAggregator = @import("./metrics.zig").runMetricAggregator;
 
 const DEFAULT_CONFIGURATION_FILE_PATH = @import("./json_configurator.zig").DEFAULT_CONFIGURATION_FILE_PATH;
 
@@ -27,13 +27,13 @@ pub fn main() !void {
     var task_queue = TaskQueue.init(allocator);
     std.log.info("Task queue is initialized", .{});
 
-    var metrics = try MetricsAggregator.init(allocator, 4096);
+    var metrics = try MetricsAggregator.init(allocator, 4096, 64);
     defer metrics.stop();
     std.log.info("Metrics aggregator is initialized", .{});
 
     global_context.init(&storage, &task_queue, &metrics);
 
-    var metrics_thread = try std.Thread.spawn(.{}, metricsTask, .{});
+    var metrics_thread = try std.Thread.spawn(.{}, runMetricAggregator, .{});
     metrics_thread.detach();
 
     var worker_thread = try std.Thread.spawn(.{}, thread_pool.runTask, .{});

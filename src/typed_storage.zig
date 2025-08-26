@@ -5,7 +5,7 @@ const ValueType = @import("./data_types.zig").ValueType;
 const BinaryData = @import("./data_types.zig").BinaryData;
 const TypedBinaryData = @import("./data_types.zig").TypedBinaryData;
 
-const DATABASE_STORAGE = ".hodag";
+const DATABASE_STORAGE = ".sklad";
 
 pub const TypedStorage = struct {
     allocator: std.mem.Allocator,

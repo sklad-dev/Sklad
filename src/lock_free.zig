@@ -562,7 +562,7 @@ pub fn BoundedQueue(comptime T: type) type {
             if (diff == 0) {
                 const out = slot.value;
                 @atomicStore(usize, &self.head, pos + 1, .release);
-                @atomicStore(usize, &slot.seq, pos + 1 + (self.mask + 1 - 1), .release);
+                @atomicStore(usize, &slot.seq, pos + 1 + self.mask, .release);
                 return out;
             } else if (diff < 0) {
                 return null;
@@ -574,6 +574,78 @@ pub fn BoundedQueue(comptime T: type) type {
 
         pub fn isEmpty(self: *Self) bool {
             return @atomicLoad(usize, &self.head, .acquire);
+        }
+    };
+}
+
+// SPMC ring buffer
+pub fn RingBuffer(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        const Slot = struct {
+            seq: usize,
+            value: T,
+        };
+
+        allocator: std.mem.Allocator,
+        buf: []Slot,
+        mask: usize, // capacity - 1
+        head: usize,
+
+        pub fn init(allocator: std.mem.Allocator, capacity: usize) !Self {
+            if (capacity == 0 or (capacity & (capacity - 1)) != 0) {
+                return error.CapacityMustBePowerOfTwo;
+            }
+
+            const buf = try allocator.alloc(Slot, capacity);
+
+            var i: usize = 0;
+            while (i < capacity) : (i += 1) {
+                buf[i].seq = i;
+            }
+
+            return .{
+                .allocator = allocator,
+                .buf = buf,
+                .mask = capacity - 1,
+                .head = 0,
+            };
+        }
+
+        pub inline fn deinit(self: *Self) void {
+            self.allocator.free(self.buf);
+        }
+
+        pub fn push(self: *Self, value: *const T) void {
+            const pos = @atomicLoad(usize, &self.head, .monotonic);
+            const index = pos & self.mask;
+            self.buf[index].value = value.*;
+            @atomicStore(usize, &self.buf[index].seq, pos + 1, .release);
+            _ = @atomicRmw(usize, &self.head, .Add, 1, .monotonic);
+        }
+
+        pub fn readLatestOffset(self: *const Self, offset: usize) ?T {
+            const head = @atomicLoad(usize, &self.head, .acquire);
+            if (head == 0 or offset >= self.buf.len or offset >= head) return null;
+
+            const prev = head - offset - 1;
+            const index = prev & self.mask;
+            return self.readAt(prev, index);
+        }
+
+        fn readAt(self: *const Self, position: u64, index: usize) ?T {
+            const expected = position + 1;
+            const seq_pre = @atomicLoad(usize, &self.buf[index].seq, .acquire);
+
+            if (seq_pre != expected) return null;
+
+            const seq_post = @atomicLoad(usize, &self.buf[index].seq, .acquire);
+            if (seq_pre == seq_post) {
+                return self.buf[index].value;
+            }
+
+            return null;
         }
     };
 }
@@ -850,6 +922,45 @@ test "BoundedQueue circular" {
     try testing.expect(q.enqueue(7) == true);
 }
 
+test "RingBuffer" {
+    var ring_buffer = try RingBuffer(usize).init(testing.allocator, 4);
+    defer ring_buffer.deinit();
+
+    var value: usize = 0;
+
+    ring_buffer.push(&value);
+    try testing.expect(ring_buffer.buf[0].value == 0);
+    try testing.expect(ring_buffer.readLatestOffset(0).? == 0);
+    try testing.expect(ring_buffer.readLatestOffset(1) == null);
+
+    // first cycle
+    for (1..4) |i| {
+        value += 1;
+        ring_buffer.push(&value);
+        try testing.expect(ring_buffer.buf[i].value == i);
+        try testing.expect(ring_buffer.readLatestOffset(i + 1) == null);
+    }
+    try testing.expect(ring_buffer.head == 4);
+    try testing.expect(ring_buffer.readLatestOffset(ring_buffer.buf.len) == null);
+    try testing.expect(ring_buffer.readLatestOffset(ring_buffer.buf.len + 1) == null);
+
+    for (0..4) |i| {
+        try testing.expect(ring_buffer.readLatestOffset(i).? == 3 - i);
+    }
+
+    // second cycle
+    for (0..4) |i| {
+        value += 1;
+        ring_buffer.push(&value);
+        try testing.expect(ring_buffer.buf[i].value == i + ring_buffer.buf.len);
+    }
+    try testing.expect(ring_buffer.head == 8);
+
+    for (0..4) |i| {
+        try testing.expect(ring_buffer.readLatestOffset(i).? == ring_buffer.buf.len * 2 - 1 - i);
+    }
+}
+
 // fn testJob(list: *AppendDeleteList(u64, u64), thread_number: usize) void {
 //     var active_ids = std.ArrayList(u64).init(testing.allocator);
 //     defer active_ids.deinit();
@@ -1023,4 +1134,47 @@ test "BoundedQueue circular" {
 //         t.join();
 //     }
 //     should_exit.store(true, .monotonic);
+// }
+
+// var should_exit = std.atomic.Value(bool).init(false);
+
+// fn ringBufferPushTestJob(buffer: *RingBuffer(u64), thread_number: usize) void {
+//     const max_iteration = 625000;
+//     const rand = std.crypto.random;
+
+//     for (0..max_iteration) |i| {
+//         if (i % 1000 == 0) {
+//             std.debug.print("[TEST] {d}: {d}\n", .{ std.Thread.getCurrentId(), i });
+//         }
+
+//         buffer.push(&thread_number);
+//         std.time.sleep(rand.intRangeAtMost(u64, 5, 20));
+//     }
+// }
+
+// fn ringBufferReadTestJob(buffer: *RingBuffer(u64)) void {
+//     const rand = std.crypto.random;
+//     var head: usize = undefined;
+//     while (!should_exit.load(.monotonic)) {
+//         head = @atomicLoad(usize, &buffer.head, .acquire);
+//         _ = buffer.readLatestOffset(rand.intRangeAtMost(u64, 0, (if (head < buffer.mask) head else buffer.mask)));
+//     }
+// }
+
+// test "RingBuffer concurrency" {
+//     var buffer = try RingBuffer(u64).init(testing.allocator, 4096);
+//     defer buffer.deinit();
+
+//     const write_thread = try std.Thread.spawn(.{}, ringBufferPushTestJob, .{ &buffer, 0 });
+
+//     var read_threads: [8]std.Thread = undefined;
+//     for (0..8) |i| {
+//         read_threads[i] = try std.Thread.spawn(.{}, ringBufferReadTestJob, .{&buffer});
+//     }
+
+//     write_thread.join();
+//     should_exit.store(true, .monotonic);
+//     for (read_threads) |t| {
+//         t.join();
+//     }
 // }

@@ -3,7 +3,7 @@
 </p>
 
 # Sklad
-Sklad is an experimental project to build a novel HTAP data store.
+Sklad is an experimental project aiming to create a new kind of HTAP (Hybrid Transactional/Analytical Processing) data store. In the first stage, Sklad focuses on a simple, high-performance key-value store.
 
 ## 👷‍♀️ Building Sklad
 Building Sklad is very straightforward. Install Zig toolchain and run
@@ -16,20 +16,22 @@ There is a simple Python client: [sklient](https://github.com/sklad-db/sklient).
 
 ### 1. Adding a new key-value pair:
 ```
-set key value
+set <key> <value>
 ```
 
 ### 2. Retrieving a value by key:
 ```
-get key
+get <key>
 ```
 
-**Note**: The strings have to be surrounded by double quotes, e.g., this will work `get "test"` while this will fail `get test`. It is worth removing the requirement to surround single-word strings with double quotes in the future.
+**Note**: The strings have to be surrounded with single quotes, e.g., this will work `get 'test'` while this will fail `get test`. It is worth removing the requirement to surround single-word strings with the quotes in the future.
 
 Sklad is listening on TCP port 7733, awaiting incoming messages formatted as JSON strings with the following structure:
 ```
 {
-    "command": "<query string e.g. get "test">"
+    "kind": 1,
+    "query": "<query string e.g. get 'test'>",
+    "timestamp": 1234567890
 }
 ```
 
@@ -58,16 +60,19 @@ Configuration file example:
 * **sstable.bloom_bits_per_key** - (u8) how many bits to use for each stored key
 
 ## 🏗️ Architecture
-Sklad is built around an asynchronous task queue with a small pool of worker threads. This design allows the system to handle a large number of concurrent requests without overwhelming system resources.
+Sklad is built around an asynchronous task queue with a small pool of worker threads. This design allows the system to efficiently handle a large number of concurrent requests without overloading resources.
 
-Wherever possible, the project uses lock-free data structures and algorithms to minimize contention and improve concurrency, serving as a core design principle throughout the system.
+The project emphasizes lock-free data structures and algorithms wherever possible, reducing contention and improving concurrency—a core principle throughout the system.
 
-The storage layer is implemented using an LSM-tree (Log-Structured Merge Tree) to optimize write performance.
+For storage, Sklad uses an LSM-tree (Log-Structured Merge Tree) to optimize write performance and support high-throughput workloads.
 
 ### More:
 1) [SSTable file structure](docs/sstable.md)
 
 ## Todo
+### Stage 1:
+* LSM-tree compaction
+* Handle inputs of arbitrary length
+### Stage 2:
 * Value separation
 * Prefix compression
-* Optimize disk IO

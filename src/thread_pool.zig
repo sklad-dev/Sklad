@@ -5,11 +5,11 @@ const IoTask = @import("./io.zig").IO.IoTask;
 pub fn runTask() void {
     const task_queue = global_context.getTaskQueue().?;
     while (true) {
-        const task = task_queue.dequeue();
-        if (task) |t| {
-            defer t.destroy(task_queue.allocator);
+        var task = task_queue.dequeue();
+        if (task != null) {
+            defer task.?.destroy(task_queue.allocator);
 
-            t.run();
+            task.?.run();
         } else {
             std.time.sleep(std.time.ns_per_ms);
         }

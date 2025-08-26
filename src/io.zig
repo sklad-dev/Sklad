@@ -4,8 +4,9 @@ const posix = std.posix;
 const global_context = @import("./global_context.zig");
 
 const ApplicationError = @import("./constants.zig").ApplicationError;
-const CommandProcessingTask = @import("./parse.zig").CommandProcessingTask;
+const QueryProcessingTask = @import("./parse.zig").QueryProcessingTask;
 const MetricKind = @import("./metrics.zig").MetricKind;
+const MetricRequestTask = @import("./metrics.zig").MetricRequestTask;
 const Task = @import("./task_queue.zig").Task;
 
 pub const DEFAULT_PORT: u16 = 7733;
@@ -46,8 +47,15 @@ pub const IO = struct {
         };
     }
 
-    pub const Request = struct {
-        command: []u8,
+    const Request = struct {
+        kind: RequestKind,
+        query: []u8,
+        timestamp: i64,
+    };
+
+    const RequestKind = enum(u8) {
+        metric,
+        query,
     };
 
     pub const IoContext = struct {
@@ -102,24 +110,43 @@ pub const IO = struct {
                 defer request.deinit();
 
                 const task_queue = global_context.getTaskQueue();
-                var new_task = task_queue.?.allocator.create(CommandProcessingTask) catch |e| {
-                    std.log.err("Error! Failed to allocate a task to process the command: {any}", .{e});
-                    std.posix.close(self.io_context.socket);
-                    return;
-                };
-                new_task.* = CommandProcessingTask.init(
-                    task_queue.?.allocator,
-                    request.value.command.len,
-                    self.io_context,
-                ) catch |e| {
-                    std.log.err("Error! Failed to create a task to process the command: {any}", .{e});
-                    std.posix.close(self.io_context.socket);
-                    return;
-                };
 
-                @memcpy(new_task.query, request.value.command);
+                if (request.value.kind == .metric) {
+                    var metric_task = task_queue.?.allocator.create(MetricRequestTask) catch |e| {
+                        std.log.err("Error! Failed to allocate a task to process the metric request: {any}", .{e});
+                        std.posix.close(self.io_context.socket);
+                        return;
+                    };
+                    metric_task.* = MetricRequestTask.init(
+                        task_queue.?.allocator,
+                        request.value.timestamp,
+                        self.io_context,
+                    ) catch |e| {
+                        std.log.err("Error! Failed to allocate a task to process the metric request: {any}", .{e});
+                        std.posix.close(self.io_context.socket);
+                        return;
+                    };
+                    global_context.getTaskQueue().?.enqueue(metric_task.task());
+                } else if (request.value.kind == .query) {
+                    var query_task = task_queue.?.allocator.create(QueryProcessingTask) catch |e| {
+                        std.log.err("Error! Failed to allocate a task to process the query: {any}", .{e});
+                        std.posix.close(self.io_context.socket);
+                        return;
+                    };
+                    query_task.* = QueryProcessingTask.init(
+                        task_queue.?.allocator,
+                        request.value.query.len,
+                        self.io_context,
+                    ) catch |e| {
+                        std.log.err("Error! Failed to create a task to process the query: {any}", .{e});
+                        std.posix.close(self.io_context.socket);
+                        return;
+                    };
 
-                global_context.getTaskQueue().?.enqueue(new_task.task());
+                    @memcpy(query_task.query, request.value.query);
+
+                    global_context.getTaskQueue().?.enqueue(query_task.task());
+                }
             } else {
                 self.io_context.sendResponse(i8, IoError, self.allocator, -1, IoError.RequestTooLong);
             }

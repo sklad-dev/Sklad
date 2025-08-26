@@ -1,6 +1,11 @@
 const std = @import("std");
+
 const global_context = @import("./global_context.zig");
+const io = @import("./io.zig");
+
 const BoundedQueue = @import("./lock_free.zig").BoundedQueue;
+const RingBuffer = @import("./lock_free.zig").RingBuffer;
+const Task = @import("./task_queue.zig").Task;
 
 pub const MetricKind = enum(u8) {
     requestProcessingTime,
@@ -173,18 +178,69 @@ const MetricsSnapshot = struct {
     }
 };
 
+pub const SnapshotBuffer = struct {
+    allocator: std.mem.Allocator,
+    buffer: RingBuffer(MetricsSnapshot),
+
+    pub fn init(allocator: std.mem.Allocator, capacity: usize) !SnapshotBuffer {
+        return .{
+            .allocator = allocator,
+            .buffer = try RingBuffer(MetricsSnapshot).init(allocator, capacity),
+        };
+    }
+
+    pub inline fn deinit(self: *SnapshotBuffer) void {
+        self.buffer.deinit();
+    }
+
+    pub inline fn capasity(self: *SnapshotBuffer) usize {
+        return self.buffer.mask + 1;
+    }
+
+    pub fn push(self: *SnapshotBuffer, value: *const MetricsSnapshot) void {
+        self.buffer.push(value);
+    }
+
+    pub fn readUntil(self: *const SnapshotBuffer, timestamp: i64, out: []MetricsSnapshot) usize {
+        const head = @atomicLoad(usize, &self.buffer.head, .acquire);
+        if (head == 0 or out.len == 0) return 0;
+
+        var offset: usize = 1;
+        var written: usize = 0;
+
+        while (true) {
+            const snapshot = self.buffer.readLatestOffset(offset);
+            if (snapshot) |s| {
+                out[written] = s;
+                written += 1;
+
+                if (s.timestamp <= timestamp) break;
+                if (written == out.len) break;
+            } else {
+                break;
+            }
+
+            offset += 1;
+        }
+
+        return written;
+    }
+};
+
 pub const MetricsAggregator = struct {
     allocator: std.mem.Allocator,
     channel: BoundedQueue(MetricRecord),
     metrics: Metrics,
     last_snapshot: i64,
+    snapshot_buffer: SnapshotBuffer,
 
-    pub inline fn init(allocator: std.mem.Allocator, capacity: usize) !MetricsAggregator {
+    pub inline fn init(allocator: std.mem.Allocator, capacity: usize, snapshot_capacity: usize) !MetricsAggregator {
         return .{
             .allocator = allocator,
             .channel = try BoundedQueue(MetricRecord).init(allocator, capacity),
             .metrics = try Metrics.init(allocator),
             .last_snapshot = std.time.microTimestamp(),
+            .snapshot_buffer = try SnapshotBuffer.init(allocator, snapshot_capacity),
         };
     }
 
@@ -207,9 +263,7 @@ pub const MetricsAggregator = struct {
 
             if (self.tickPassed()) {
                 const snapshot = MetricsSnapshot.init(&self.metrics);
-                const message = std.json.stringifyAlloc(self.allocator, snapshot, .{}) catch unreachable;
-                defer self.allocator.free(message);
-                std.debug.print("{s}\n", .{message});
+                self.snapshot_buffer.push(&snapshot);
                 self.metrics.drop();
             }
         }
@@ -234,30 +288,69 @@ pub const MetricsAggregator = struct {
     }
 };
 
-pub fn metricsTask() void {
+pub const MetricRequestError = error{
+    MetricRequestFailed,
+};
+
+pub const MetricRequestTask = struct {
+    allocator: std.mem.Allocator,
+    io_context: io.IO.IoContext,
+    timestamp: i64,
+
+    pub fn init(allocator: std.mem.Allocator, timestamp: i64, io_context: io.IO.IoContext) !MetricRequestTask {
+        return .{
+            .allocator = allocator,
+            .io_context = io_context,
+            .timestamp = timestamp,
+        };
+    }
+
+    pub fn task(self: *MetricRequestTask) Task {
+        return .{
+            .context = self,
+            .run_fn = run,
+            .destroy_fn = destroy,
+            .enqued_at = std.time.microTimestamp(),
+        };
+    }
+
+    fn run(ptr: *anyopaque) void {
+        const self: *MetricRequestTask = @ptrCast(@alignCast(ptr));
+        const buffer: []MetricsSnapshot = self.allocator.alloc(
+            MetricsSnapshot,
+            global_context.getMetricsAggregator().?.snapshot_buffer.capasity() / 2,
+        ) catch |e| {
+            std.log.err("Error! Failed to allocate metrics snapshot buffer: {any}", .{e});
+            self.io_context.sendResponse(
+                i8,
+                MetricRequestError,
+                self.allocator,
+                -1,
+                MetricRequestError.MetricRequestFailed,
+            );
+            std.posix.close(self.io_context.socket);
+            return;
+        };
+        defer self.allocator.free(buffer);
+
+        const num_snapshpts = global_context.getMetricsAggregator().?.snapshot_buffer.readUntil(self.timestamp, buffer);
+        self.io_context.sendResponse(
+            []MetricsSnapshot,
+            MetricRequestError,
+            self.allocator,
+            buffer[0..num_snapshpts],
+            null,
+        );
+        std.posix.close(self.io_context.socket);
+    }
+
+    fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+        const self: *MetricRequestTask = @ptrCast(@alignCast(ptr));
+        allocator.destroy(self);
+    }
+};
+
+pub fn runMetricAggregator() void {
     const metrics_aggregator = global_context.getMetricsAggregator().?;
     metrics_aggregator.start();
-}
-
-// Tests
-const testing = std.testing;
-
-test "Metrics" {
-    var metrics = Metrics{
-        .allocator = testing.allocator,
-        .timestamp = std.time.microTimestamp(),
-        .request_latency = try Histogram.init(testing.allocator, &DEFAULT_LATENCY_BOUNDS),
-        .task_latency = try Histogram.init(testing.allocator, &DEFAULT_LATENCY_BOUNDS),
-        .queue_wait = try Histogram.init(testing.allocator, &DEFAULT_LATENCY_BOUNDS),
-        .memtable_count = 0,
-        .request_count = 0,
-    };
-    defer metrics.deinit();
-
-    const snapshot = MetricsSnapshot.init(&metrics);
-
-    const message = try std.json.stringifyAlloc(testing.allocator, snapshot, .{});
-    defer testing.allocator.free(message);
-
-    std.debug.print("{s}\n", .{message});
 }
