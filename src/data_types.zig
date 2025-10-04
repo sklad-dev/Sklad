@@ -70,9 +70,9 @@ pub const StorageRecord = struct {
         _ = try reader.readPositional(key[0..]);
 
         try reader.seekTo(offset);
-        reader.pos = offset + 2 + key_size;
+        reader.pos = offset + key_size + 2;
         const value_size: u16 = try utils.readNumber(u16, &reader.interface);
-        reader.pos = offset + 2 + key_size + 2;
+        reader.pos = offset + key_size + 4;
         const value: []u8 = try allocator.alloc(u8, value_size);
         _ = try reader.readPositional(value[0..]);
 
