@@ -135,7 +135,7 @@ pub const BinaryStorage = struct {
         }
         self.memtables_lock.unlock();
 
-        try self.active_memtable.wal.write(&record);
+        try self.active_memtable.wal.writeRecord(&record);
         try self.active_memtable.add(key, value);
 
         if (filled_memtable) |_| {
@@ -291,10 +291,7 @@ fn cleanup(storage: *BinaryStorage) !void {
             defer it.deinit();
             while (it.next()) |node| {
                 const file_name = node.entry.?.*;
-                std.fs.cwd().deleteFile(file_name) catch {
-                    const out = std.io.getStdOut().writer();
-                    std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
-                };
+                try std.fs.cwd().deleteFile(file_name);
             }
         }
     }
@@ -328,15 +325,20 @@ test "Restore memtable from wal" {
     global_context.loadConfiguration(&conf);
 
     var storage1 = try BinaryStorage.start(testing.allocator, ".");
-    try storage1.put(&utils.intToBytes(u8, 1), &utils.intToBytes(u8, 42));
+    try storage1.put(&utils.intToBytes(u8, 3), &utils.intToBytes(u16, 0xCFCF));
+    try storage1.put(&utils.intToBytes(u8, 4), &utils.intToBytes(u16, 0xFAFA));
     storage1.stop();
 
     var storage2 = try BinaryStorage.start(testing.allocator, ".");
     defer storage2.stop();
 
-    try testing.expect(storage2.active_memtable.size == 1);
-    const result = storage2.active_memtable.find(&utils.intToBytes(u8, 1));
-    try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u8, 42)));
+    try testing.expect(storage2.active_memtable.size == 2);
+
+    var result = storage2.active_memtable.find(&utils.intToBytes(u8, 3));
+    try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u16, 0xCFCF)));
+
+    result = storage2.active_memtable.find(&utils.intToBytes(u8, 4));
+    try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u16, 0xFAFA)));
 
     try storage2.active_memtable.wal.deleteFile();
 }

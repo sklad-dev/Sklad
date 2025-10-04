@@ -35,24 +35,28 @@ pub const Wal = struct {
         return info.size == 0;
     }
 
-    pub fn write(self: *Wal, record: *const StorageRecord) !void {
+    pub fn writeRecord(self: *Wal, record: *const StorageRecord) !void {
         if (!tryLockFor(&self.lock, 200)) return ApplicationError.ExecutionTimeout;
         defer self.lock.unlock();
 
-        try self.file.seekFromEnd(0);
-        try record.write(self.file);
+        const max_position = try self.file.getEndPos();
+        var writer = self.file.writer(&[0]u8{});
+
+        try writer.seekTo(max_position);
+        try record.write(&writer);
+    }
+
+    pub fn readRecord(self: *const Wal, allocator: std.mem.Allocator, offset: u32) !StorageRecord {
+        var buffer: [2]u8 = [_]u8{0} ** 2;
+        var reader = self.file.reader(&buffer);
+        const record = try StorageRecord.read(allocator, &reader, offset);
+        return record;
     }
 
     pub fn deleteFile(self: *const Wal) !void {
         std.fs.cwd().deleteFile(self.path) catch {
-            const out = std.io.getStdOut().writer();
-            try std.fmt.format(out, "failed to delete wal file {s}\n", .{self.path});
+            std.log.err("failed to delete wal file {s}\n", .{self.path});
         };
-    }
-
-    pub fn readRecord(self: *const Wal, allocator: std.mem.Allocator) !StorageRecord {
-        const record = try StorageRecord.read(allocator, self.file);
-        return record;
     }
 
     pub fn name(self: *const Wal) []const u8 {

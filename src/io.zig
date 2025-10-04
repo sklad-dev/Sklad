@@ -68,16 +68,21 @@ pub const IO = struct {
                 .data = data,
                 .errors = err,
             };
-            const message = std.json.stringifyAlloc(allocator, response, .{}) catch |e| {
+
+            self.doSend(T, E, allocator, &response) catch |e| {
                 std.log.err("Error! Failed send the response: {any}", .{e});
                 std.posix.close(self.socket);
                 return;
             };
-            defer allocator.free(message);
-            _ = posix.write(self.socket, message) catch |e| {
-                std.log.err("Error! Failed send the response: {any}", .{e});
-                return;
-            };
+        }
+
+        fn doSend(self: *const IoContext, comptime T: type, comptime E: type, allocator: std.mem.Allocator, response: *const Response(T, E)) !void {
+            var writer = std.Io.Writer.Allocating.init(allocator);
+            defer writer.deinit();
+
+            try std.json.Stringify.value(response, .{ .whitespace = .minified }, &writer.writer);
+            const message = try writer.toOwnedSlice();
+            _ = try posix.write(self.socket, message);
         }
     };
 

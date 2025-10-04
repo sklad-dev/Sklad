@@ -61,10 +61,10 @@ pub const SetExpression = struct {
     pairs: std.ArrayList(KeyValuePairNode),
 
     pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !SetExpression {
-        var pairs = std.ArrayList(KeyValuePairNode).init(allocator);
+        var pairs = try std.ArrayList(KeyValuePairNode).initCapacity(allocator, 4);
         while (query.peakNextToken()) |token| {
             switch (token.kind) {
-                .string_value, .numeric_value, .bool_value => try pairs.append(try KeyValuePairNode.parse(allocator, query)),
+                .string_value, .numeric_value, .bool_value => try pairs.append(allocator, try KeyValuePairNode.parse(allocator, query)),
                 .comma => {
                     _ = query.nextToken();
                     continue;
@@ -82,7 +82,7 @@ pub const SetExpression = struct {
         for (self.pairs.items) |pair| {
             pair.deinit();
         }
-        self.pairs.deinit();
+        self.pairs.deinit(self.allocator);
     }
 };
 
@@ -320,10 +320,15 @@ pub const QueryProcessingTask = struct {
     fn run(ptr: *anyopaque) void {
         const self: *QueryProcessingTask = @ptrCast(@alignCast(ptr));
 
-        var tokens = std.ArrayList(Token).init(self.allocator);
-        defer tokens.deinit();
+        var tokens = std.ArrayList(Token).initCapacity(self.allocator, 16) catch |e| {
+            std.log.err("Error! Failed to allocate a parser task: {any}", .{e});
+            self.io_context.sendResponse(i8, ApplicationError, self.allocator, -1, ApplicationError.InternalError);
+            std.posix.close(self.io_context.socket);
+            return;
+        };
+        defer tokens.deinit(self.allocator);
 
-        var lexer = lexers.kvLexer(self.query, &tokens);
+        var lexer = lexers.kvLexer(self.allocator, self.query, &tokens);
         const lex_result = lexer.lex();
         if (lex_result > 0) {
             self.io_context.sendResponse(u64, LexingError, self.allocator, lex_result, LexingError.InvalidToken);
@@ -395,11 +400,11 @@ fn valueFromStr(allocator: std.mem.Allocator, value_type: ValueType, value_str: 
 const testing = std.testing;
 
 test "Parse set query" {
-    var tokens = std.ArrayList(Token).init(testing.allocator);
-    defer tokens.deinit();
+    var tokens = try std.ArrayList(Token).initCapacity(testing.allocator, 16);
+    defer tokens.deinit(testing.allocator);
 
     const insert_query = "set 'test' 4, 'another test' 12.45, 'falsy' false";
-    var lexer = lexers.kvLexer(insert_query, &tokens);
+    var lexer = lexers.kvLexer(testing.allocator, insert_query, &tokens);
     try testing.expect(lexer.lex() == 0);
 
     var query = TokenizedQuery.init(testing.allocator, &tokens);
@@ -409,11 +414,11 @@ test "Parse set query" {
 }
 
 test "Parse get query" {
-    var tokens = std.ArrayList(Token).init(testing.allocator);
-    defer tokens.deinit();
+    var tokens = try std.ArrayList(Token).initCapacity(testing.allocator, 16);
+    defer tokens.deinit(testing.allocator);
 
     const insert_node_query = "get 'test'";
-    var lexer = lexers.kvLexer(insert_node_query, &tokens);
+    var lexer = lexers.kvLexer(testing.allocator, insert_node_query, &tokens);
     try testing.expect(lexer.lex() == 0);
 
     var query = TokenizedQuery.init(testing.allocator, &tokens);

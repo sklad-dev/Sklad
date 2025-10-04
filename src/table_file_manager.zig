@@ -146,17 +146,14 @@ fn createFiles() !void {
     }
 }
 
-fn cleanup(table_manager: *const TableFileManager) void {
+fn cleanup(table_manager: *const TableFileManager) !void {
     for (0..table_manager.files.len) |level| {
         if (table_manager.files[level]) |files| {
             var it = files.iterator();
             defer it.deinit();
             while (it.next()) |node| {
                 const file_name = node.entry.?.*;
-                std.fs.cwd().deleteFile(file_name) catch {
-                    const out = std.io.getStdOut().writer();
-                    std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
-                };
+                try std.fs.cwd().deleteFile(file_name);
             }
         }
     }
@@ -186,6 +183,6 @@ test "TableFileManager#init" {
     }
     try testing.expect(manager.level_counters[4] == 0);
 
-    cleanup(&manager);
+    try cleanup(&manager);
     manager.deinit();
 }

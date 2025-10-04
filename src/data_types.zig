@@ -38,10 +38,10 @@ pub const TypedBinaryData = struct {
     }
 
     pub inline fn toBytes(self: *const TypedBinaryData) ![]u8 {
-        const key_buffer = try self.allocator.alloc(u8, 1 + self.data.len);
-        key_buffer[0] = @intFromEnum(self.data_type);
-        @memcpy(key_buffer[1..], self.data);
-        return key_buffer;
+        const buffer = try self.allocator.alloc(u8, 1 + self.data.len);
+        buffer[0] = @intFromEnum(self.data_type);
+        @memcpy(buffer[1..], self.data);
+        return buffer;
     }
 };
 
@@ -49,11 +49,11 @@ pub const StorageRecord = struct {
     key: BinaryData,
     value: BinaryData,
 
-    pub fn write(self: *const StorageRecord, file: File) !void {
-        try utils.writeNumber(u16, file, @as(u16, @intCast(self.key.len)));
-        try file.writeAll(self.key);
-        try utils.writeNumber(u16, file, @as(u16, @intCast(self.value.len)));
-        try file.writeAll(self.value);
+    pub fn write(self: *const StorageRecord, writer: *std.fs.File.Writer) !void {
+        try utils.writeNumber(u16, &writer.interface, @as(u16, @intCast(self.key.len)));
+        try writer.interface.writeAll(self.key);
+        try utils.writeNumber(u16, &writer.interface, @as(u16, @intCast(self.value.len)));
+        try writer.interface.writeAll(self.value);
     }
 
     pub fn destroy(self: *const StorageRecord, allocator: std.mem.Allocator) void {
@@ -61,22 +61,24 @@ pub const StorageRecord = struct {
         allocator.free(self.value);
     }
 
-    pub fn read(allocator: Allocator, file: File) !StorageRecord {
-        const key_size: u16 = try utils.readNumber(u16, file);
+    pub fn read(allocator: Allocator, reader: *std.fs.File.Reader, offset: u32) !StorageRecord {
+        try reader.seekTo(offset);
+        reader.pos = offset;
+        const key_size: u16 = try utils.readNumber(u16, &reader.interface);
+        reader.pos = offset + 2;
         const key: []u8 = try allocator.alloc(u8, key_size);
-        _ = try file.read(key[0..]);
-        const value_size: u16 = try utils.readNumber(u16, file);
+        _ = try reader.readPositional(key[0..]);
+
+        try reader.seekTo(offset);
+        reader.pos = offset + 2 + key_size;
+        const value_size: u16 = try utils.readNumber(u16, &reader.interface);
+        reader.pos = offset + 2 + key_size + 2;
         const value: []u8 = try allocator.alloc(u8, value_size);
-        _ = try file.read(value[0..]);
+        _ = try reader.readPositional(value[0..]);
+
         return .{
             .key = key,
             .value = value,
         };
-    }
-
-    pub inline fn readFromOffset(allocator: Allocator, file: File, offset: u32) !StorageRecord {
-        try file.seekTo(@intCast(offset));
-        const result = try read(allocator, file);
-        return result;
     }
 };

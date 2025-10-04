@@ -40,6 +40,7 @@ var BOOLEAN_BUILTINS = [_]Builtin{
 };
 
 pub const Lexer = struct {
+    allocator: std.mem.Allocator,
     builtins: []const Builtin,
     source: []const u8,
     state: State,
@@ -59,8 +60,9 @@ pub const Lexer = struct {
         end,
     };
 
-    pub fn init(builtins: []const Builtin, source: []const u8, token_sequence: *std.ArrayList(Token)) Lexer {
+    pub fn init(allocator: std.mem.Allocator, builtins: []const Builtin, source: []const u8, token_sequence: *std.ArrayList(Token)) Lexer {
         return .{
+            .allocator = allocator,
             .builtins = builtins,
             .source = source,
             .state = .start,
@@ -142,7 +144,7 @@ pub const Lexer = struct {
 
     inline fn onStateChange(self: *Lexer, pos: u64, new_state: State) !void {
         if (self.state != .whitespace and self.state != .string_value_end and self.state != .string_value_start and pos > 0) {
-            try self.token_sequence.append(Token{
+            try self.token_sequence.append(self.allocator, Token{
                 .start = pos - self.current_token_len,
                 .end = pos,
                 .kind = try self.inferTokenKind(),
@@ -244,53 +246,53 @@ test "#isNumeric" {
 }
 
 test "kvLexer" {
-    var tokens = std.ArrayList(Token).init(testing.allocator);
-    defer tokens.deinit();
+    var tokens = try std.ArrayList(Token).initCapacity(testing.allocator, 16);
+    defer tokens.deinit(testing.allocator);
 
     const test_builtins = [_]Builtin{
         .{ .name = "test", .kind = Token.Kind.keyword },
     };
 
     const query1 = "test";
-    var lexer = Lexer.init(&test_builtins, query1, &tokens);
+    var lexer = Lexer.init(testing.allocator, &test_builtins, query1, &tokens);
     try testing.expect(lexer.lex() == 0);
     try testing.expect(tokens.items.len == 1);
     try testing.expect(tokens.items[0].kind == .keyword);
-    tokens.clearAndFree();
+    tokens.clearAndFree(testing.allocator);
 
     const query2 = "foo";
-    lexer = Lexer.init(&test_builtins, query2, &tokens);
+    lexer = Lexer.init(testing.allocator, &test_builtins, query2, &tokens);
     try testing.expect(lexer.lex() == 0);
     try testing.expect(tokens.items.len == 1);
     try testing.expect(tokens.items[0].kind == .identifier);
-    tokens.clearAndFree();
+    tokens.clearAndFree(testing.allocator);
 
     const query3 = "1234 -12.34";
-    lexer = Lexer.init(&test_builtins, query3, &tokens);
+    lexer = Lexer.init(testing.allocator, &test_builtins, query3, &tokens);
     try testing.expect(lexer.lex() == 0);
     try testing.expect(tokens.items.len == 2);
     try testing.expect(tokens.items[0].kind == .numeric_value);
     try testing.expect(tokens.items[1].kind == .numeric_value);
-    tokens.clearAndFree();
+    tokens.clearAndFree(testing.allocator);
 
     const query4 = "'test'";
-    lexer = Lexer.init(&test_builtins, query4, &tokens);
+    lexer = Lexer.init(testing.allocator, &test_builtins, query4, &tokens);
     try testing.expect(lexer.lex() == 0);
     try testing.expect(tokens.items.len == 1);
     try testing.expect(tokens.items[0].kind == .string_value);
-    tokens.clearAndFree();
+    tokens.clearAndFree(testing.allocator);
 
     const query5 = "true false";
-    lexer = Lexer.init(&test_builtins, query5, &tokens);
+    lexer = Lexer.init(testing.allocator, &test_builtins, query5, &tokens);
     try testing.expect(lexer.lex() == 0);
     try testing.expect(tokens.items.len == 2);
     try testing.expect(tokens.items[0].kind == .bool_value);
     try testing.expect(tokens.items[1].kind == .bool_value);
-    tokens.clearAndFree();
+    tokens.clearAndFree(testing.allocator);
 
     const query6 = "test 'test', 1234 foo bar, set key 'value', -12.23 -5, true";
-    lexer = Lexer.init(&test_builtins, query6, &tokens);
+    lexer = Lexer.init(testing.allocator, &test_builtins, query6, &tokens);
     try testing.expect(lexer.lex() == 0);
     try testing.expect(tokens.items.len == 15);
-    tokens.clearAndFree();
+    tokens.clearAndFree(testing.allocator);
 }

@@ -75,10 +75,7 @@ fn cleanup(typed_storage: *TypedStorage) void {
             defer it.deinit();
             while (it.next()) |node| {
                 const file_name = node.entry.?.*;
-                std.fs.cwd().deleteFile(file_name) catch {
-                    const out = std.io.getStdOut().writer();
-                    std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
-                };
+                std.fs.cwd().deleteFile(file_name) catch unreachable;
             }
         }
     }

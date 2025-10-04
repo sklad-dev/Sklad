@@ -75,7 +75,7 @@ pub const Memtable = struct {
 
         pub inline fn next(self: *Iterator) ?*Node {
             if (self.current) |c| {
-                self.current = @alignCast(@ptrCast(&self.arena.arena[c.tower[0]]));
+                self.current = @ptrCast(@alignCast(&self.arena.arena[c.tower[0]]));
                 if (c.key != null) {
                     return c;
                 }
@@ -104,8 +104,8 @@ pub const Memtable = struct {
 
         const node_and_tower_size: u64 = @sizeOf(Node) + (max_level + 1) * @sizeOf(u64);
         _ = try arena.reserve(node_and_tower_size);
-        const head_tower_ptr: [*]u64 = @alignCast(@ptrCast(arena.arena[@sizeOf(Node)..node_and_tower_size].ptr));
-        var head: *Node = @alignCast(@ptrCast(&arena.arena[0]));
+        const head_tower_ptr: [*]u64 = @ptrCast(@alignCast(arena.arena[@sizeOf(Node)..node_and_tower_size].ptr));
+        var head: *Node = @ptrCast(@alignCast(&arena.arena[0]));
         head.* = .{
             .key = null,
             .value = null,
@@ -114,8 +114,8 @@ pub const Memtable = struct {
 
         const tail_offset_start = try arena.reserve(node_and_tower_size);
         const tail_offset_end: u64 = tail_offset_start + node_and_tower_size;
-        const tail_tower_ptr: [*]u64 = @alignCast(@ptrCast(arena.arena[tail_offset_start + @sizeOf(Node) .. tail_offset_end].ptr));
-        var tail: *Node = @alignCast(@ptrCast(&arena.arena[tail_offset_start]));
+        const tail_tower_ptr: [*]u64 = @ptrCast(@alignCast(arena.arena[tail_offset_start + @sizeOf(Node) .. tail_offset_end].ptr));
+        var tail: *Node = @ptrCast(@alignCast(&arena.arena[tail_offset_start]));
         tail.* = .{
             .key = null,
             .value = null,
@@ -156,10 +156,12 @@ pub const Memtable = struct {
     }
 
     pub fn fromWal(wal: Wal, memtable: *Memtable) !bool {
-        while (wal.readRecord(memtable.allocator)) |record| {
+        var offset: u32 = 0;
+        while (wal.readRecord(memtable.allocator, offset)) |record| {
             defer record.destroy(memtable.allocator);
+            offset += @as(u32, @intCast(4 + record.key.len + record.value.len));
             if (memtable.canAdd(record.key.len + record.value.len)) {
-                try memtable.wal.write(&record);
+                try memtable.wal.writeRecord(&record);
                 try memtable.add(record.key, record.value);
             } else {
                 return true;
@@ -189,23 +191,23 @@ pub const Memtable = struct {
         while (true) {
             const found_index = self.search(key, predecessors, successors);
             if (found_index != 0) {
-                const node_to_update: *Node = @alignCast(@ptrCast(&self.arena.arena[found_index]));
+                const node_to_update: *Node = @ptrCast(@alignCast(&self.arena.arena[found_index]));
                 const value_offset = try self.arena.reserve(value.len);
-                const value_ptr: [*]u8 = @alignCast(@ptrCast(self.arena.arena[value_offset .. value_offset + value.len].ptr));
+                const value_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[value_offset .. value_offset + value.len].ptr));
                 node_to_update.*.value = value_ptr[0..value.len];
                 @memcpy(node_to_update.*.value.?, value);
                 return;
             } else {
                 if (!created) {
                     new_node_offset = try self.arena.reserve(@sizeOf(Node) + (new_node_height + 1) * @sizeOf(u64));
-                    new_node = @alignCast(@ptrCast(&self.arena.arena[new_node_offset]));
+                    new_node = @ptrCast(@alignCast(&self.arena.arena[new_node_offset]));
                     const new_node_tower_start: u64 = new_node_offset + @sizeOf(Node);
                     const new_node_tower_end: u64 = new_node_tower_start + @sizeOf(u64) * (new_node_height + 1);
-                    const new_node_tower_ptr: [*]u64 = @constCast(@alignCast(@ptrCast(self.arena.arena[new_node_tower_start..new_node_tower_end].ptr)));
+                    const new_node_tower_ptr: [*]u64 = @ptrCast(@alignCast(@constCast(self.arena.arena[new_node_tower_start..new_node_tower_end].ptr)));
 
                     const key_value_offset = try self.arena.reserve(key.len + value.len);
-                    const key_ptr: [*]u8 = @alignCast(@ptrCast(self.arena.arena[key_value_offset .. key_value_offset + key.len].ptr));
-                    const value_ptr: [*]u8 = @alignCast(@ptrCast(self.arena.arena[key_value_offset + key.len .. key_value_offset + key.len + value.len].ptr));
+                    const key_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[key_value_offset .. key_value_offset + key.len].ptr));
+                    const value_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[key_value_offset + key.len .. key_value_offset + key.len + value.len].ptr));
 
                     new_node.?.* = .{
                         .key = key_ptr[0..key.len],
@@ -223,7 +225,7 @@ pub const Memtable = struct {
                     new_node.?.tower[i] = successors[i];
                 }
 
-                var pred: *Node = @alignCast(@ptrCast(&self.arena.arena[predecessors[0]]));
+                var pred: *Node = @ptrCast(@alignCast(&self.arena.arena[predecessors[0]]));
                 if (@cmpxchgWeak(u64, &pred.tower[0], successors[0], new_node_offset, .seq_cst, .seq_cst) != null) {
                     continue;
                 }
@@ -231,7 +233,7 @@ pub const Memtable = struct {
                 if (predecessors.len > 1) {
                     for (1..new_node_height + 1) |i| {
                         while (true) {
-                            pred = @alignCast(@ptrCast(&self.arena.arena[predecessors[i]]));
+                            pred = @ptrCast(@alignCast(&self.arena.arena[predecessors[i]]));
                             if (@cmpxchgWeak(u64, &pred.tower[i], successors[i], new_node_offset, .seq_cst, .seq_cst) == null) {
                                 break;
                             }
@@ -250,7 +252,7 @@ pub const Memtable = struct {
         if (result == 0) {
             return null;
         }
-        const node: *Node = @alignCast(@ptrCast(&self.arena.arena[result]));
+        const node: *Node = @ptrCast(@alignCast(&self.arena.arena[result]));
         return node.value;
     }
 
@@ -264,10 +266,10 @@ pub const Memtable = struct {
     }
 
     pub inline fn iterator(self: *const Memtable) Iterator {
-        const head: *Node = @alignCast(@ptrCast(&self.arena.arena[0]));
+        const head: *Node = @ptrCast(@alignCast(&self.arena.arena[0]));
         return Iterator{
             .arena = &self.arena,
-            .current = @alignCast(@ptrCast(&self.arena.arena[head.tower[0]])),
+            .current = @ptrCast(@alignCast(&self.arena.arena[head.tower[0]])),
         };
     }
 
@@ -285,18 +287,18 @@ pub const Memtable = struct {
         var level: i8 = @as(i8, @intCast(self.max_level));
         while (level >= 0) : (level -= 1) {
             const l: u64 = @intCast(level);
-            pred = @alignCast(@ptrCast(&self.arena.arena[pred_offset]));
+            pred = @ptrCast(@alignCast(&self.arena.arena[pred_offset]));
             curr_offset = @atomicLoad(u64, &pred.?.tower[l], .seq_cst);
             if (curr_offset == 0) continue;
 
-            curr = @alignCast(@ptrCast(&self.arena.arena[curr_offset]));
+            curr = @ptrCast(@alignCast(&self.arena.arena[curr_offset]));
             while (true) {
                 succ_offset = @atomicLoad(u64, &curr.?.tower[l], .seq_cst);
                 if (succ_offset != 0 and self.compare_fn(curr.?.key.?, key) < 0) {
                     pred = curr;
                     pred_offset = curr_offset;
                     curr_offset = succ_offset;
-                    curr = @alignCast(@ptrCast(&self.arena.arena[succ_offset]));
+                    curr = @ptrCast(@alignCast(&self.arena.arena[succ_offset]));
                 } else {
                     break;
                 }
@@ -323,7 +325,7 @@ fn visualizeMemtable(memtable: *Memtable) void {
     std.debug.print("Memtable, current_offset = {d}\n", .{memtable.arena.currentOffset()});
     var node_offset: u64 = 0;
     while (node_offset < memtable.max_size) {
-        const curr: *Memtable.Node = @alignCast(@ptrCast(&memtable.arena.arena[node_offset]));
+        const curr: *Memtable.Node = @ptrCast(@alignCast(&memtable.arena.arena[node_offset]));
         if (curr.key) |key| {
             std.debug.print("{any} (size: {d}):\t", .{ key, key.len });
         } else {

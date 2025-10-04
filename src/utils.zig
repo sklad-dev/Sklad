@@ -10,12 +10,12 @@ pub inline fn generateId(rng: std.Random) [2]u8 {
     return buf;
 }
 
-pub inline fn writeNumber(comptime T: type, file: std.fs.File, number: T) !void {
-    try file.writer().writeInt(T, number, .big);
+pub inline fn writeNumber(comptime T: type, writer: *std.Io.Writer, number: T) !void {
+    try writer.writeInt(T, number, .big);
 }
 
-pub inline fn readNumber(comptime T: type, file: std.fs.File) !T {
-    const value: T = try file.reader().readInt(T, .big);
+pub inline fn readNumber(comptime T: type, reader: *std.Io.Reader) !T {
+    const value: T = try reader.peekInt(T, .big);
     return value;
 }
 
