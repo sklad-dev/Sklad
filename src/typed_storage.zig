@@ -56,7 +56,7 @@ fn cleanup(typed_storage: *TypedStorage) void {
     var iter = typed_storage.storage.memtables.iterator();
     defer iter.deinit();
 
-    typed_storage.storage.active_memtable.wal.deleteFile() catch {
+    typed_storage.storage.active_memtable.load(.unordered).wal.deleteFile() catch {
         const out = std.io.getStdOut().writer();
         std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
         return;
@@ -109,25 +109,25 @@ test "NodeStorage#set" {
         try buildTypedData(u8, .smallint, 2),
         try buildTypedData(u8, .smallint, 2),
     );
-    try testing.expect(test_storage.storage.active_memtable.size == 1);
+    try testing.expect(test_storage.storage.active_memtable.load(.unordered).size == 1);
 
     try test_storage.set(
         try buildTypedData(u64, .bigserial, 2),
         try buildTypedData(u64, .bigserial, 2),
     );
-    try testing.expect(test_storage.storage.active_memtable.size == 2);
+    try testing.expect(test_storage.storage.active_memtable.load(.unordered).size == 2);
 
     try test_storage.set(
         try buildTypedData(i32, .int, -5),
         try buildTypedData(i32, .int, 5),
     );
-    try testing.expect(test_storage.storage.active_memtable.size == 3);
+    try testing.expect(test_storage.storage.active_memtable.load(.unordered).size == 3);
 
     try test_storage.set(
         try buildTypedData(f32, .float, -5.5),
         try buildTypedData(f32, .float, 5.5),
     );
-    try testing.expect(test_storage.storage.active_memtable.size == 4);
+    try testing.expect(test_storage.storage.active_memtable.load(.unordered).size == 4);
 
     const data = TypedBinaryData{
         .allocator = testing.allocator,
@@ -135,7 +135,7 @@ test "NodeStorage#set" {
         .data = "Hello, world!",
     };
     try test_storage.set(data, data);
-    try testing.expect(test_storage.storage.active_memtable.size == 5);
+    try testing.expect(test_storage.storage.active_memtable.load(.unordered).size == 5);
 }
 
 test "NodeStorage#get" {

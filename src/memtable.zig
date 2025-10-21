@@ -87,6 +87,12 @@ pub const Memtable = struct {
         }
     };
 
+    pub const ReservedDataSlot = struct {
+        node_offset: u64,
+        data_offset: u64,
+        tower_height: u8,
+    };
+
     pub inline fn init(allocator: std.mem.Allocator, random: std.Random, max_size: u64, max_level: u8, wal_path: []const u8) !Memtable {
         const wal_name = try allocator.alloc(u8, wal_path.len + 9);
         const wal_id = utils.generateId(random);
@@ -157,12 +163,14 @@ pub const Memtable = struct {
 
     pub fn fromWal(wal: Wal, memtable: *Memtable) !bool {
         var offset: u32 = 0;
+        var slot: ?ReservedDataSlot = null;
         while (wal.readRecord(memtable.allocator, offset)) |record| {
             defer record.destroy(memtable.allocator);
             offset += @as(u32, @intCast(4 + record.key.len + record.value.len));
-            if (memtable.canAdd(record.key.len + record.value.len)) {
+            slot = memtable.reserve(record.key.len + record.value.len);
+            if (slot) |s| {
                 try memtable.wal.writeRecord(&record);
-                try memtable.add(record.key, record.value);
+                try memtable.add(record.key, record.value, &s);
             } else {
                 return true;
             }
@@ -171,9 +179,7 @@ pub const Memtable = struct {
         return false;
     }
 
-    pub fn add(self: *Memtable, key: BinaryData, value: BinaryData) !void {
-        const new_node_height = self.pickLevel();
-
+    pub fn add(self: *Memtable, key: BinaryData, value: BinaryData, slot: *const ReservedDataSlot) !void {
         var predecessors: []u64 = try self.allocator.alloc(u64, self.max_level + 1);
         defer self.allocator.free(predecessors);
 
@@ -187,32 +193,28 @@ pub const Memtable = struct {
 
         var created: bool = false;
         var new_node: ?*Node = null;
-        var new_node_offset: u64 = 0;
         while (true) {
             const found_index = self.search(key, predecessors, successors);
             if (found_index != 0) {
                 const node_to_update: *Node = @ptrCast(@alignCast(&self.arena.arena[found_index]));
-                const value_offset = try self.arena.reserve(value.len);
-                const value_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[value_offset .. value_offset + value.len].ptr));
+                const value_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[slot.node_offset .. slot.node_offset + value.len].ptr));
                 node_to_update.*.value = value_ptr[0..value.len];
                 @memcpy(node_to_update.*.value.?, value);
                 return;
             } else {
                 if (!created) {
-                    new_node_offset = try self.arena.reserve(@sizeOf(Node) + (new_node_height + 1) * @sizeOf(u64));
-                    new_node = @ptrCast(@alignCast(&self.arena.arena[new_node_offset]));
-                    const new_node_tower_start: u64 = new_node_offset + @sizeOf(Node);
-                    const new_node_tower_end: u64 = new_node_tower_start + @sizeOf(u64) * (new_node_height + 1);
+                    new_node = @ptrCast(@alignCast(&self.arena.arena[slot.node_offset]));
+                    const new_node_tower_start: u64 = slot.node_offset + @sizeOf(Node);
+                    const new_node_tower_end: u64 = new_node_tower_start + @sizeOf(u64) * (slot.tower_height + 1);
                     const new_node_tower_ptr: [*]u64 = @ptrCast(@alignCast(@constCast(self.arena.arena[new_node_tower_start..new_node_tower_end].ptr)));
 
-                    const key_value_offset = try self.arena.reserve(key.len + value.len);
-                    const key_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[key_value_offset .. key_value_offset + key.len].ptr));
-                    const value_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[key_value_offset + key.len .. key_value_offset + key.len + value.len].ptr));
+                    const key_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[slot.data_offset .. slot.data_offset + key.len].ptr));
+                    const value_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[slot.data_offset + key.len .. slot.data_offset + key.len + value.len].ptr));
 
                     new_node.?.* = .{
                         .key = key_ptr[0..key.len],
                         .value = value_ptr[0..value.len],
-                        .tower = new_node_tower_ptr[0 .. new_node_height + 1],
+                        .tower = new_node_tower_ptr[0 .. slot.tower_height + 1],
                     };
 
                     @memcpy(new_node.?.*.key.?, key);
@@ -221,20 +223,20 @@ pub const Memtable = struct {
                     _ = @atomicRmw(u32, &self.size, .Add, 1, .seq_cst);
                 }
 
-                for (0..new_node_height + 1) |i| {
+                for (0..slot.tower_height + 1) |i| {
                     new_node.?.tower[i] = successors[i];
                 }
 
                 var pred: *Node = @ptrCast(@alignCast(&self.arena.arena[predecessors[0]]));
-                if (@cmpxchgWeak(u64, &pred.tower[0], successors[0], new_node_offset, .seq_cst, .seq_cst) != null) {
+                if (@cmpxchgWeak(u64, &pred.tower[0], successors[0], slot.node_offset, .seq_cst, .seq_cst) != null) {
                     continue;
                 }
 
                 if (predecessors.len > 1) {
-                    for (1..new_node_height + 1) |i| {
+                    for (1..slot.tower_height + 1) |i| {
                         while (true) {
                             pred = @ptrCast(@alignCast(&self.arena.arena[predecessors[i]]));
-                            if (@cmpxchgWeak(u64, &pred.tower[i], successors[i], new_node_offset, .seq_cst, .seq_cst) == null) {
+                            if (@cmpxchgWeak(u64, &pred.tower[i], successors[i], slot.*.node_offset, .seq_cst, .seq_cst) == null) {
                                 break;
                             }
                             _ = self.search(key, predecessors, successors);
@@ -256,13 +258,17 @@ pub const Memtable = struct {
         return node.value;
     }
 
-    pub inline fn canAdd(self: *const Memtable, data_size: u64) bool {
-        const current_offset: u64 = self.arena.currentOffset();
-        const node_size: u64 = @sizeOf(Node) + @sizeOf(u64) * self.max_level;
-        var new_node_offset: u64 = ((current_offset + node_size) + @alignOf(usize) - 1) & ~@as(u64, (@alignOf(usize) - 1));
-        new_node_offset += data_size;
-        new_node_offset = (new_node_offset + @alignOf(usize) - 1) & ~@as(u64, (@alignOf(usize) - 1));
-        return new_node_offset <= self.max_size;
+    pub inline fn reserve(self: *Memtable, data_size: u64) ?ReservedDataSlot {
+        const new_node_height = self.pickLevel();
+        const node_data_size = @sizeOf(Node) + (new_node_height + 1) * @sizeOf(u64);
+        const new_node_offset = self.arena.reserve(node_data_size + data_size) catch {
+            return null;
+        };
+        return ReservedDataSlot{
+            .node_offset = new_node_offset,
+            .data_offset = new_node_offset + node_data_size,
+            .tower_height = new_node_height,
+        };
     }
 
     pub inline fn iterator(self: *const Memtable) Iterator {
@@ -354,9 +360,13 @@ test "Memtable#add" {
     const k1: [1]u8 = utils.intToBytes(u8, @as(u8, @intCast(0)));
     const v1: [1]u8 = utils.intToBytes(u8, @as(u8, @intCast(0)));
     const v2: [1]u8 = utils.intToBytes(u8, @as(u8, @intCast(11)));
-    try memtable.add(&k1, &v1);
+
+    var slot = memtable.reserve(k1.len + v1.len);
+    try memtable.add(&k1, &v1, &(slot.?));
     try testing.expect(memtable.size == 1);
-    try memtable.add(&k1, &v2);
+
+    slot = memtable.reserve(k1.len + v2.len);
+    try memtable.add(&k1, &v2, &(slot.?));
     try testing.expect(memtable.size == 1);
 
     var test_value: [1]u8 = undefined;
@@ -364,7 +374,8 @@ test "Memtable#add" {
     for (1..10) |i| {
         test_key = utils.intToBytes(u8, @as(u8, @intCast(i)));
         test_value = utils.intToBytes(u8, @as(u8, @intCast(i)));
-        try memtable.add(&test_key, &test_value);
+        slot = memtable.reserve(test_key.len + test_value.len);
+        try memtable.add(&test_key, &test_value, &(slot.?));
         // visualizeMemtable(&memtable);
         // std.debug.print("\n", .{});
     }
@@ -457,8 +468,8 @@ test "Arena" {
 // }
 
 // fn memtableTestJob(memtable: *Memtable, thread_number: usize) void {
-//     var inserted_numbers = std.ArrayList(u64).init(testing.allocator);
-//     defer inserted_numbers.deinit();
+//     var inserted_numbers = std.ArrayList(u64).initCapacity(testing.allocator, 32) catch unreachable;
+//     defer inserted_numbers.deinit(testing.allocator);
 
 //     var operation: u8 = 0;
 //     const max_iteration = 32;
@@ -467,8 +478,10 @@ test "Arena" {
 //             const data: u64 = thread_number * max_iteration + i;
 //             const key: [8]u8 = utils.intToBytes(u64, data);
 //             const value: [8]u8 = utils.intToBytes(u64, data);
-//             inserted_numbers.append(data) catch unreachable;
-//             memtable.add(&key, &value) catch |e| {
+//             inserted_numbers.append(testing.allocator, data) catch unreachable;
+
+//             const slot = memtable.reserve(key.len + value.len);
+//             memtable.add(&key, &value, &(slot.?)) catch |e| {
 //                 std.debug.print("{any}\n", .{e});
 //             };
 //         } else {

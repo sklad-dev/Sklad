@@ -24,25 +24,25 @@ const StorageRecord = data_types.StorageRecord;
 pub const BinaryStorage = struct {
     allocator: std.mem.Allocator,
     path: []const u8,
-    active_memtable: *Memtable,
-    memtables: AppendDeleteList(Pair, u64),
-    memtables_lock: std.Thread.Mutex = .{},
+    active_memtable: std.atomic.Value(*Memtable),
+    memtables: AppendDeleteList(KeyedMemtable, u64),
+    swap_in_progress: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     table_file_manager: TableFileManager,
 
     const Self = @This();
 
-    pub const Pair = struct {
+    const KeyedMemtable = struct {
         id: u64,
         memtable: *Memtable,
     };
 
-    pub fn pairCleanUp(allocator: std.mem.Allocator, pair: *Pair) void {
-        pair.memtable.destroy();
-        allocator.destroy(pair.memtable);
-        allocator.destroy(pair);
+    pub fn cleanUp(allocator: std.mem.Allocator, keyed_memtable: *KeyedMemtable) void {
+        keyed_memtable.memtable.destroy();
+        allocator.destroy(keyed_memtable.memtable);
+        allocator.destroy(keyed_memtable);
     }
 
-    fn condition(value: ?*Pair, expected: u64) bool {
+    fn condition(value: ?*KeyedMemtable, expected: u64) bool {
         return value != null and value.?.id == expected;
     }
 
@@ -105,11 +105,12 @@ pub const BinaryStorage = struct {
 
     pub fn start(allocator: std.mem.Allocator, path: []const u8) !Self {
         var table_file_manager = try TableFileManager.init(allocator, path);
+        const memtable = try restoreMemtables(&table_file_manager);
         const storage = Self{
             .allocator = allocator,
             .path = path,
-            .active_memtable = try restoreMemtables(&table_file_manager), // TODO: pass allocator and the path
-            .memtables = try AppendDeleteList(Pair, u64).init(allocator, pairCleanUp),
+            .active_memtable = std.atomic.Value(*Memtable).init(memtable),
+            .memtables = try AppendDeleteList(KeyedMemtable, u64).init(allocator, cleanUp),
             .table_file_manager = table_file_manager,
         };
         return storage;
@@ -127,16 +128,45 @@ pub const BinaryStorage = struct {
         };
 
         var filled_memtable: ?*Memtable = null;
-        var filled_memtable_key: u64 = std.crypto.random.int(u64);
-        if (!utils.tryLockFor(&self.memtables_lock, 200)) return ApplicationError.ExecutionTimeout;
-        if (!self.active_memtable.canAdd(key.len + value.len)) {
-            filled_memtable = self.active_memtable;
-            filled_memtable_key = try self.switchActiveMemtable();
-        }
-        self.memtables_lock.unlock();
+        var filled_memtable_key: u64 = undefined;
+        var memtable: *Memtable = undefined;
+        var data_slot: ?Memtable.ReservedDataSlot = null;
 
-        try self.active_memtable.wal.writeRecord(&record);
-        try self.active_memtable.add(key, value);
+        const payload_size: u64 = @intCast(key.len + value.len);
+
+        while (true) {
+            memtable = self.active_memtable.load(.acquire);
+
+            data_slot = memtable.reserve(payload_size);
+            if (data_slot) |_| break;
+
+            const was_swapping = self.swap_in_progress.swap(true, .acq_rel);
+            if (!was_swapping) {
+                const current = self.active_memtable.load(.acquire);
+                if (current == memtable and memtable.reserve(payload_size) == null) {
+                    const new_memtable = try Memtable.create(self.allocator, self.path);
+                    const memtable_key: u64 = std.crypto.random.int(u64);
+                    const keyed = try self.allocator.create(KeyedMemtable);
+                    keyed.* = .{
+                        .id = memtable_key,
+                        .memtable = current,
+                    };
+                    try self.memtables.prepend(keyed); // TODO: handle failure to prepend
+
+                    self.active_memtable.store(new_memtable, .release);
+                    filled_memtable = current;
+                    filled_memtable_key = memtable_key;
+                }
+                self.swap_in_progress.store(false, .release);
+                continue;
+            } else {
+                std.atomic.spinLoopHint();
+                continue;
+            }
+        }
+
+        try memtable.wal.writeRecord(&record);
+        try memtable.add(key, value, &(data_slot.?));
 
         if (filled_memtable) |_| {
             const task_queue = global_context.getTaskQueue();
@@ -148,12 +178,14 @@ pub const BinaryStorage = struct {
                 .storage = self,
             };
 
-            global_context.getTaskQueue().?.enqueue(flush_task.task());
+            task_queue.?.enqueue(flush_task.task());
         }
     }
 
     pub fn find(self: *Self, key: []const u8) !?[]const u8 {
-        var value = self.active_memtable.find(key);
+        const active = self.active_memtable.load(.acquire);
+
+        var value = active.find(key);
         if (value) |v| {
             const result = try self.allocator.alloc(u8, v.len);
             @memcpy(result, v);
@@ -209,21 +241,6 @@ pub const BinaryStorage = struct {
         return null;
     }
 
-    fn switchActiveMemtable(self: *Self) !u64 {
-        errdefer self.memtables_lock.unlock();
-
-        const memtable = try Memtable.create(self.allocator, self.path);
-        const memtable_key: u64 = std.crypto.random.int(u64);
-        const pair = try self.allocator.create(Pair);
-        pair.* = .{
-            .id = memtable_key,
-            .memtable = self.active_memtable,
-        };
-        try self.memtables.prepend(pair); // TODO: handle failure to prepand
-        self.active_memtable = memtable;
-        return memtable_key;
-    }
-
     fn restoreMemtables(table_file_manager: *TableFileManager) !*Memtable {
         var dir = try std.fs.cwd().openDir(table_file_manager.path, .{
             .access_sub_paths = false,
@@ -262,8 +279,9 @@ pub const BinaryStorage = struct {
     }
 
     fn deinitMemtables(self: *Self) void {
-        self.active_memtable.destroy();
-        self.allocator.destroy(self.active_memtable);
+        const active = self.active_memtable.load(.acquire);
+        active.destroy();
+        self.allocator.destroy(active);
         self.memtables.deinit();
     }
 };
@@ -274,9 +292,7 @@ const TestingConfigurator = @import("./configurator.zig").TestingConfigurator;
 const TaskQueue = @import("./task_queue.zig").TaskQueue;
 
 fn cleanup(storage: *BinaryStorage) !void {
-    try storage.active_memtable.wal.deleteFile();
-
-    try storage.active_memtable.wal.deleteFile();
+    try storage.active_memtable.load(.unordered).wal.deleteFile();
 
     var iter = storage.memtables.iterator();
     defer iter.deinit();
@@ -309,11 +325,11 @@ test "BinaryStorage#put" {
     defer test_storage.stop();
 
     try test_storage.put(&utils.intToBytes(u8, 1), &utils.intToBytes(u8, 42));
-    try testing.expect(test_storage.active_memtable.size == 1);
-    const result = test_storage.active_memtable.find(&utils.intToBytes(u8, 1));
+    try testing.expect(test_storage.active_memtable.load(.unordered).size == 1);
+    const result = test_storage.active_memtable.load(.unordered).find(&utils.intToBytes(u8, 1));
     try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u8, 42)));
 
-    try test_storage.active_memtable.wal.deleteFile();
+    try test_storage.active_memtable.load(.unordered).wal.deleteFile();
 }
 
 test "Restore memtable from wal" {
@@ -332,15 +348,15 @@ test "Restore memtable from wal" {
     var storage2 = try BinaryStorage.start(testing.allocator, ".");
     defer storage2.stop();
 
-    try testing.expect(storage2.active_memtable.size == 2);
+    try testing.expect(storage2.active_memtable.load(.unordered).size == 2);
 
-    var result = storage2.active_memtable.find(&utils.intToBytes(u8, 3));
+    var result = storage2.active_memtable.load(.unordered).find(&utils.intToBytes(u8, 3));
     try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u16, 0xCFCF)));
 
-    result = storage2.active_memtable.find(&utils.intToBytes(u8, 4));
+    result = storage2.active_memtable.load(.unordered).find(&utils.intToBytes(u8, 4));
     try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u16, 0xFAFA)));
 
-    try storage2.active_memtable.wal.deleteFile();
+    try storage2.active_memtable.load(.unordered).wal.deleteFile();
 }
 
 test "BinaryStorage#find" {

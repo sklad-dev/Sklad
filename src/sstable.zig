@@ -389,8 +389,10 @@ test "SSTable#create" {
     defer test_memtable.destroy();
 
     const test_value = utils.intToBytes(u8, 0);
+    var slot: ?Memtable.ReservedDataSlot = null;
     for (254..264) |i| {
-        try test_memtable.add(&utils.intToBytes(usize, i), &test_value);
+        slot = test_memtable.reserve(@sizeOf(usize) + test_value.len);
+        try test_memtable.add(&utils.intToBytes(usize, i), &test_value, &slot.?);
     }
 
     var test_sstable = try SSTable.create(testing.allocator, &test_memtable, TEST_SSTABLE_PATH, 52, 20);
@@ -410,8 +412,10 @@ test "SSTable#open" {
     defer test_memtable.destroy();
 
     const test_value = utils.intToBytes(u8, 0);
+    var slot: ?Memtable.ReservedDataSlot = null;
     for (254..264) |i| {
-        try test_memtable.add(&utils.intToBytes(usize, i), &test_value);
+        slot = test_memtable.reserve(@sizeOf(usize) + test_value.len);
+        try test_memtable.add(&utils.intToBytes(usize, i), &test_value, &slot.?);
     }
 
     var test_sstable = try SSTable.create(testing.allocator, &test_memtable, TEST_SSTABLE_PATH, 52, 20);
@@ -437,8 +441,10 @@ test "SSTable#find" {
     defer test_memtable.destroy();
 
     const test_value = utils.intToBytes(u8, 0);
+    var slot: ?Memtable.ReservedDataSlot = null;
     for (254..264) |i| {
-        try test_memtable.add(&utils.intToBytes(usize, i), &test_value);
+        slot = test_memtable.reserve(@sizeOf(usize) + test_value.len);
+        try test_memtable.add(&utils.intToBytes(usize, i), &test_value, &slot.?);
     }
 
     var test_sstable = try SSTable.create(testing.allocator, &test_memtable, TEST_SSTABLE_PATH, 52, 20);
