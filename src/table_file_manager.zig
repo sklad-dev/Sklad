@@ -100,8 +100,8 @@ pub const TableFileManager = struct {
 
                 const second_dot = std.mem.indexOfScalarPos(u8, file_name, first_dot + 1, '.').?;
                 const file_id: u16 = try std.fmt.parseInt(u16, file_name[first_dot + 1 .. second_dot], 10);
-                if (self.level_counters[level_id] < file_id) {
-                    self.level_counters[level_id] = file_id;
+                if (self.level_counters[level_id] <= file_id) {
+                    self.level_counters[level_id] = file_id + 1;
                 }
 
                 const file_name_copy = try self.allocator.alloc(u8, self.path.len + file_name.len + 1);
