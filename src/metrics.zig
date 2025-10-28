@@ -117,8 +117,8 @@ const Percentile = enum(u8) {
     pub fn numeratorDenominator(self: Percentile) struct { num: u64, den: u64 } {
         return switch (self) {
             .p50 => .{ .num = 50, .den = 100 },
-            .p95 => .{ .num = 50, .den = 100 },
-            .p99 => .{ .num = 50, .den = 100 },
+            .p95 => .{ .num = 95, .den = 100 },
+            .p99 => .{ .num = 99, .den = 100 },
         };
     }
 };

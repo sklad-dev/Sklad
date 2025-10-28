@@ -571,10 +571,6 @@ pub fn BoundedQueue(comptime T: type) type {
                 return null;
             }
         }
-
-        pub fn isEmpty(self: *Self) bool {
-            return @atomicLoad(usize, &self.head, .acquire);
-        }
     };
 }
 
