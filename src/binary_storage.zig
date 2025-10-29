@@ -15,6 +15,7 @@ const AppendDeleteList = @import("./lock_free.zig").AppendDeleteList;
 const Memtable = @import("./memtable.zig").Memtable;
 const MetricKind = @import("./metrics.zig").MetricKind;
 const SSTable = @import("./sstable.zig").SSTable;
+const SSTableCache = @import("./sstable_cache.zig").SSTableCache;
 const TableFileManager = @import("./table_file_manager.zig").TableFileManager;
 const Task = @import("./task_queue.zig").Task;
 const Wal = @import("./wal.zig").Wal;
@@ -28,6 +29,7 @@ pub const BinaryStorage = struct {
     memtables: AppendDeleteList(KeyedMemtable, u64),
     swap_in_progress: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     table_file_manager: TableFileManager,
+    sstable_cache: SSTableCache,
 
     const Self = @This();
 
@@ -112,6 +114,7 @@ pub const BinaryStorage = struct {
             .active_memtable = std.atomic.Value(*Memtable).init(memtable),
             .memtables = try AppendDeleteList(KeyedMemtable, u64).init(allocator, cleanUp),
             .table_file_manager = table_file_manager,
+            .sstable_cache = try SSTableCache.init(allocator, 8),
         };
         return storage;
     }
@@ -119,6 +122,7 @@ pub const BinaryStorage = struct {
     pub inline fn stop(self: *Self) void {
         self.deinitMemtables();
         self.table_file_manager.deinit();
+        self.sstable_cache.deinit();
     }
 
     pub fn put(self: *Self, key: []const u8, value: []const u8) !void {
@@ -217,10 +221,10 @@ pub const BinaryStorage = struct {
                 defer it.deinit();
                 while (it.next()) |node| {
                     const file_name = node.entry.?.*;
-                    const table = try SSTable.open(file_name, self.allocator);
-                    defer table.close(true);
+                    var handle = try self.sstable_cache.get(file_name);
+                    defer handle.release();
 
-                    if (try table.find(key)) |value| {
+                    if (try handle.table.find(key)) |value| {
                         const file_id = try self.table_file_manager.parseFileId(file_name);
                         if (file_id >= result_id) {
                             result_id = file_id;
