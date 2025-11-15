@@ -1,10 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const ArrayList = std.ArrayList;
-const AutoHashMap = std.AutoHashMap;
-const StringHashMap = std.StringHashMap;
-
 const data_types = @import("./data_types.zig");
 const global_context = @import("./global_context.zig");
 const utils = @import("./utils.zig");
@@ -12,6 +8,7 @@ const constants = @import("./constants.zig");
 
 const ApplicationError = @import("./constants.zig").ApplicationError;
 const AppendDeleteList = @import("./lock_free.zig").AppendDeleteList;
+const LoserTreeIterator = @import("./loser_tree.zig").LoserTreeIterator;
 const Memtable = @import("./memtable.zig").Memtable;
 const MetricKind = @import("./metrics.zig").MetricKind;
 const SSTable = @import("./sstable.zig").SSTable;
@@ -30,8 +27,6 @@ pub const BinaryStorage = struct {
     swap_in_progress: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     table_file_manager: TableFileManager,
     sstable_cache: SSTableCache,
-
-    const Self = @This();
 
     const KeyedMemtable = struct {
         id: u64,
@@ -105,10 +100,72 @@ pub const BinaryStorage = struct {
         }
     };
 
-    pub fn start(allocator: std.mem.Allocator, path: []const u8) !Self {
+    pub const CompactionTask = struct {
+        allocator: std.mem.Allocator,
+        storage: *BinaryStorage,
+        level: u8,
+
+        pub fn init(allocator: std.mem.Allocator, storage: *BinaryStorage, level: u8) !CompactionTask {
+            return .{
+                .allocator = allocator,
+                .storage = storage,
+                .level = level,
+            };
+        }
+
+        pub fn task(self: *CompactionTask) Task {
+            return .{
+                .context = self,
+                .run_fn = CompactionTask.run,
+                .destroy_fn = CompactionTask.destroy,
+                .enqued_at = std.time.microTimestamp(),
+            };
+        }
+
+        fn run(ptr: *anyopaque) void {
+            const self: *CompactionTask = @ptrCast(@alignCast(ptr));
+            const multiplier = global_context.getConfiguration().compactionLevelMultiplier();
+
+            var files = self.storage.table_file_manager.files[self.level];
+            if (files == null) return;
+
+            var tail_files = try self.allocator.alloc([]u8, multiplier);
+            defer self.allocator.free(tail_files);
+
+            for (files.?.iterator(), 0..) |node, i| {
+                tail_files[i % multiplier] = node.entry.?.*;
+            }
+
+            var iterators: [*]LoserTreeIterator(StorageRecord).SourceIterator = try self.allocator.alloc([]u8, multiplier);
+            defer self.allocator.free(iterators);
+
+            for (tail_files, 0..) |file_name, i| {
+                const sstable_file = try SSTable.open(self.allocator, file_name);
+                iterators[i] = sstable_file.iterator();
+            }
+
+            var loser_tree_iter = try LoserTreeIterator(StorageRecord).init(
+                self.allocator,
+                &iterators,
+                compareRecords,
+            );
+            defer loser_tree_iter.deinit();
+        }
+
+        fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+            const self: *CompactionTask = @ptrCast(@alignCast(ptr));
+            allocator.destroy(self);
+        }
+
+        fn compareRecords(a: StorageRecord, b: StorageRecord) i8 {
+            return utils.compareBitwise(a.key, b.key);
+        }
+    };
+
+    pub fn start(allocator: std.mem.Allocator, path: []const u8) !BinaryStorage {
         var table_file_manager = try TableFileManager.init(allocator, path);
         const memtable = try restoreMemtables(&table_file_manager);
-        const storage = Self{
+        const storage = BinaryStorage{
             .allocator = allocator,
             .path = path,
             .active_memtable = std.atomic.Value(*Memtable).init(memtable),
@@ -119,13 +176,13 @@ pub const BinaryStorage = struct {
         return storage;
     }
 
-    pub inline fn stop(self: *Self) void {
+    pub inline fn stop(self: *BinaryStorage) void {
         self.deinitMemtables();
         self.table_file_manager.deinit();
         self.sstable_cache.deinit();
     }
 
-    pub fn put(self: *Self, key: []const u8, value: []const u8) !void {
+    pub fn put(self: *BinaryStorage, key: []const u8, value: []const u8) !void {
         const record = StorageRecord{
             .key = key,
             .value = value,
@@ -186,7 +243,7 @@ pub const BinaryStorage = struct {
         }
     }
 
-    pub fn find(self: *Self, key: []const u8) !?[]const u8 {
+    pub fn find(self: *BinaryStorage, key: []const u8) !?[]const u8 {
         const active = self.active_memtable.load(.acquire);
 
         var value = active.find(key);
@@ -212,7 +269,7 @@ pub const BinaryStorage = struct {
         return try self.findInTables(key);
     }
 
-    fn findInTables(self: *Self, key: []const u8) !?[]const u8 {
+    fn findInTables(self: *BinaryStorage, key: []const u8) !?[]const u8 {
         var result: ?[]const u8 = null;
         var result_id: u16 = 0;
         for (0..self.table_file_manager.files.len) |level| {
@@ -282,7 +339,7 @@ pub const BinaryStorage = struct {
         return memtable;
     }
 
-    fn deinitMemtables(self: *Self) void {
+    fn deinitMemtables(self: *BinaryStorage) void {
         const active = self.active_memtable.load(.acquire);
         active.destroy();
         self.allocator.destroy(active);

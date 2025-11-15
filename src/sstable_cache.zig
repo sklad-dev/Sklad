@@ -64,7 +64,7 @@ pub const SSTableCache = struct {
             self.tryEvictOne();
         }
 
-        const table_value = try SSTable.open(path, self.allocator);
+        const table_value = try SSTable.open(self.allocator, path);
         const e = try self.allocator.create(Handle);
         errdefer self.allocator.destroy(e);
 

@@ -3,19 +3,26 @@ const std = @import("std");
 const global_context = @import("./global_context.zig");
 const utils = @import("./utils.zig");
 
-const ArrayList = std.ArrayList;
-const AutoHashMap = std.AutoHashMap;
 const AppendDeleteList = @import("./lock_free.zig").AppendDeleteList;
 const Memtable = @import("./memtable.zig").Memtable;
 const SSTable = @import("./sstable.zig").SSTable;
+const MemtableIteratorAdapter = @import("./sstable.zig").MemtableIteratorAdapter;
+const StorageRecord = @import("./data_types.zig").StorageRecord;
 
 const String = []u8;
+
+pub const CompactionState = enum(u8) {
+    None,
+    Scheduled,
+    Running,
+};
 
 pub const TableFileManager = struct {
     allocator: std.mem.Allocator,
     path: []const u8,
     files: [256]?*AppendDeleteList(String, String),
     level_counters: [256]u16,
+    compaction_flags: [256]u8,
 
     pub fn string_clean_up(allocator: std.mem.Allocator, value: *String) void {
         allocator.free(value.*);
@@ -28,6 +35,7 @@ pub const TableFileManager = struct {
             .path = path,
             .files = [_]?*AppendDeleteList(String, String){null} ** 256,
             .level_counters = [_]u16{0} ** 256,
+            .compaction_flags = [_]u8{0} ** 256,
         };
         try manager.mapSstableFiles();
         return manager;
@@ -52,10 +60,13 @@ pub const TableFileManager = struct {
             .{ self.path, max_file_id },
         );
 
+        var adapter = MemtableIteratorAdapter.init(memtable);
+        var iterator = adapter.iterator();
+
         const configurator = global_context.getConfigurator().?;
         var sstable = try SSTable.create(
             self.allocator,
-            memtable,
+            &iterator,
             file_name,
             configurator.sstableBlockSize(),
             configurator.sstableBloomBitsPerKey(),
@@ -179,7 +190,7 @@ test "TableFileManager#init" {
     try testing.expect(counter == 4);
 
     for (0..4) |i| {
-        try testing.expect(manager.level_counters[i] == 3);
+        try testing.expect(manager.level_counters[i] == 4);
     }
     try testing.expect(manager.level_counters[4] == 0);
 

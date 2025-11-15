@@ -9,6 +9,7 @@ pub const JsonConfigurator = struct {
     const Configuration = struct {
         memtable: MemtableConfiguration,
         sstable: SSTableConfiguration,
+        compaction: CompactionConfiguration,
     };
 
     const MemtableConfiguration = struct {
@@ -19,6 +20,16 @@ pub const JsonConfigurator = struct {
     const SSTableConfiguration = struct {
         block_size: u32,
         bloom_bits_per_key: u8,
+    };
+
+    const CompactionConfiguration = struct {
+        tiered: TieredCompactionConfiguration,
+    };
+
+    const TieredCompactionConfiguration = struct {
+        max_level: u8,
+        level_multiplier: u8,
+        level_threshold: u8,
     };
 
     pub fn init(allocator: std.mem.Allocator, path: []const u8) !JsonConfigurator {
@@ -43,6 +54,9 @@ pub const JsonConfigurator = struct {
             .memtable_max_level_fn = memtableMaxLevel,
             .sstable_block_size_fn = sstableBlockSize,
             .sstable_bloom_bits_per_key_fn = sstableBloomBitsPerKey,
+            .compaction_max_level_fn = compactionMaxLevel,
+            .compaction_level_multiplier_fn = compactionLevelMultiplier,
+            .compaction_level_threshold_fn = compactionLevelThreshold,
         };
     }
 
@@ -64,5 +78,20 @@ pub const JsonConfigurator = struct {
     pub fn sstableBloomBitsPerKey(ptr: *anyopaque) u8 {
         const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
         return self.config.sstable.bloom_bits_per_key;
+    }
+
+    pub fn compactionMaxLevel(ptr: *anyopaque) u8 {
+        const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
+        return self.config.compaction.tiered.max_level;
+    }
+
+    pub fn compactionLevelMultiplier(ptr: *anyopaque) u8 {
+        const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
+        return self.config.compaction.tiered.level_multiplier;
+    }
+
+    pub fn compactionLevelThreshold(ptr: *anyopaque) u8 {
+        const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
+        return self.config.compaction.tiered.level_threshold;
     }
 };
