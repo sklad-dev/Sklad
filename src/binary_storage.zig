@@ -8,8 +8,8 @@ const constants = @import("./constants.zig");
 
 const ApplicationError = @import("./constants.zig").ApplicationError;
 const AppendDeleteList = @import("./lock_free.zig").AppendDeleteList;
-const MergeIterator = @import("./loser_tree.zig").MergeIterator;
 const Memtable = @import("./memtable.zig").Memtable;
+const MergeIterator = @import("./merge_iterator.zig").MergeIterator;
 const MetricKind = @import("./metrics.zig").MetricKind;
 const SSTable = @import("./sstable.zig").SSTable;
 const SSTableCache = @import("./sstable_cache.zig").SSTableCache;
