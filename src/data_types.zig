@@ -52,7 +52,6 @@ pub const StorageRecord = struct {
     pub const Iterator = struct {
         context: *anyopaque,
         next_fn: *const fn (ctx: *anyopaque) anyerror!?StorageRecord,
-        size: u32,
 
         pub fn next(self: *Iterator) anyerror!?StorageRecord {
             return self.next_fn(self.context);

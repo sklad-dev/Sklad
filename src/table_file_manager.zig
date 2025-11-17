@@ -67,6 +67,7 @@ pub const TableFileManager = struct {
         var sstable = try SSTable.create(
             self.allocator,
             &iterator,
+            memtable.size,
             file_name,
             configurator.sstableBlockSize(),
             configurator.sstableBloomBitsPerKey(),

@@ -34,7 +34,6 @@ pub const MemtableIteratorAdapter = struct {
         return .{
             .context = self,
             .next_fn = nextFn,
-            .size = self.memtable_iterator.size,
         };
     }
 };
@@ -146,7 +145,7 @@ pub const SSTable = struct {
         }
     };
 
-    pub fn create(allocator: std.mem.Allocator, record_iterator: *StorageRecord.Iterator, path: []const u8, block_size: u32, bits_per_key: u8) !SSTable {
+    pub fn create(allocator: std.mem.Allocator, record_iterator: *StorageRecord.Iterator, records_number: u32, path: []const u8, block_size: u32, bits_per_key: u8) !SSTable {
         const file = try std.fs.cwd().createFile(path, .{
             .read = true,
             .truncate = false,
@@ -160,7 +159,7 @@ pub const SSTable = struct {
             .block_size = block_size,
             .bloom_filter = try BloomFilter.init(
                 allocator,
-                @intCast(record_iterator.size),
+                @intCast(records_number),
                 bits_per_key,
             ),
             .index_start_offset = 0,
@@ -175,7 +174,7 @@ pub const SSTable = struct {
 
         var index_records = try std.ArrayList(IndexRecord).initCapacity(allocator, 1);
         defer index_records.deinit(allocator);
-        try sstable.writeDataBlocks(&writer, record_iterator, block_size, &index_records);
+        try sstable.writeDataBlocks(&writer, record_iterator, records_number, block_size, &index_records);
         var index_offsets: []u16 = try allocator.alloc(u16, index_records.items.len);
         defer allocator.free(index_offsets);
 
@@ -212,7 +211,7 @@ pub const SSTable = struct {
         return sstable;
     }
 
-    fn writeDataBlocks(self: *SSTable, writer: *FileWriter, record_iterator: *StorageRecord.Iterator, block_size: u32, index_records: *std.ArrayList(IndexRecord)) !void {
+    fn writeDataBlocks(self: *SSTable, writer: *FileWriter, record_iterator: *StorageRecord.Iterator, records_number: u32, block_size: u32, index_records: *std.ArrayList(IndexRecord)) !void {
         var data_block = DataBlock{ .buffer = try self.allocator.alloc(u8, block_size) };
         defer self.allocator.free(data_block.buffer);
 
@@ -224,7 +223,7 @@ pub const SSTable = struct {
 
         while (try record_iterator.next()) |record| : (i += 1) {
             if (i == 0) self.min_key = record.key;
-            if (i == record_iterator.size - 1) self.max_key = record.key;
+            if (i == records_number - 1) self.max_key = record.key;
 
             self.bloom_filter.?.add(record.key);
             const record_size_with_offset: u32 = @as(u32, @intCast(record.key.len)) +
@@ -497,7 +496,7 @@ test "SSTable#create" {
     var adapter = MemtableIteratorAdapter.init(&test_memtable);
     var memtable_iterator = adapter.iterator();
 
-    var test_sstable = try SSTable.create(testing.allocator, &memtable_iterator, TEST_SSTABLE_PATH, 52, 20);
+    var test_sstable = try SSTable.create(testing.allocator, &memtable_iterator, test_memtable.size, TEST_SSTABLE_PATH, 52, 20);
     try testing.expect(test_sstable.index_start_offset == 0xd0);
     try testing.expect(test_sstable.bloom_start_offset == 0x114);
     try testing.expect(test_sstable.min_key_start_offset == 0x12e);
@@ -523,7 +522,7 @@ test "SSTable#open" {
     var adapter = MemtableIteratorAdapter.init(&test_memtable);
     var memtable_iterator = adapter.iterator();
 
-    var test_sstable = try SSTable.create(testing.allocator, &memtable_iterator, TEST_SSTABLE_PATH, 52, 20);
+    var test_sstable = try SSTable.create(testing.allocator, &memtable_iterator, test_memtable.size, TEST_SSTABLE_PATH, 52, 20);
     test_sstable.close(false);
 
     test_sstable = try SSTable.open(testing.allocator, TEST_SSTABLE_PATH);
@@ -555,7 +554,7 @@ test "SSTable#find" {
     var adapter = MemtableIteratorAdapter.init(&test_memtable);
     var memtable_iterator = adapter.iterator();
 
-    var test_sstable = try SSTable.create(testing.allocator, &memtable_iterator, TEST_SSTABLE_PATH, 52, 20);
+    var test_sstable = try SSTable.create(testing.allocator, &memtable_iterator, test_memtable.size, TEST_SSTABLE_PATH, 52, 20);
     test_sstable.close(false);
 
     test_sstable = try SSTable.open(testing.allocator, TEST_SSTABLE_PATH);
@@ -592,7 +591,7 @@ test "SSTable#iterator" {
     var adapter = MemtableIteratorAdapter.init(&test_memtable);
     var memtable_iterator = adapter.iterator();
 
-    var test_sstable = try SSTable.create(testing.allocator, &memtable_iterator, TEST_SSTABLE_PATH, 52, 20);
+    var test_sstable = try SSTable.create(testing.allocator, &memtable_iterator, test_memtable.size, TEST_SSTABLE_PATH, 52, 20);
     test_sstable.close(false);
 
     test_sstable = try SSTable.open(testing.allocator, TEST_SSTABLE_PATH);

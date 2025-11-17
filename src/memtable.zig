@@ -72,7 +72,6 @@ pub const Memtable = struct {
     pub const Iterator = struct {
         arena: *const Arena,
         current: ?*Node,
-        size: u32,
 
         pub inline fn next(self: *Iterator) ?*Node {
             if (self.current) |c| {
@@ -277,7 +276,6 @@ pub const Memtable = struct {
         return Iterator{
             .arena = &self.arena,
             .current = @ptrCast(@alignCast(&self.arena.arena[head.tower[0]])),
-            .size = self.size,
         };
     }
 
