@@ -8,7 +8,7 @@ const constants = @import("./constants.zig");
 
 const ApplicationError = @import("./constants.zig").ApplicationError;
 const AppendDeleteList = @import("./lock_free.zig").AppendDeleteList;
-const LoserTreeIterator = @import("./loser_tree.zig").LoserTreeIterator;
+const MergeIterator = @import("./loser_tree.zig").MergeIterator;
 const Memtable = @import("./memtable.zig").Memtable;
 const MetricKind = @import("./metrics.zig").MetricKind;
 const SSTable = @import("./sstable.zig").SSTable;
@@ -136,7 +136,7 @@ pub const BinaryStorage = struct {
                 tail_files[i % multiplier] = node.entry.?.*;
             }
 
-            var iterators: [*]LoserTreeIterator(StorageRecord).SourceIterator = try self.allocator.alloc([]u8, multiplier);
+            var iterators: [*]StorageRecord.Iterator = try self.allocator.alloc([]u8, multiplier);
             defer self.allocator.free(iterators);
 
             for (tail_files, 0..) |file_name, i| {
@@ -144,21 +144,16 @@ pub const BinaryStorage = struct {
                 iterators[i] = sstable_file.iterator();
             }
 
-            var loser_tree_iter = try LoserTreeIterator(StorageRecord).init(
+            var merge_iter = try MergeIterator.init(
                 self.allocator,
                 &iterators,
-                compareRecords,
             );
-            defer loser_tree_iter.deinit();
+            defer merge_iter.deinit();
         }
 
         fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
             const self: *CompactionTask = @ptrCast(@alignCast(ptr));
             allocator.destroy(self);
-        }
-
-        fn compareRecords(a: StorageRecord, b: StorageRecord) i8 {
-            return utils.compareBitwise(a.key, b.key);
         }
     };
 

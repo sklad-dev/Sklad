@@ -1,115 +1,116 @@
 const std = @import("std");
+const utils = @import("utils.zig");
+const StorageRecord = @import("data_types.zig").StorageRecord;
 
-pub fn LoserTreeIterator(comptime T: type) type {
-    return struct {
-        const Self = @This();
+pub const MergeIterator = struct {
+    const Self = @This();
 
-        pub const SourceIterator = struct {
-            context: *anyopaque,
-            next_fn: *const fn (ptr: *anyopaque) ?T,
-            current: ?T,
+    const Source = struct {
+        iterator: StorageRecord.Iterator,
+        current: ?StorageRecord,
+    };
 
-            pub fn next(self: *SourceIterator) ?T {
-                self.current = self.next_fn(self.context);
-                return self.current;
-            }
-        };
+    allocator: std.mem.Allocator,
+    tree: []i8,
+    sources: []Source,
 
-        allocator: std.mem.Allocator,
-        tree: []i8,
-        sources: []SourceIterator,
-        compare_fn: *const fn (T, T) i8,
+    pub fn init(allocator: std.mem.Allocator, iterators: []StorageRecord.Iterator) !Self {
+        // TODO: assert sources.len < 128
+        const tree = try allocator.alloc(i8, iterators.len);
+        @memset(tree, -1);
 
-        pub fn init(allocator: std.mem.Allocator, sources: []SourceIterator, compare_fn: *const fn (T, T) i8) !Self {
-            // TODO: assert sources.len < 128
-            const tree = try allocator.alloc(i8, sources.len);
-            @memset(tree, -1);
-
-            var self = Self{
-                .allocator = allocator,
-                .tree = tree,
-                .sources = sources,
-                .compare_fn = compare_fn,
+        var sources = try allocator.alloc(Source, iterators.len);
+        for (iterators, 0..) |it, i| {
+            sources[i] = .{
+                .iterator = it,
+                .current = null,
             };
-            self.buildInitialTree();
-            return self;
         }
 
-        pub fn deinit(self: *Self) void {
-            self.allocator.free(self.tree);
+        var self = Self{
+            .allocator = allocator,
+            .tree = tree,
+            .sources = sources,
+        };
+        try self.buildInitialTree();
+        return self;
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.allocator.free(self.tree);
+        self.allocator.free(self.sources);
+    }
+
+    pub fn next(self: *Self) !?StorageRecord {
+        if (self.tree[self.tree.len - 1] < 0) return null;
+
+        const winner_index: usize = @intCast(self.tree[self.tree.len - 1]);
+        const result = self.sources[winner_index].current;
+
+        self.sources[winner_index].current = try self.sources[winner_index].iterator.next();
+        self.replay(@intCast(winner_index));
+        return result;
+    }
+
+    fn buildInitialTree(self: *Self) !void {
+        for (self.sources) |*source| {
+            source.current = try source.iterator.next();
         }
 
-        pub fn next(self: *Self) ?T {
-            if (self.tree[self.tree.len - 1] < 0) return null;
-
-            const winner_index: usize = @intCast(self.tree[self.tree.len - 1]);
-            const result = self.sources[winner_index].current;
-
-            _ = self.sources[winner_index].next();
-            self.replay(@intCast(winner_index));
-            return result;
+        for (0..self.sources.len) |i| {
+            self.replay(@intCast(i));
         }
+    }
 
-        fn buildInitialTree(self: *Self) void {
-            for (self.sources) |*source| {
-                _ = source.next();
-            }
+    fn replay(self: *Self, source_index: i8) void {
+        if (source_index < 0) return;
 
-            for (0..self.sources.len) |i| {
-                self.replay(@intCast(i));
-            }
-        }
+        var current_winner = source_index;
+        var tree_index: usize = @as(usize, @intCast(source_index)) / 2;
 
-        fn replay(self: *Self, source_index: i8) void {
-            if (source_index < 0) return;
+        while (tree_index < self.tree.len - 1) {
+            const loser = self.tree[tree_index];
+            if (loser >= 0) {
+                const match_winner = self.playMatch(current_winner, loser);
 
-            var current_winner = source_index;
-            var tree_index: usize = @as(usize, @intCast(source_index)) / 2;
-
-            while (tree_index < self.tree.len - 1) {
-                const loser = self.tree[tree_index];
-                if (loser >= 0) {
-                    const match_winner = self.playMatch(current_winner, loser);
-
-                    if (match_winner == current_winner) {
-                        self.tree[tree_index] = loser;
-                    } else {
-                        self.tree[tree_index] = current_winner;
-                        current_winner = loser;
-                    }
+                if (match_winner == current_winner) {
+                    self.tree[tree_index] = loser;
                 } else {
                     self.tree[tree_index] = current_winner;
-                    return;
-                }
-                tree_index = (tree_index + self.sources.len) / 2;
-            }
-
-            const root_index = self.tree.len - 1;
-            const champion = self.tree[root_index];
-
-            if (champion >= 0) {
-                const match_winner = self.playMatch(current_winner, champion);
-                if (match_winner == current_winner) {
-                    self.tree[root_index] = current_winner;
+                    current_winner = loser;
                 }
             } else {
+                self.tree[tree_index] = current_winner;
+                return;
+            }
+            tree_index = (tree_index + self.sources.len) / 2;
+        }
+
+        const root_index = self.tree.len - 1;
+        const champion = self.tree[root_index];
+
+        if (champion >= 0) {
+            const match_winner = self.playMatch(current_winner, champion);
+            if (match_winner == current_winner) {
                 self.tree[root_index] = current_winner;
             }
+        } else {
+            self.tree[root_index] = current_winner;
         }
+    }
 
-        fn playMatch(self: *Self, idx1: i8, idx2: i8) i8 {
-            const v1 = self.sources[@intCast(idx1)].current;
-            const v2 = self.sources[@intCast(idx2)].current;
+    fn playMatch(self: *Self, idx1: i8, idx2: i8) i8 {
+        const v1 = self.sources[@intCast(idx1)].current;
+        const v2 = self.sources[@intCast(idx2)].current;
 
-            if (v1 == null and v2 == null) return idx1;
-            if (v1 == null) return idx2;
-            if (v2 == null) return idx1;
+        if (v1 == null and v2 == null) return idx1;
+        if (v1 == null) return idx2;
+        if (v2 == null) return idx1;
 
-            const result = self.compare_fn(v1.?, v2.?);
-            return if (result <= 0) idx1 else idx2;
-        }
-    };
-}
+        const result = utils.compareBitwise(v1.?.key, v2.?.key);
+        return if (result <= 0) idx1 else idx2;
+    }
+};
 
 // Tests
 const testing = std.testing;
@@ -118,38 +119,51 @@ fn TestIterator(comptime size: usize) type {
     return struct {
         const Self = @This();
 
-        data: [size]i8,
-        index: usize,
+        buf: [size * 2]u8,
+        index: usize = 0,
 
         pub fn init(data: [size]i8) Self {
-            return .{
-                .data = data,
-                .index = 0,
+            var self: Self = .{ .buf = undefined, .index = 0 };
+
+            const record_size: usize = 2;
+            var i: usize = 0;
+            while (i < size) : (i += 1) {
+                const v = data[i];
+
+                const key_bytes = utils.intToBytes(i8, v);
+                const value_bytes = utils.intToBytes(i8, v);
+
+                const offset = i * record_size;
+                self.buf[offset + 0] = key_bytes[0];
+                self.buf[offset + 1] = value_bytes[0];
+            }
+
+            return self;
+        }
+
+        pub fn next(ptr: *anyopaque) !?StorageRecord {
+            const self: *Self = @ptrCast(@alignCast(ptr));
+            if (self.index >= size) return null;
+
+            const offset = self.index * 2;
+            self.index += 1;
+
+            const key_slice = self.buf[offset .. offset + 1];
+            const value_slice = self.buf[offset + 1 .. offset + 2];
+
+            return StorageRecord{
+                .key = key_slice,
+                .value = value_slice,
             };
         }
 
-        pub fn next(ptr: *anyopaque) ?i8 {
-            const self: *Self = @ptrCast(@alignCast(ptr));
-            if (self.index >= self.data.len) {
-                return null;
-            }
-            const value = self.data[self.index];
-            self.index += 1;
-            return value;
-        }
-
-        pub fn iterator(self: *Self) LoserTreeIterator(i8).SourceIterator {
+        pub fn iterator(self: *Self) StorageRecord.Iterator {
             return .{
                 .context = self,
                 .next_fn = next,
-                .current = null,
             };
         }
     };
-}
-
-fn testCompare(a: i8, b: i8) i8 {
-    return a - b;
 }
 
 test "LoserTreeIterator#init" {
@@ -162,7 +176,7 @@ test "LoserTreeIterator#init" {
     var iter6 = TestIterator(2).init([2]i8{ 6, 14 });
     var iter7 = TestIterator(2).init([2]i8{ 7, 15 });
 
-    var source_iters: [7]LoserTreeIterator(i8).SourceIterator = .{
+    var source_iters: [7]StorageRecord.Iterator = .{
         iter1.iterator(),
         iter2.iterator(),
         iter3.iterator(),
@@ -172,7 +186,7 @@ test "LoserTreeIterator#init" {
         iter7.iterator(),
     };
 
-    var loser_tree_iter = try LoserTreeIterator(i8).init(allocator, &source_iters, testCompare);
+    var loser_tree_iter = try MergeIterator.init(allocator, &source_iters);
     defer loser_tree_iter.deinit();
 
     const expected_tree: [7]i8 = .{ 1, 3, 5, 6, 4, 2, 0 };
@@ -186,18 +200,21 @@ test "LoserTreeIterator#next" {
     var iter3 = TestIterator(4).init([4]i8{ 3, 7, 11, 15 });
     var iter4 = TestIterator(4).init([4]i8{ 4, 8, 12, 16 });
 
-    var source_iters: [4]LoserTreeIterator(i8).SourceIterator = .{
+    var source_iters: [4]StorageRecord.Iterator = .{
         iter1.iterator(),
         iter2.iterator(),
         iter3.iterator(),
         iter4.iterator(),
     };
 
-    var loser_tree_iter = try LoserTreeIterator(i8).init(allocator, &source_iters, testCompare);
+    var loser_tree_iter = try MergeIterator.init(allocator, &source_iters);
     defer loser_tree_iter.deinit();
 
     for (0..16) |i| {
-        const value = loser_tree_iter.next();
-        try std.testing.expect(@as(usize, @intCast(value.?)) == i + 1);
+        const rec = try loser_tree_iter.next();
+        try testing.expect(rec != null);
+
+        const expected: u8 = @intCast(i + 1);
+        try testing.expect(std.mem.eql(u8, rec.?.key, &utils.intToBytes(u8, expected)));
     }
 }
