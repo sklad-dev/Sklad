@@ -57,25 +57,25 @@ pub const TableFileManager = struct {
     pub fn generateFileName(self: *TableFileManager, level: u8) ![]u8 {
         const next_id = @atomicRmw(
             u16,
-            &self.level_counters[level + 1],
+            &self.level_counters[level],
             .Add,
             1,
             .seq_cst,
         );
         errdefer _ = @atomicRmw(
             u16,
-            &self.level_counters[level + 1],
+            &self.level_counters[level],
             .Sub,
             1,
             .seq_cst,
         );
 
-        const buf_size = 10 + self.path.len + utils.numDigits(u8, level + 1) + utils.numDigits(u16, next_id);
+        const buf_size = 10 + self.path.len + utils.numDigits(u8, level) + utils.numDigits(u16, next_id);
         const buf = try self.allocator.alloc(u8, buf_size);
         const file_name = try std.fmt.bufPrint(
             buf,
             "{s}/{d}.{d}.sstable",
-            .{ self.path, level + 1, next_id },
+            .{ self.path, level, next_id },
         );
 
         return file_name;
