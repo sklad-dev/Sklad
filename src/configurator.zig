@@ -4,6 +4,7 @@ pub const Configurator = struct {
     memtable_max_level_fn: *const fn (ptr: *anyopaque) u8,
     sstable_block_size_fn: *const fn (ptr: *anyopaque) u32,
     sstable_bloom_bits_per_key_fn: *const fn (ptr: *anyopaque) u8,
+    sstable_cache_size_fn: *const fn (ptr: *anyopaque) u8,
     compaction_max_level_fn: *const fn (ptr: *anyopaque) u8,
     compaction_level_multiplier_fn: *const fn (ptr: *anyopaque) u8,
     compaction_level_threshold_fn: *const fn (ptr: *anyopaque) u8,
@@ -24,6 +25,10 @@ pub const Configurator = struct {
         return self.sstable_bloom_bits_per_key_fn(self.ptr);
     }
 
+    pub fn sstableCacheSize(self: *const Configurator) u8 {
+        return self.sstable_cache_size_fn(self.ptr);
+    }
+
     pub fn compactionMaxLevel(self: *const Configurator) u8 {
         return self.compaction_max_level_fn(self.ptr);
     }
@@ -42,6 +47,7 @@ pub const TestingConfigurator = struct {
     max_level: u8,
     index_step: u32,
     bits_per_key: u8,
+    sstable_cache_size: u8,
     compaction_max_level: u8,
     compaction_level_multiplier: u8,
     compaction_level_threshold: u8,
@@ -52,6 +58,7 @@ pub const TestingConfigurator = struct {
             .max_level = 2,
             .index_step = 44,
             .bits_per_key = 20,
+            .sstable_cache_size = 8,
             .compaction_max_level = 3,
             .compaction_level_multiplier = 4,
             .compaction_level_threshold = 4,
@@ -65,6 +72,7 @@ pub const TestingConfigurator = struct {
             .memtable_max_level_fn = memtableMaxLevel,
             .sstable_block_size_fn = sstableBlockSize,
             .sstable_bloom_bits_per_key_fn = sstableBloomBitsPerKey,
+            .sstable_cache_size_fn = sstableCacheSize,
             .compaction_max_level_fn = compactionMaxLevel,
             .compaction_level_multiplier_fn = compactionLevelMultiplier,
             .compaction_level_threshold_fn = compactionLevelThreshold,
@@ -89,6 +97,11 @@ pub const TestingConfigurator = struct {
     pub fn sstableBloomBitsPerKey(ptr: *anyopaque) u8 {
         const self: *TestingConfigurator = @ptrCast(@alignCast(ptr));
         return self.bits_per_key;
+    }
+
+    pub fn sstableCacheSize(ptr: *anyopaque) u8 {
+        const self: *TestingConfigurator = @ptrCast(@alignCast(ptr));
+        return self.sstable_cache_size;
     }
 
     pub fn compactionMaxLevel(ptr: *anyopaque) u8 {

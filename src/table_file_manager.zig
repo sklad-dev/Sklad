@@ -9,7 +9,7 @@ const SSTable = @import("./sstable.zig").SSTable;
 const MemtableIteratorAdapter = @import("./sstable.zig").MemtableIteratorAdapter;
 const StorageRecord = @import("./data_types.zig").StorageRecord;
 
-const String = []u8;
+const String = []const u8;
 
 pub const CompactionState = enum(u8) {
     None,
@@ -25,6 +25,9 @@ pub const TableFileManager = struct {
     compaction_flags: [256]u8,
 
     pub fn string_clean_up(allocator: std.mem.Allocator, value: *String) void {
+        std.fs.cwd().deleteFile(value.*) catch |e| {
+            std.log.err("Failed to delete file {s}: {any}\n", .{ value.*, e });
+        };
         allocator.free(value.*);
         allocator.destroy(value);
     }
@@ -45,20 +48,41 @@ pub const TableFileManager = struct {
         self.deinitFiles();
     }
 
-    pub inline fn parseFileId(self: *TableFileManager, file_name: []u8) !u16 {
+    pub inline fn parseFileId(self: *TableFileManager, file_name: String) !u16 {
         const first_dot = std.mem.indexOfScalarPos(u8, file_name, self.path.len, '.').?;
         const second_dot = std.mem.indexOfScalarPos(u8, file_name, first_dot + 1, '.').?;
         return try std.fmt.parseInt(u16, file_name[first_dot + 1 .. second_dot], 10);
     }
 
-    pub fn flushMemtable(self: *TableFileManager, memtable: *Memtable) !void {
-        const max_file_id = @atomicRmw(u16, &self.level_counters[0], .Add, 1, .seq_cst);
-        const file_name_buf = try self.allocator.alloc(u8, self.path.len + 11 + utils.numDigits(u16, max_file_id));
-        const file_name = try std.fmt.bufPrint(
-            file_name_buf,
-            "{s}/0.{d}.sstable",
-            .{ self.path, max_file_id },
+    pub fn generateFileName(self: *TableFileManager, level: u8) ![]u8 {
+        const next_id = @atomicRmw(
+            u16,
+            &self.level_counters[level + 1],
+            .Add,
+            1,
+            .seq_cst,
         );
+        errdefer _ = @atomicRmw(
+            u16,
+            &self.level_counters[level + 1],
+            .Sub,
+            1,
+            .seq_cst,
+        );
+
+        const buf_size = 10 + self.path.len + utils.numDigits(u8, level + 1) + utils.numDigits(u16, next_id);
+        const buf = try self.allocator.alloc(u8, buf_size);
+        const file_name = try std.fmt.bufPrint(
+            buf,
+            "{s}/{d}.{d}.sstable",
+            .{ self.path, level + 1, next_id },
+        );
+
+        return file_name;
+    }
+
+    pub fn flushMemtable(self: *TableFileManager, memtable: *Memtable) !void {
+        const file_name = try self.generateFileName(0);
 
         var adapter = MemtableIteratorAdapter.init(memtable);
         var iterator = adapter.iterator();
@@ -72,15 +96,16 @@ pub const TableFileManager = struct {
             configurator.sstableBlockSize(),
             configurator.sstableBloomBitsPerKey(),
         );
-        const file_name_ptr = try self.allocator.create([]u8);
-        file_name_ptr.* = file_name;
-        try self.addFileAtLevel(0, file_name_ptr);
+        try self.addFileAtLevel(0, file_name);
 
         sstable.close(false);
         try memtable.wal.deleteFile();
     }
 
-    fn addFileAtLevel(self: *TableFileManager, level: u8, file: *[]u8) !void {
+    pub fn addFileAtLevel(self: *TableFileManager, level: u8, file: []const u8) !void {
+        const owned_file = try self.allocator.create([]const u8);
+        owned_file.* = file;
+
         var files_at_level = @atomicLoad(?*AppendDeleteList(String, String), &self.files[level], .seq_cst);
         if (files_at_level == null) {
             const level_list = try self.allocator.create(AppendDeleteList(String, String));
@@ -91,7 +116,7 @@ pub const TableFileManager = struct {
             }
         }
         files_at_level = @atomicLoad(?*AppendDeleteList(String, String), &self.files[level], .seq_cst);
-        try files_at_level.?.prepend(file);
+        try files_at_level.?.prepend(owned_file);
     }
 
     fn mapSstableFiles(self: *TableFileManager) !void {
@@ -116,15 +141,13 @@ pub const TableFileManager = struct {
                     self.level_counters[level_id] = file_id + 1;
                 }
 
-                const file_name_copy = try self.allocator.alloc(u8, self.path.len + file_name.len + 1);
+                const file_name_copy = try self.allocator.alloc(u8, self.path.len + file_name.len);
                 _ = try std.fmt.bufPrint(
                     file_name_copy,
-                    "{s}/{s}",
+                    "{s}{s}",
                     .{ self.path, file_name },
                 );
-                const file_name_ptr = try self.allocator.create([]u8);
-                file_name_ptr.* = file_name_copy;
-                try self.addFileAtLevel(level_id, file_name_ptr);
+                try self.addFileAtLevel(level_id, file_name_copy);
             }
         }
     }
@@ -195,6 +218,6 @@ test "TableFileManager#init" {
     }
     try testing.expect(manager.level_counters[4] == 0);
 
-    try cleanup(&manager);
+    // try cleanup(&manager);
     manager.deinit();
 }

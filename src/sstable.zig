@@ -14,9 +14,7 @@ pub const MemtableIteratorAdapter = struct {
     memtable_iterator: Memtable.Iterator,
 
     pub fn init(memtable: *Memtable) MemtableIteratorAdapter {
-        return .{
-            .memtable_iterator = memtable.iterator(),
-        };
+        return .{ .memtable_iterator = memtable.iterator() };
     }
 
     fn nextFn(ctx: *anyopaque) !?StorageRecord {
@@ -38,10 +36,37 @@ pub const MemtableIteratorAdapter = struct {
     }
 };
 
+pub const SSTableIteratorAdapter = struct {
+    sstable_iterator: SSTable.Iterator,
+
+    pub fn init(sstable: *SSTable) !SSTableIteratorAdapter {
+        return .{ .sstable_iterator = try sstable.iterator() };
+    }
+
+    fn nextFn(ctx: *anyopaque) !?StorageRecord {
+        const self: *SSTableIteratorAdapter = @ptrCast(@alignCast(ctx));
+        if (try self.sstable_iterator.next()) |node| {
+            return StorageRecord{
+                .key = node.key,
+                .value = node.value,
+            };
+        }
+        return null;
+    }
+
+    pub fn iterator(self: *SSTableIteratorAdapter) StorageRecord.Iterator {
+        return .{
+            .context = self,
+            .next_fn = nextFn,
+        };
+    }
+};
+
 pub const SSTable = struct {
     allocator: std.mem.Allocator,
     path: []const u8,
     file: std.fs.File,
+    records_number: u32,
     block_size: u32,
     bloom_filter: ?BloomFilter,
     index_start_offset: u32,
@@ -156,6 +181,7 @@ pub const SSTable = struct {
             .allocator = allocator,
             .path = path,
             .file = file,
+            .records_number = records_number,
             .block_size = block_size,
             .bloom_filter = try BloomFilter.init(
                 allocator,
@@ -174,7 +200,7 @@ pub const SSTable = struct {
 
         var index_records = try std.ArrayList(IndexRecord).initCapacity(allocator, 1);
         defer index_records.deinit(allocator);
-        try sstable.writeDataBlocks(&writer, record_iterator, records_number, block_size, &index_records);
+        try sstable.writeDataBlocks(&writer, record_iterator, block_size, &index_records);
         var index_offsets: []u16 = try allocator.alloc(u16, index_records.items.len);
         defer allocator.free(index_offsets);
 
@@ -206,12 +232,13 @@ pub const SSTable = struct {
         try utils.writeNumber(u32, &writer.interface, sstable.bloom_start_offset);
         try utils.writeNumber(u32, &writer.interface, sstable.min_key_start_offset);
         try utils.writeNumber(u32, &writer.interface, sstable.max_key_start_offset);
+        try utils.writeNumber(u32, &writer.interface, sstable.records_number);
         try utils.writeNumber(u32, &writer.interface, sstable.block_size);
 
         return sstable;
     }
 
-    fn writeDataBlocks(self: *SSTable, writer: *FileWriter, record_iterator: *StorageRecord.Iterator, records_number: u32, block_size: u32, index_records: *std.ArrayList(IndexRecord)) !void {
+    fn writeDataBlocks(self: *SSTable, writer: *FileWriter, record_iterator: *StorageRecord.Iterator, block_size: u32, index_records: *std.ArrayList(IndexRecord)) !void {
         var data_block = DataBlock{ .buffer = try self.allocator.alloc(u8, block_size) };
         defer self.allocator.free(data_block.buffer);
 
@@ -223,7 +250,7 @@ pub const SSTable = struct {
 
         while (try record_iterator.next()) |record| : (i += 1) {
             if (i == 0) self.min_key = record.key;
-            if (i == records_number - 1) self.max_key = record.key;
+            if (i == self.records_number - 1) self.max_key = record.key;
 
             self.bloom_filter.?.add(record.key);
             const record_size_with_offset: u32 = @as(u32, @intCast(record.key.len)) +
@@ -282,17 +309,19 @@ pub const SSTable = struct {
         try reader.seekTo(file_max_position - 4);
         const block_size = try utils.readNumber(u32, &reader.interface);
         try reader.seekTo(file_max_position - 8);
+        const records_number = try utils.readNumber(u32, &reader.interface);
+        try reader.seekTo(file_max_position - 12);
         const max_key_start_offset = try utils.readNumber(u32, &reader.interface);
 
-        try reader.seekTo(file_max_position - 12);
+        try reader.seekTo(file_max_position - 16);
         const min_key_start_offset = try utils.readNumber(u32, &reader.interface);
 
-        try reader.seekTo(file_max_position - 16);
+        try reader.seekTo(file_max_position - 20);
         const bloom_start_offset = try utils.readNumber(u32, &reader.interface);
         const bloom_size: u32 = min_key_start_offset - bloom_start_offset;
         const filter = try allocator.alloc(u8, bloom_size);
 
-        try reader.seekTo(file_max_position - 20);
+        try reader.seekTo(file_max_position - 24);
         const index_start_offset: u32 = try utils.readNumber(u32, &reader.interface);
 
         try reader.seekTo(@intCast(bloom_start_offset - 4));
@@ -311,6 +340,7 @@ pub const SSTable = struct {
             .allocator = allocator,
             .path = path,
             .file = file,
+            .records_number = records_number,
             .block_size = block_size,
             .bloom_filter = BloomFilter{
                 .allocator = allocator,
@@ -501,6 +531,7 @@ test "SSTable#create" {
     try testing.expect(test_sstable.bloom_start_offset == 0x114);
     try testing.expect(test_sstable.min_key_start_offset == 0x12e);
     try testing.expect(test_sstable.max_key_start_offset == 0x138);
+    try testing.expect(test_sstable.records_number == 10);
     try testing.expect(test_sstable.block_size == 52);
     try testing.expect(test_sstable.index_records_num == 4);
 
@@ -533,6 +564,7 @@ test "SSTable#open" {
     try testing.expect(test_sstable.bloom_start_offset == 0x114);
     try testing.expect(test_sstable.min_key_start_offset == 0x12e);
     try testing.expect(test_sstable.max_key_start_offset == 0x138);
+    try testing.expect(test_sstable.records_number == 10);
     try testing.expect(test_sstable.block_size == 52);
     try testing.expect(test_sstable.index_records_num == 4);
 

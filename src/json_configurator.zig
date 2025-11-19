@@ -9,6 +9,7 @@ pub const JsonConfigurator = struct {
     const Configuration = struct {
         memtable: MemtableConfiguration,
         sstable: SSTableConfiguration,
+        sstable_cache: SSTableCacheConfiguration,
         compaction: CompactionConfiguration,
     };
 
@@ -20,6 +21,10 @@ pub const JsonConfigurator = struct {
     const SSTableConfiguration = struct {
         block_size: u32,
         bloom_bits_per_key: u8,
+    };
+
+    const SSTableCacheConfiguration = struct {
+        size: u8,
     };
 
     const CompactionConfiguration = struct {
@@ -54,6 +59,7 @@ pub const JsonConfigurator = struct {
             .memtable_max_level_fn = memtableMaxLevel,
             .sstable_block_size_fn = sstableBlockSize,
             .sstable_bloom_bits_per_key_fn = sstableBloomBitsPerKey,
+            .sstable_cache_size_fn = sstableCacheSize,
             .compaction_max_level_fn = compactionMaxLevel,
             .compaction_level_multiplier_fn = compactionLevelMultiplier,
             .compaction_level_threshold_fn = compactionLevelThreshold,
@@ -78,6 +84,11 @@ pub const JsonConfigurator = struct {
     pub fn sstableBloomBitsPerKey(ptr: *anyopaque) u8 {
         const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
         return self.config.sstable.bloom_bits_per_key;
+    }
+
+    pub fn sstableCacheSize(ptr: *anyopaque) u8 {
+        const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
+        return self.config.sstable_cache.size;
     }
 
     pub fn compactionMaxLevel(ptr: *anyopaque) u8 {

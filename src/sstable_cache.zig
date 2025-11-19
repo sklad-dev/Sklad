@@ -124,6 +124,7 @@ pub const SSTableCache = struct {
     fn handleCleanup(allocator: std.mem.Allocator, handle: *Handle) void {
         handle.table.close(true);
         allocator.destroy(handle.table);
+        allocator.destroy(handle);
     }
 
     fn matchPtr(entry: ?*Handle, expected: *Handle) bool {
