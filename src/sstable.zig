@@ -482,7 +482,7 @@ pub const SSTable = struct {
                 return result;
             } else if (compare_result < 0) {
                 if (mid == 0) break;
-                high = mid;
+                high = mid - 1;
             } else {
                 low = mid + 1;
             }
@@ -612,9 +612,9 @@ test "SSTable#find" {
 
     const test_value = utils.intToBytes(u8, 0);
     var slot: ?Memtable.ReservedDataSlot = null;
-    for (254..264) |i| {
+    for (0..10) |i| {
         slot = test_memtable.reserve(@sizeOf(usize) + test_value.len);
-        try test_memtable.add(&utils.intToBytes(usize, i), &test_value, &slot.?);
+        try test_memtable.add(&utils.intToBytes(usize, i * 3), &test_value, &slot.?);
     }
 
     var adapter = MemtableIteratorAdapter.init(&test_memtable);
@@ -626,20 +626,24 @@ test "SSTable#find" {
         test_memtable.size,
         TEST_SSTABLE_PATH,
         block_size,
-        20,
+        0,
     );
     test_sstable.close(false);
 
     test_sstable = try SSTable.open(testing.allocator, TEST_SSTABLE_PATH);
     defer test_sstable.close(true);
 
-    const vs = [7]usize{ 254, 256, 257, 258, 259, 261, 263 };
-    for (vs) |v| {
+    for (0..30) |v| {
         const result = try test_sstable.find(&utils.intToBytes(usize, v));
         defer {
             if (result) |r| testing.allocator.free(r);
         }
-        try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u8, 0)));
+
+        if (v % 3 != 0) {
+            try testing.expect(result == null);
+        } else {
+            try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u8, 0)));
+        }
     }
 
     const nvs = [2]usize{ 200, 300 };
