@@ -45,7 +45,7 @@ pub const Configurator = struct {
 pub const TestingConfigurator = struct {
     max_size: u64,
     max_level: u8,
-    index_step: u32,
+    block_size: u32,
     bits_per_key: u8,
     sstable_cache_size: u8,
     compaction_max_level: u8,
@@ -56,10 +56,10 @@ pub const TestingConfigurator = struct {
         return .{
             .max_size = 1536,
             .max_level = 2,
-            .index_step = 44,
+            .block_size = 64,
             .bits_per_key = 20,
             .sstable_cache_size = 8,
-            .compaction_max_level = 3,
+            .compaction_max_level = 4,
             .compaction_level_multiplier = 4,
             .compaction_level_threshold = 4,
         };
@@ -91,7 +91,7 @@ pub const TestingConfigurator = struct {
 
     pub fn sstableBlockSize(ptr: *anyopaque) u32 {
         const self: *TestingConfigurator = @ptrCast(@alignCast(ptr));
-        return self.index_step;
+        return self.block_size;
     }
 
     pub fn sstableBloomBitsPerKey(ptr: *anyopaque) u8 {

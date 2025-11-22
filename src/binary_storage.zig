@@ -463,7 +463,8 @@ pub const BinaryStorage = struct {
     fn findInTables(self: *BinaryStorage, key: []const u8) !?[]const u8 {
         var result: ?[]const u8 = null;
         var result_id: u16 = 0;
-        for (0..self.table_file_manager.files.len) |level| {
+        const max_level = global_context.getConfigurator().?.compactionMaxLevel();
+        for (0..max_level) |level| {
             if (@atomicLoad(?*AppendDeleteList([]const u8, []const u8), &self.table_file_manager.files[level], .seq_cst)) |files| {
                 var it = files.iterator();
                 defer it.deinit();
@@ -486,8 +487,6 @@ pub const BinaryStorage = struct {
                 if (result) |r| {
                     return r;
                 }
-            } else {
-                break;
             }
         }
         return null;
@@ -573,6 +572,9 @@ test "BinaryStorage#put" {
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 
+    try @import("./worker.zig").initWorkerContext(testing.allocator, conf.sstableBlockSize());
+    defer @import("./worker.zig").deinitWorkerContext();
+
     var test_storage = try BinaryStorage.start(testing.allocator, ".");
     defer test_storage.stop();
 
@@ -591,6 +593,9 @@ test "Restore memtable from wal" {
     configurator.* = TestingConfigurator.init();
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
+
+    try @import("./worker.zig").initWorkerContext(testing.allocator, conf.sstableBlockSize());
+    defer @import("./worker.zig").deinitWorkerContext();
 
     var storage1 = try BinaryStorage.start(testing.allocator, ".");
     try storage1.put(&utils.intToBytes(u8, 3), &utils.intToBytes(u16, 0xCFCF));
@@ -618,6 +623,9 @@ test "BinaryStorage#find" {
     configurator.* = TestingConfigurator.init();
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
+
+    try @import("./worker.zig").initWorkerContext(testing.allocator, conf.sstableBlockSize());
+    defer @import("./worker.zig").deinitWorkerContext();
 
     var task_queue = TaskQueue.init(testing.allocator);
     global_context.initTaskQueueForTests(&task_queue);
@@ -658,6 +666,9 @@ test "BinaryStorage#find returns the newest value" {
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 
+    try @import("./worker.zig").initWorkerContext(testing.allocator, conf.sstableBlockSize());
+    defer @import("./worker.zig").deinitWorkerContext();
+
     var task_queue = TaskQueue.init(testing.allocator);
     global_context.initTaskQueueForTests(&task_queue);
     defer global_context.cleanAndDeinitTaskQueueForTests();
@@ -682,6 +693,95 @@ test "BinaryStorage#find returns the newest value" {
     const r2 = try storage.find(&utils.intToBytes(u8, @as(u8, @intCast(5))));
     defer testing.allocator.free(r2.?);
     try testing.expect(std.mem.eql(u8, r2.?, &utils.intToBytes(u8, 10)));
+
+    try cleanup(&storage);
+}
+
+test "CompactionTask" {
+    const block_size: u32 = 64;
+    try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
+    defer @import("./worker.zig").deinitWorkerContext();
+
+    const MemtableIteratorAdapter = @import("./sstable.zig").MemtableIteratorAdapter;
+
+    for (0..5) |i| {
+        var test_memtable = try Memtable.init(testing.allocator, std.crypto.random, 2048, 8, "./");
+        defer test_memtable.destroy();
+
+        const test_value = utils.intToBytes(u8, 255);
+        var slot: ?Memtable.ReservedDataSlot = null;
+        for (0..10) |j| {
+            slot = test_memtable.reserve(@sizeOf(usize) + test_value.len);
+            try test_memtable.add(&utils.intToBytes(usize, j + i * 10), &test_value, &slot.?);
+        }
+
+        var adapter = MemtableIteratorAdapter.init(&test_memtable);
+        var memtable_iterator = adapter.iterator();
+
+        const file_name = try std.fmt.allocPrint(testing.allocator, "0.{d}.sstable", .{i});
+        defer testing.allocator.free(file_name);
+
+        var test_sstable = try SSTable.create(
+            testing.allocator,
+            &memtable_iterator,
+            test_memtable.size,
+            file_name,
+            block_size,
+            20,
+        );
+        test_sstable.close(false);
+        try test_memtable.wal.deleteFile();
+    }
+
+    defer global_context.deinitConfigurationForTests();
+
+    var configurator = try testing.allocator.create(TestingConfigurator);
+    configurator.* = TestingConfigurator.init();
+    var conf = configurator.configurator();
+    global_context.loadConfiguration(&conf);
+
+    var task_queue = TaskQueue.init(testing.allocator);
+    global_context.initTaskQueueForTests(&task_queue);
+    defer global_context.cleanAndDeinitTaskQueueForTests();
+
+    var storage = try BinaryStorage.start(testing.allocator, ".");
+    defer storage.stop();
+
+    for (0..50) |i| {
+        const r = try storage.find(&utils.intToBytes(usize, i));
+        defer testing.allocator.free(r.?);
+        try testing.expect(std.mem.eql(u8, r.?, &utils.intToBytes(u8, 255)));
+    }
+
+    _ = @cmpxchgWeak(
+        u8,
+        &storage.table_file_manager.compaction_flags[0],
+        @intFromEnum(CompactionState.None),
+        @intFromEnum(CompactionState.Scheduled),
+        .seq_cst,
+        .seq_cst,
+    );
+    var compaction_task = BinaryStorage.CompactionTask{
+        .allocator = testing.allocator,
+        .storage = &storage,
+        .level = 0,
+    };
+    compaction_task.task().run_fn(&compaction_task);
+
+    for (0..50) |i| {
+        const r = try storage.find(&utils.intToBytes(usize, i));
+        try testing.expect(std.mem.eql(u8, r.?, &utils.intToBytes(u8, 255)));
+        testing.allocator.free(r.?);
+    }
+
+    var test_sstable = try SSTable.open(testing.allocator, "./1.0.sstable");
+    defer test_sstable.close(true);
+
+    try testing.expect(std.mem.eql(u8, test_sstable.min_key.?, &utils.intToBytes(usize, 0)));
+    try testing.expect(std.mem.eql(u8, test_sstable.max_key.?, &utils.intToBytes(usize, 39)));
+    try testing.expect(test_sstable.records_number == 40);
+    try testing.expect(test_sstable.block_size == block_size);
+    try testing.expect(test_sstable.index_records_num == 10);
 
     try cleanup(&storage);
 }

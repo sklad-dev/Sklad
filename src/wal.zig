@@ -3,6 +3,7 @@ const data_types = @import("./data_types.zig");
 
 const ApplicationError = @import("./constants.zig").ApplicationError;
 const tryLockFor = @import("./utils.zig").tryLockFor;
+const getWorkerContext = @import("./worker.zig").getWorkerContext;
 
 const StorageRecord = data_types.StorageRecord;
 
@@ -47,8 +48,7 @@ pub const Wal = struct {
     }
 
     pub fn readRecord(self: *const Wal, allocator: std.mem.Allocator, offset: u32) !StorageRecord {
-        var buffer: [2]u8 = [_]u8{0} ** 2;
-        var reader = self.file.reader(&buffer);
+        var reader = self.file.reader(getWorkerContext().?.reader_buffer[0..2]);
         const record = try StorageRecord.read(allocator, &reader, offset);
         return record;
     }

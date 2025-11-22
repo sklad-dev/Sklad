@@ -5,14 +5,49 @@ const StorageRecord = @import("data_types.zig").StorageRecord;
 pub const MergeIterator = struct {
     const Self = @This();
 
+    const RecordBuffer = struct {
+        record: ?StorageRecord,
+        key: std.ArrayList(u8),
+        value: std.ArrayList(u8),
+
+        pub fn init(allocator: std.mem.Allocator) !RecordBuffer {
+            return RecordBuffer{
+                .record = null,
+                .key = try std.ArrayList(u8).initCapacity(allocator, 16),
+                .value = try std.ArrayList(u8).initCapacity(allocator, 16),
+            };
+        }
+
+        pub inline fn storeRecord(self: *RecordBuffer, allocator: std.mem.Allocator, record: ?StorageRecord) !void {
+            if (record) |r| {
+                self.key.clearRetainingCapacity();
+                self.value.clearRetainingCapacity();
+                try self.key.appendSlice(allocator, r.key);
+                try self.value.appendSlice(allocator, r.value);
+                self.record = .{
+                    .key = self.key.items,
+                    .value = self.value.items,
+                };
+            } else {
+                self.record = null;
+            }
+        }
+
+        pub inline fn deinit(self: *RecordBuffer, allocator: std.mem.Allocator) void {
+            self.key.deinit(allocator);
+            self.value.deinit(allocator);
+        }
+    };
+
     const Source = struct {
         iterator: StorageRecord.Iterator,
-        current: ?StorageRecord,
+        current: RecordBuffer,
     };
 
     allocator: std.mem.Allocator,
     tree: []i8,
     sources: []Source,
+    current: RecordBuffer,
 
     pub fn init(allocator: std.mem.Allocator, iterators: []StorageRecord.Iterator) !Self {
         // TODO: assert sources.len < 128
@@ -23,7 +58,7 @@ pub const MergeIterator = struct {
         for (iterators, 0..) |it, i| {
             sources[i] = .{
                 .iterator = it,
-                .current = null,
+                .current = try RecordBuffer.init(allocator),
             };
         }
 
@@ -31,30 +66,35 @@ pub const MergeIterator = struct {
             .allocator = allocator,
             .tree = tree,
             .sources = sources,
+            .current = try RecordBuffer.init(allocator),
         };
         try self.buildInitialTree();
         return self;
     }
 
     pub fn deinit(self: *Self) void {
+        for (self.sources) |*source| {
+            source.current.deinit(self.allocator);
+        }
         self.allocator.free(self.tree);
         self.allocator.free(self.sources);
+        self.current.deinit(self.allocator);
     }
 
     pub fn next(self: *Self) !?StorageRecord {
         if (self.tree[self.tree.len - 1] < 0) return null;
 
         const winner_index: usize = @intCast(self.tree[self.tree.len - 1]);
-        const result = self.sources[winner_index].current;
+        try self.current.storeRecord(self.allocator, self.sources[winner_index].current.record);
 
-        self.sources[winner_index].current = try self.sources[winner_index].iterator.next();
+        try self.sources[winner_index].current.storeRecord(self.allocator, try self.sources[winner_index].iterator.next());
         self.replay(@intCast(winner_index));
-        return result;
+        return self.current.record;
     }
 
     fn buildInitialTree(self: *Self) !void {
         for (self.sources) |*source| {
-            source.current = try source.iterator.next();
+            try source.current.storeRecord(self.allocator, try source.iterator.next());
         }
 
         for (0..self.sources.len) |i| {
@@ -100,8 +140,8 @@ pub const MergeIterator = struct {
     }
 
     fn playMatch(self: *Self, idx1: i8, idx2: i8) i8 {
-        const v1 = self.sources[@intCast(idx1)].current;
-        const v2 = self.sources[@intCast(idx2)].current;
+        const v1 = self.sources[@intCast(idx1)].current.record;
+        const v2 = self.sources[@intCast(idx2)].current.record;
 
         if (v1 == null and v2 == null) return idx1;
         if (v1 == null) return idx2;
@@ -166,7 +206,7 @@ fn TestIterator(comptime size: usize) type {
     };
 }
 
-test "LoserTreeIterator#init" {
+test "MergeIterator#init" {
     const allocator = std.testing.allocator;
     var iter1 = TestIterator(2).init([2]i8{ 1, 9 });
     var iter2 = TestIterator(2).init([2]i8{ 2, 10 });
@@ -193,7 +233,7 @@ test "LoserTreeIterator#init" {
     try std.testing.expect(std.mem.eql(i8, loser_tree_iter.tree, &expected_tree));
 }
 
-test "LoserTreeIterator#next" {
+test "MergeIterator#next" {
     const allocator = std.testing.allocator;
     var iter1 = TestIterator(4).init([4]i8{ 1, 5, 9, 13 });
     var iter2 = TestIterator(4).init([4]i8{ 2, 6, 10, 14 });
@@ -213,8 +253,7 @@ test "LoserTreeIterator#next" {
     for (0..16) |i| {
         const rec = try loser_tree_iter.next();
         try testing.expect(rec != null);
-
-        const expected: u8 = @intCast(i + 1);
-        try testing.expect(std.mem.eql(u8, rec.?.key, &utils.intToBytes(u8, expected)));
+        try testing.expect(utils.intFromBytes(i8, rec.?.key, 0) == @as(i8, @intCast(i + 1)));
     }
+    try testing.expect(try loser_tree_iter.next() == null);
 }
