@@ -59,10 +59,8 @@ pub const StorageRecord = struct {
     };
 
     pub fn write(self: *const StorageRecord, writer: *std.fs.File.Writer) !void {
-        try utils.writeNumber(u16, &writer.interface, @as(u16, @intCast(self.key.len)));
-        try writer.interface.writeAll(self.key);
-        try utils.writeNumber(u16, &writer.interface, @as(u16, @intCast(self.value.len)));
-        try writer.interface.writeAll(self.value);
+        try utils.writeSizedValue(writer, self.key);
+        try utils.writeSizedValue(writer, self.value);
     }
 
     pub fn destroy(self: *const StorageRecord, allocator: std.mem.Allocator) void {

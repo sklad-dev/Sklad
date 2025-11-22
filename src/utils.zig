@@ -1,4 +1,5 @@
 const std = @import("std");
+const FileWriter = std.fs.File.Writer;
 
 pub const SupportingError = error{
     NotImplemented,
@@ -17,6 +18,11 @@ pub inline fn writeNumber(comptime T: type, writer: *std.Io.Writer, number: T) !
 pub inline fn readNumber(comptime T: type, reader: *std.Io.Reader) !T {
     const value: T = try reader.peekInt(T, .big);
     return value;
+}
+
+pub inline fn writeSizedValue(writer: *FileWriter, value: []const u8) !void {
+    try writeNumber(u16, &writer.interface, @as(u16, @intCast(value.len)));
+    try writer.interface.writeAll(value);
 }
 
 pub inline fn intFromBytes(comptime T: type, buffer: []const u8, offset: usize) T {
