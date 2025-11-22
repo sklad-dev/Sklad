@@ -22,6 +22,7 @@ pub const TableFileManager = struct {
     path: []const u8,
     files: [256]?*AppendDeleteList(String, String),
     level_counters: [256]u16,
+    max_file_id_per_level: [256]u64,
     compaction_flags: [256]u8,
 
     pub fn string_clean_up(allocator: std.mem.Allocator, value: *String) void {
@@ -38,6 +39,7 @@ pub const TableFileManager = struct {
             .path = path,
             .files = [_]?*AppendDeleteList(String, String){null} ** 256,
             .level_counters = [_]u16{0} ** 256,
+            .max_file_id_per_level = [_]u64{0} ** 256,
             .compaction_flags = [_]u8{0} ** 256,
         };
         try manager.mapSstableFiles();
@@ -48,29 +50,29 @@ pub const TableFileManager = struct {
         self.deinitFiles();
     }
 
-    pub inline fn parseFileId(self: *TableFileManager, file_name: String) !u16 {
+    pub inline fn parseFileId(self: *TableFileManager, file_name: String) !u64 {
         const first_dot = std.mem.indexOfScalarPos(u8, file_name, self.path.len, '.').?;
         const second_dot = std.mem.indexOfScalarPos(u8, file_name, first_dot + 1, '.').?;
-        return try std.fmt.parseInt(u16, file_name[first_dot + 1 .. second_dot], 10);
+        return try std.fmt.parseInt(u64, file_name[first_dot + 1 .. second_dot], 10);
     }
 
     pub fn generateFileName(self: *TableFileManager, level: u8) ![]u8 {
         const next_id = @atomicRmw(
-            u16,
-            &self.level_counters[level],
+            u64,
+            &self.max_file_id_per_level[level],
             .Add,
             1,
             .seq_cst,
         );
         errdefer _ = @atomicRmw(
-            u16,
-            &self.level_counters[level],
+            u64,
+            &self.max_file_id_per_level[level],
             .Sub,
             1,
             .seq_cst,
         );
 
-        const buf_size = 10 + self.path.len + utils.numDigits(u8, level) + utils.numDigits(u16, next_id);
+        const buf_size = 10 + self.path.len + utils.numDigits(u8, level) + utils.numDigits(u64, next_id);
         const buf = try self.allocator.alloc(u8, buf_size);
         const file_name = try std.fmt.bufPrint(
             buf,
@@ -95,6 +97,14 @@ pub const TableFileManager = struct {
             file_name,
             configurator.sstableBlockSize(),
             configurator.sstableBloomBitsPerKey(),
+        );
+
+        _ = @atomicRmw(
+            u16,
+            &self.level_counters[0],
+            .Add,
+            1,
+            .seq_cst,
         );
         try self.addFileAtLevel(0, file_name);
 
@@ -136,9 +146,9 @@ pub const TableFileManager = struct {
                 const level_id: u8 = try std.fmt.parseInt(u8, file_name[0..first_dot], 10);
 
                 const second_dot = std.mem.indexOfScalarPos(u8, file_name, first_dot + 1, '.').?;
-                const file_id: u16 = try std.fmt.parseInt(u16, file_name[first_dot + 1 .. second_dot], 10);
-                if (self.level_counters[level_id] <= file_id) {
-                    self.level_counters[level_id] = file_id + 1;
+                const file_id: u64 = try std.fmt.parseInt(u64, file_name[first_dot + 1 .. second_dot], 10);
+                if (self.max_file_id_per_level[level_id] <= file_id) {
+                    self.max_file_id_per_level[level_id] = file_id + 1;
                 }
 
                 const file_name_copy = try self.allocator.alloc(u8, self.path.len + file_name.len + 1);
@@ -147,6 +157,7 @@ pub const TableFileManager = struct {
                     "{s}/{s}",
                     .{ self.path, file_name },
                 );
+                self.level_counters[level_id] += 1;
                 try self.addFileAtLevel(level_id, file_name_copy);
             }
         }
@@ -214,9 +225,11 @@ test "TableFileManager#init" {
     try testing.expect(counter == 4);
 
     for (0..4) |i| {
+        try testing.expect(manager.max_file_id_per_level[i] == 4);
         try testing.expect(manager.level_counters[i] == 4);
     }
-    try testing.expect(manager.level_counters[4] == 0);
+    try testing.expect(manager.max_file_id_per_level[4] == 0);
+    try testing.expect(manager.max_file_id_per_level[4] == 0);
 
     // try cleanup(&manager);
     manager.deinit();

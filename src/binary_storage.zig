@@ -250,6 +250,13 @@ pub const BinaryStorage = struct {
                 .seq_cst,
             );
 
+            _ = @atomicRmw(
+                u16,
+                &self.storage.table_file_manager.level_counters[self.level + 1],
+                .Add,
+                1,
+                .seq_cst,
+            );
             try self.storage.table_file_manager.addFileAtLevel(self.level + 1, file_name);
         }
 
@@ -462,7 +469,7 @@ pub const BinaryStorage = struct {
 
     fn findInTables(self: *BinaryStorage, key: []const u8) !?[]const u8 {
         var result: ?[]const u8 = null;
-        var result_id: u16 = 0;
+        var result_id: u64 = 0;
         const max_level = global_context.getConfigurator().?.compactionMaxLevel();
         for (0..max_level) |level| {
             if (@atomicLoad(?*AppendDeleteList([]const u8, []const u8), &self.table_file_manager.files[level], .seq_cst)) |files| {
