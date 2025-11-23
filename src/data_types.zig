@@ -49,11 +49,18 @@ pub const StorageRecord = struct {
     key: BinaryData,
     value: BinaryData,
 
+    pub const Iterator = struct {
+        context: *anyopaque,
+        next_fn: *const fn (ctx: *anyopaque) anyerror!?StorageRecord,
+
+        pub fn next(self: *Iterator) anyerror!?StorageRecord {
+            return self.next_fn(self.context);
+        }
+    };
+
     pub fn write(self: *const StorageRecord, writer: *std.fs.File.Writer) !void {
-        try utils.writeNumber(u16, &writer.interface, @as(u16, @intCast(self.key.len)));
-        try writer.interface.writeAll(self.key);
-        try utils.writeNumber(u16, &writer.interface, @as(u16, @intCast(self.value.len)));
-        try writer.interface.writeAll(self.value);
+        try utils.writeSizedValue(writer, self.key);
+        try utils.writeSizedValue(writer, self.value);
     }
 
     pub fn destroy(self: *const StorageRecord, allocator: std.mem.Allocator) void {
@@ -67,14 +74,14 @@ pub const StorageRecord = struct {
         const key_size: u16 = try utils.readNumber(u16, &reader.interface);
         reader.pos = offset + 2;
         const key: []u8 = try allocator.alloc(u8, key_size);
-        _ = try reader.readPositional(key[0..]);
+        _ = try reader.read(key[0..]);
 
         try reader.seekTo(offset);
         reader.pos = offset + key_size + 2;
         const value_size: u16 = try utils.readNumber(u16, &reader.interface);
         reader.pos = offset + key_size + 4;
         const value: []u8 = try allocator.alloc(u8, value_size);
-        _ = try reader.readPositional(value[0..]);
+        _ = try reader.read(value[0..]);
 
         return .{
             .key = key,

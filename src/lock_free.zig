@@ -261,8 +261,8 @@ pub fn AppendDeleteList(E: type, C: type) type {
         pub const Node = struct {
             entry: ?*E,
             next: MarkablePointer,
-            _padding: u8 align(std.atomic.cache_line) = 0,
             node_cleanup_fn: NodeCleanupFn,
+            _padding: u8 align(std.atomic.cache_line) = 0,
         };
 
         pub fn nodeCleanup(allocator: std.mem.Allocator, node: *Node) void {

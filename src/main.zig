@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const global_context = @import("./global_context.zig");
-const thread_pool = @import("./thread_pool.zig");
+const worker = @import("./worker.zig");
 const io = @import("./io.zig");
 
 const JsonConfigurator = @import("./json_configurator.zig").JsonConfigurator;
@@ -20,9 +20,15 @@ pub fn main() !void {
     global_context.loadConfiguration(&conf);
     std.log.info("Configuration is loaded", .{});
 
+    worker.initWorkerContext(allocator, conf.sstableBlockSize()) catch |e| {
+        std.log.err("Failed to initialize worker context: {any}", .{e});
+        return;
+    };
     var storage = try TypedStorage.init(allocator);
     defer storage.stop();
     std.log.info("Storage engine is initialized", .{});
+
+    worker.deinitWorkerContext();
 
     var task_queue = TaskQueue.init(allocator);
     std.log.info("Task queue is initialized", .{});
@@ -35,9 +41,6 @@ pub fn main() !void {
 
     var metrics_thread = try std.Thread.spawn(.{}, runMetricAggregator, .{});
     metrics_thread.detach();
-
-    var worker_thread = try std.Thread.spawn(.{}, thread_pool.runTask, .{});
-    worker_thread.detach();
 
     const thread = try std.Thread.spawn(.{}, io.runIoWorker, .{});
     std.log.info("Listening port {d}", .{io.DEFAULT_PORT});

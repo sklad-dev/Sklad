@@ -1,10 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const ArrayList = std.ArrayList;
-const AutoHashMap = std.AutoHashMap;
-const StringHashMap = std.StringHashMap;
-
 const data_types = @import("./data_types.zig");
 const global_context = @import("./global_context.zig");
 const utils = @import("./utils.zig");
@@ -12,15 +8,39 @@ const constants = @import("./constants.zig");
 
 const ApplicationError = @import("./constants.zig").ApplicationError;
 const AppendDeleteList = @import("./lock_free.zig").AppendDeleteList;
+const CompactionState = @import("./table_file_manager.zig").CompactionState;
 const Memtable = @import("./memtable.zig").Memtable;
+const MergeIterator = @import("./merge_iterator.zig").MergeIterator;
 const MetricKind = @import("./metrics.zig").MetricKind;
 const SSTable = @import("./sstable.zig").SSTable;
 const SSTableCache = @import("./sstable_cache.zig").SSTableCache;
+const Handle = @import("./sstable_cache.zig").Handle;
+const SSTableIteratorAdapter = @import("./sstable.zig").SSTableIteratorAdapter;
 const TableFileManager = @import("./table_file_manager.zig").TableFileManager;
 const Task = @import("./task_queue.zig").Task;
 const Wal = @import("./wal.zig").Wal;
 
 const StorageRecord = data_types.StorageRecord;
+
+const MergeIteratorAdapter = struct {
+    merge_iterator: *MergeIterator,
+
+    pub fn init(merge_iterator: *MergeIterator) MergeIteratorAdapter {
+        return .{ .merge_iterator = merge_iterator };
+    }
+
+    fn nextFn(ctx: *anyopaque) !?StorageRecord {
+        const self: *MergeIteratorAdapter = @ptrCast(@alignCast(ctx));
+        return self.merge_iterator.next();
+    }
+
+    pub fn iterator(self: *MergeIteratorAdapter) StorageRecord.Iterator {
+        return .{
+            .context = self,
+            .next_fn = nextFn,
+        };
+    }
+};
 
 pub const BinaryStorage = struct {
     allocator: std.mem.Allocator,
@@ -30,8 +50,6 @@ pub const BinaryStorage = struct {
     swap_in_progress: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     table_file_manager: TableFileManager,
     sstable_cache: SSTableCache,
-
-    const Self = @This();
 
     const KeyedMemtable = struct {
         id: u64,
@@ -97,35 +115,249 @@ pub const BinaryStorage = struct {
             });
 
             self.storage.memtables.markDelete(condition, self.memtable_key);
+            self.submitCompactionTask();
         }
 
         fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
             const self: *FlushTask = @ptrCast(@alignCast(ptr));
             allocator.destroy(self);
         }
+
+        fn submitCompactionTask(self: *FlushTask) void {
+            const threshold = global_context.getConfigurator().?.compactionLevelThreshold();
+            const files_count = @atomicLoad(u16, &self.storage.table_file_manager.level_counters[0], .acquire);
+            if (files_count >= threshold) {
+                self.storage.enqueueCompactionTask(0);
+            }
+        }
     };
 
-    pub fn start(allocator: std.mem.Allocator, path: []const u8) !Self {
+    pub const CompactionTask = struct {
+        allocator: std.mem.Allocator,
+        storage: *BinaryStorage,
+        level: u8,
+
+        const CompactionHelper = struct {
+            adapters: []SSTableIteratorAdapter,
+            handles: []*Handle,
+            iterators: []StorageRecord.Iterator,
+            records_number: u32,
+
+            fn init(base_task: *CompactionTask, files: *AppendDeleteList([]const u8, []const u8), multiplier: usize) !CompactionHelper {
+                var files_tail = try base_task.allocator.alloc([]const u8, multiplier);
+                defer base_task.allocator.free(files_tail);
+
+                var files_iterator = files.iterator();
+                defer files_iterator.deinit();
+
+                var fi: usize = 0;
+                while (files_iterator.next()) |node| : (fi += 1) {
+                    files_tail[fi % multiplier] = node.entry.?.*;
+                }
+
+                var adapters = try base_task.allocator.alloc(SSTableIteratorAdapter, multiplier);
+                errdefer base_task.allocator.free(adapters);
+
+                var handles = try base_task.allocator.alloc(*Handle, multiplier);
+                errdefer base_task.allocator.free(handles);
+
+                var iters = try base_task.allocator.alloc(StorageRecord.Iterator, multiplier);
+                errdefer base_task.allocator.free(iters);
+
+                var total_records: u32 = 0;
+                var i: usize = 0;
+                while (i < multiplier) : (i += 1) {
+                    handles[i] = try base_task.storage.sstable_cache.get(files_tail[i]);
+                    total_records += handles[i].table.records_number;
+                    adapters[i] = try SSTableIteratorAdapter.init(handles[i].table);
+                    iters[i] = adapters[i].iterator();
+                }
+
+                return .{
+                    .adapters = adapters,
+                    .handles = handles,
+                    .iterators = iters,
+                    .records_number = total_records,
+                };
+            }
+
+            pub fn deinit(self: *CompactionHelper, allocator: std.mem.Allocator) void {
+                for (0..self.adapters.len) |i| {
+                    self.adapters[i].sstable_iterator.deinit();
+                    self.handles[i].release();
+                }
+
+                allocator.free(self.iterators);
+                allocator.free(self.handles);
+                allocator.free(self.adapters);
+            }
+        };
+
+        pub fn init(allocator: std.mem.Allocator, storage: *BinaryStorage, level: u8) !CompactionTask {
+            return .{
+                .allocator = allocator,
+                .storage = storage,
+                .level = level,
+            };
+        }
+
+        pub fn task(self: *CompactionTask) Task {
+            return .{
+                .context = self,
+                .run_fn = CompactionTask.run,
+                .destroy_fn = CompactionTask.destroy,
+                .enqued_at = std.time.microTimestamp(),
+            };
+        }
+
+        fn do_run(self: *CompactionTask) !void {
+            const multiplier = global_context.getConfigurator().?.compactionLevelMultiplier();
+
+            const files = self.storage.table_file_manager.files[self.level];
+            if (files == null) return;
+
+            var helper = try CompactionHelper.init(self, files.?, multiplier);
+
+            var merge_iter = try MergeIterator.init(
+                self.allocator,
+                helper.iterators,
+            );
+            var adapter = MergeIteratorAdapter.init(&merge_iter);
+            var records_merge_iterator = adapter.iterator();
+            defer merge_iter.deinit();
+
+            const file_name = try self.storage.table_file_manager.generateFileName(self.level + 1);
+            std.log.info("Compaction: creating new sstable file {s}", .{file_name});
+
+            const configurator = global_context.getConfigurator().?;
+            var sstable = try SSTable.create(
+                self.allocator,
+                &records_merge_iterator,
+                helper.records_number,
+                file_name,
+                configurator.sstableBlockSize(),
+                configurator.sstableBloomBitsPerKey(),
+            );
+
+            self.markOldFilesDeleted(&helper);
+            helper.deinit(self.allocator);
+            sstable.close(false);
+
+            _ = @atomicRmw(
+                u16,
+                &self.storage.table_file_manager.level_counters[self.level],
+                .Sub,
+                @as(u16, @intCast(configurator.compactionLevelMultiplier())),
+                .seq_cst,
+            );
+
+            _ = @atomicRmw(
+                u16,
+                &self.storage.table_file_manager.level_counters[self.level + 1],
+                .Add,
+                1,
+                .seq_cst,
+            );
+            try self.storage.table_file_manager.addFileAtLevel(self.level + 1, file_name);
+        }
+
+        fn run(ptr: *anyopaque) void {
+            const self: *CompactionTask = @ptrCast(@alignCast(ptr));
+
+            if (@cmpxchgWeak(
+                u8,
+                &self.storage.table_file_manager.compaction_flags[self.level],
+                @intFromEnum(CompactionState.Scheduled),
+                @intFromEnum(CompactionState.Running),
+                .seq_cst,
+                .seq_cst,
+            ) != null) {
+                return;
+            }
+
+            const trace = @errorReturnTrace();
+            self.do_run() catch |e| {
+                _ = @cmpxchgWeak(
+                    u8,
+                    &self.storage.table_file_manager.compaction_flags[self.level],
+                    @intFromEnum(CompactionState.Running),
+                    @intFromEnum(CompactionState.None),
+                    .seq_cst,
+                    .seq_cst,
+                );
+
+                std.log.err("Error! Compaction task at level {d} failed: {any}", .{ self.level, e });
+                if (trace) |t| {
+                    std.log.err("CompactionTask stack trace:", .{});
+                    std.debug.dumpStackTrace(t.*);
+                }
+                return;
+            };
+
+            const configurator = global_context.getConfigurator().?;
+            const threshold = configurator.compactionLevelThreshold();
+            const max_level = configurator.compactionMaxLevel();
+
+            _ = @cmpxchgWeak(
+                u8,
+                &self.storage.table_file_manager.compaction_flags[self.level],
+                @intFromEnum(CompactionState.Running),
+                @intFromEnum(CompactionState.None),
+                .seq_cst,
+                .seq_cst,
+            );
+
+            const files_count = @atomicLoad(u16, &self.storage.table_file_manager.level_counters[self.level + 1], .acquire);
+            if (self.level + 1 < max_level and files_count >= threshold) {
+                self.storage.enqueueCompactionTask(self.level + 1);
+            }
+        }
+
+        fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+            const self: *CompactionTask = @ptrCast(@alignCast(ptr));
+            allocator.destroy(self);
+        }
+
+        fn file_delete_condition(value: ?*[]const u8, expected: []const u8) bool {
+            return value != null and std.mem.eql(u8, value.?.*, expected);
+        }
+
+        fn markOldFilesDeleted(self: *CompactionTask, helper: *const CompactionHelper) void {
+            const files_ptr = self.storage.table_file_manager.files[self.level];
+            if (files_ptr == null) return;
+            const files = files_ptr.?;
+
+            for (helper.handles) |handle| {
+                files.markDelete(
+                    file_delete_condition,
+                    handle.table.path,
+                );
+            }
+        }
+    };
+
+    pub fn start(allocator: std.mem.Allocator, path: []const u8) !BinaryStorage {
         var table_file_manager = try TableFileManager.init(allocator, path);
         const memtable = try restoreMemtables(&table_file_manager);
-        const storage = Self{
+        const config = global_context.getConfigurator().?;
+        const storage = BinaryStorage{
             .allocator = allocator,
             .path = path,
             .active_memtable = std.atomic.Value(*Memtable).init(memtable),
             .memtables = try AppendDeleteList(KeyedMemtable, u64).init(allocator, cleanUp),
             .table_file_manager = table_file_manager,
-            .sstable_cache = try SSTableCache.init(allocator, 8),
+            .sstable_cache = try SSTableCache.init(allocator, config.sstableCacheSize()),
         };
         return storage;
     }
 
-    pub inline fn stop(self: *Self) void {
+    pub inline fn stop(self: *BinaryStorage) void {
         self.deinitMemtables();
         self.table_file_manager.deinit();
         self.sstable_cache.deinit();
     }
 
-    pub fn put(self: *Self, key: []const u8, value: []const u8) !void {
+    pub fn put(self: *BinaryStorage, key: []const u8, value: []const u8) !void {
         const record = StorageRecord{
             .key = key,
             .value = value,
@@ -186,7 +418,7 @@ pub const BinaryStorage = struct {
         }
     }
 
-    pub fn find(self: *Self, key: []const u8) !?[]const u8 {
+    pub fn find(self: *BinaryStorage, key: []const u8) !?[]const u8 {
         const active = self.active_memtable.load(.acquire);
 
         var value = active.find(key);
@@ -212,11 +444,37 @@ pub const BinaryStorage = struct {
         return try self.findInTables(key);
     }
 
-    fn findInTables(self: *Self, key: []const u8) !?[]const u8 {
+    pub fn enqueueCompactionTask(self: *BinaryStorage, level: u8) void {
+        if (@cmpxchgWeak(
+            u8,
+            &self.table_file_manager.compaction_flags[level],
+            @intFromEnum(CompactionState.None),
+            @intFromEnum(CompactionState.Scheduled),
+            .seq_cst,
+            .seq_cst,
+        ) == null) {
+            const task_queue = global_context.getTaskQueue();
+            var compaction_task = task_queue.?.allocator.create(CompactionTask) catch |e| {
+                std.log.err("Error! Failed to create compaction task: {any}", .{e});
+                return;
+            };
+
+            compaction_task.* = CompactionTask{
+                .allocator = self.allocator,
+                .storage = self,
+                .level = level,
+            };
+
+            task_queue.?.enqueue(compaction_task.task());
+        }
+    }
+
+    fn findInTables(self: *BinaryStorage, key: []const u8) !?[]const u8 {
         var result: ?[]const u8 = null;
-        var result_id: u16 = 0;
-        for (0..self.table_file_manager.files.len) |level| {
-            if (@atomicLoad(?*AppendDeleteList([]u8, []u8), &self.table_file_manager.files[level], .seq_cst)) |files| {
+        var result_id: u64 = 0;
+        const max_level = global_context.getConfigurator().?.compactionMaxLevel();
+        for (0..max_level) |level| {
+            if (@atomicLoad(?*AppendDeleteList([]const u8, []const u8), &self.table_file_manager.files[level], .seq_cst)) |files| {
                 var it = files.iterator();
                 defer it.deinit();
                 while (it.next()) |node| {
@@ -238,8 +496,6 @@ pub const BinaryStorage = struct {
                 if (result) |r| {
                     return r;
                 }
-            } else {
-                break;
             }
         }
         return null;
@@ -282,7 +538,7 @@ pub const BinaryStorage = struct {
         return memtable;
     }
 
-    fn deinitMemtables(self: *Self) void {
+    fn deinitMemtables(self: *BinaryStorage) void {
         const active = self.active_memtable.load(.acquire);
         active.destroy();
         self.allocator.destroy(active);
@@ -325,6 +581,9 @@ test "BinaryStorage#put" {
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 
+    try @import("./worker.zig").initWorkerContext(testing.allocator, conf.sstableBlockSize());
+    defer @import("./worker.zig").deinitWorkerContext();
+
     var test_storage = try BinaryStorage.start(testing.allocator, ".");
     defer test_storage.stop();
 
@@ -343,6 +602,9 @@ test "Restore memtable from wal" {
     configurator.* = TestingConfigurator.init();
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
+
+    try @import("./worker.zig").initWorkerContext(testing.allocator, conf.sstableBlockSize());
+    defer @import("./worker.zig").deinitWorkerContext();
 
     var storage1 = try BinaryStorage.start(testing.allocator, ".");
     try storage1.put(&utils.intToBytes(u8, 3), &utils.intToBytes(u16, 0xCFCF));
@@ -370,6 +632,9 @@ test "BinaryStorage#find" {
     configurator.* = TestingConfigurator.init();
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
+
+    try @import("./worker.zig").initWorkerContext(testing.allocator, conf.sstableBlockSize());
+    defer @import("./worker.zig").deinitWorkerContext();
 
     var task_queue = TaskQueue.init(testing.allocator);
     global_context.initTaskQueueForTests(&task_queue);
@@ -410,6 +675,9 @@ test "BinaryStorage#find returns the newest value" {
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 
+    try @import("./worker.zig").initWorkerContext(testing.allocator, conf.sstableBlockSize());
+    defer @import("./worker.zig").deinitWorkerContext();
+
     var task_queue = TaskQueue.init(testing.allocator);
     global_context.initTaskQueueForTests(&task_queue);
     defer global_context.cleanAndDeinitTaskQueueForTests();
@@ -434,6 +702,95 @@ test "BinaryStorage#find returns the newest value" {
     const r2 = try storage.find(&utils.intToBytes(u8, @as(u8, @intCast(5))));
     defer testing.allocator.free(r2.?);
     try testing.expect(std.mem.eql(u8, r2.?, &utils.intToBytes(u8, 10)));
+
+    try cleanup(&storage);
+}
+
+test "CompactionTask" {
+    const block_size: u32 = 64;
+    try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
+    defer @import("./worker.zig").deinitWorkerContext();
+
+    const MemtableIteratorAdapter = @import("./sstable.zig").MemtableIteratorAdapter;
+
+    for (0..5) |i| {
+        var test_memtable = try Memtable.init(testing.allocator, std.crypto.random, 2048, 8, "./");
+        defer test_memtable.destroy();
+
+        const test_value = utils.intToBytes(u8, 255);
+        var slot: ?Memtable.ReservedDataSlot = null;
+        for (0..10) |j| {
+            slot = test_memtable.reserve(@sizeOf(usize) + test_value.len);
+            try test_memtable.add(&utils.intToBytes(usize, j + i * 10), &test_value, &slot.?);
+        }
+
+        var adapter = MemtableIteratorAdapter.init(&test_memtable);
+        var memtable_iterator = adapter.iterator();
+
+        const file_name = try std.fmt.allocPrint(testing.allocator, "0.{d}.sstable", .{i});
+        defer testing.allocator.free(file_name);
+
+        var test_sstable = try SSTable.create(
+            testing.allocator,
+            &memtable_iterator,
+            test_memtable.size,
+            file_name,
+            block_size,
+            20,
+        );
+        test_sstable.close(false);
+        try test_memtable.wal.deleteFile();
+    }
+
+    defer global_context.deinitConfigurationForTests();
+
+    var configurator = try testing.allocator.create(TestingConfigurator);
+    configurator.* = TestingConfigurator.init();
+    var conf = configurator.configurator();
+    global_context.loadConfiguration(&conf);
+
+    var task_queue = TaskQueue.init(testing.allocator);
+    global_context.initTaskQueueForTests(&task_queue);
+    defer global_context.cleanAndDeinitTaskQueueForTests();
+
+    var storage = try BinaryStorage.start(testing.allocator, ".");
+    defer storage.stop();
+
+    for (0..50) |i| {
+        const r = try storage.find(&utils.intToBytes(usize, i));
+        defer testing.allocator.free(r.?);
+        try testing.expect(std.mem.eql(u8, r.?, &utils.intToBytes(u8, 255)));
+    }
+
+    _ = @cmpxchgWeak(
+        u8,
+        &storage.table_file_manager.compaction_flags[0],
+        @intFromEnum(CompactionState.None),
+        @intFromEnum(CompactionState.Scheduled),
+        .seq_cst,
+        .seq_cst,
+    );
+    var compaction_task = BinaryStorage.CompactionTask{
+        .allocator = testing.allocator,
+        .storage = &storage,
+        .level = 0,
+    };
+    compaction_task.task().run_fn(&compaction_task);
+
+    for (0..50) |i| {
+        const r = try storage.find(&utils.intToBytes(usize, i));
+        try testing.expect(std.mem.eql(u8, r.?, &utils.intToBytes(u8, 255)));
+        testing.allocator.free(r.?);
+    }
+
+    var test_sstable = try SSTable.open(testing.allocator, "./1.0.sstable");
+    defer test_sstable.close(true);
+
+    try testing.expect(std.mem.eql(u8, test_sstable.min_key.?, &utils.intToBytes(usize, 0)));
+    try testing.expect(std.mem.eql(u8, test_sstable.max_key.?, &utils.intToBytes(usize, 39)));
+    try testing.expect(test_sstable.records_number == 40);
+    try testing.expect(test_sstable.block_size == block_size);
+    try testing.expect(test_sstable.index_records_num == 10);
 
     try cleanup(&storage);
 }

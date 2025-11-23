@@ -4,7 +4,7 @@ const AppendDeleteList = @import("./lock_free.zig").AppendDeleteList;
 
 pub const Handle = struct {
     allocator: std.mem.Allocator,
-    ref_count: u32,
+    ref_count: u64,
     last_epoch: u64,
     cached: bool,
     hash: u64,
@@ -13,7 +13,7 @@ pub const Handle = struct {
 
     pub fn release(self: *Handle) void {
         if (self.cached) {
-            _ = @atomicRmw(u32, &self.ref_count, .Sub, 1, .acq_rel);
+            _ = @atomicRmw(u64, &self.ref_count, .Sub, 1, .acq_rel);
         } else {
             self.table.close(true);
             self.allocator.destroy(self.table);
@@ -53,7 +53,7 @@ pub const SSTableCache = struct {
             while (iter.next()) |node| {
                 const e = node.entry.?;
                 if (e.hash == h and std.mem.eql(u8, e.table.path, path)) {
-                    _ = @atomicRmw(u32, &e.ref_count, .Add, 1, .acq_rel);
+                    _ = @atomicRmw(u64, &e.ref_count, .Add, 1, .acq_rel);
                     @atomicStore(u64, &e.last_epoch, now, .release);
                     return e;
                 }
@@ -64,7 +64,7 @@ pub const SSTableCache = struct {
             self.tryEvictOne();
         }
 
-        const table_value = try SSTable.open(path, self.allocator);
+        const table_value = try SSTable.open(self.allocator, path);
         const e = try self.allocator.create(Handle);
         errdefer self.allocator.destroy(e);
 
@@ -101,7 +101,7 @@ pub const SSTableCache = struct {
 
         while (iter.next()) |node| {
             const e = node.entry.?;
-            if (@atomicLoad(u32, &e.ref_count, .acquire) == 1) {
+            if (@atomicLoad(u64, &e.ref_count, .acquire) == 1) {
                 const last_epoch = @atomicLoad(u64, &e.last_epoch, .acquire);
                 if (last_epoch < candidate_epoch) {
                     candidate_epoch = last_epoch;
@@ -115,7 +115,7 @@ pub const SSTableCache = struct {
         }
     }
 
-    inline fn hashPath(path: []const u8) usize {
+    inline fn hashPath(path: []const u8) u64 {
         var wy = std.hash.Wyhash.init(0);
         wy.update(path);
         return wy.final();
@@ -124,6 +124,7 @@ pub const SSTableCache = struct {
     fn handleCleanup(allocator: std.mem.Allocator, handle: *Handle) void {
         handle.table.close(true);
         allocator.destroy(handle.table);
+        allocator.destroy(handle);
     }
 
     fn matchPtr(entry: ?*Handle, expected: *Handle) bool {
