@@ -42,15 +42,6 @@ pub fn main() !void {
     var metrics_thread = try std.Thread.spawn(.{}, runMetricAggregator, .{});
     metrics_thread.detach();
 
-    var worker_thread1 = try std.Thread.spawn(.{}, worker.runTask, .{});
-    worker_thread1.detach();
-
-    var worker_thread2 = try std.Thread.spawn(.{}, worker.runTask, .{});
-    worker_thread2.detach();
-
-    var worker_thread3 = try std.Thread.spawn(.{}, worker.runTask, .{});
-    worker_thread3.detach();
-
     const thread = try std.Thread.spawn(.{}, io.runIoWorker, .{});
     std.log.info("Listening port {d}", .{io.DEFAULT_PORT});
     thread.join();
