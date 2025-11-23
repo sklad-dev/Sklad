@@ -125,7 +125,8 @@ pub const BinaryStorage = struct {
 
         fn submitCompactionTask(self: *FlushTask) void {
             const threshold = global_context.getConfigurator().?.compactionLevelThreshold();
-            if (self.storage.table_file_manager.level_counters[0] >= threshold) {
+            const files_count = @atomicLoad(u16, &self.storage.table_file_manager.level_counters[0], .acquire);
+            if (files_count >= threshold) {
                 self.storage.enqueueCompactionTask(0);
             }
         }
@@ -306,7 +307,8 @@ pub const BinaryStorage = struct {
                 .seq_cst,
             );
 
-            if (self.level + 1 < max_level and self.storage.table_file_manager.level_counters[self.level + 1] >= threshold) {
+            const files_count = @atomicLoad(u16, &self.storage.table_file_manager.level_counters[self.level + 1], .acquire);
+            if (self.level + 1 < max_level and files_count >= threshold) {
                 self.storage.enqueueCompactionTask(self.level + 1);
             }
         }
