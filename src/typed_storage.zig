@@ -74,7 +74,7 @@ fn cleanup(typed_storage: *TypedStorage) void {
             var it = files.iterator();
             defer it.deinit();
             while (it.next()) |node| {
-                const file_name = node.entry.?.*;
+                const file_name = node.entry.?.name;
                 std.fs.cwd().deleteFile(file_name) catch unreachable;
             }
         }

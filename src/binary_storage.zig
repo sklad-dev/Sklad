@@ -21,6 +21,7 @@ const Task = @import("./task_queue.zig").Task;
 const Wal = @import("./wal.zig").Wal;
 
 const StorageRecord = data_types.StorageRecord;
+const FileList = TableFileManager.FileList;
 
 const MergeIteratorAdapter = struct {
     merge_iterator: *MergeIterator,
@@ -143,7 +144,7 @@ pub const BinaryStorage = struct {
             iterators: []StorageRecord.Iterator,
             records_number: u32,
 
-            fn init(base_task: *CompactionTask, files: *AppendDeleteList([]const u8, []const u8), multiplier: usize) !CompactionHelper {
+            fn init(base_task: *CompactionTask, files: *FileList, multiplier: usize) !CompactionHelper {
                 var files_tail = try base_task.allocator.alloc([]const u8, multiplier);
                 defer base_task.allocator.free(files_tail);
 
@@ -152,7 +153,7 @@ pub const BinaryStorage = struct {
 
                 var fi: usize = 0;
                 while (files_iterator.next()) |node| : (fi += 1) {
-                    files_tail[fi % multiplier] = node.entry.?.*;
+                    files_tail[fi % multiplier] = node.entry.?.name;
                 }
 
                 var adapters = try base_task.allocator.alloc(SSTableIteratorAdapter, multiplier);
@@ -227,7 +228,6 @@ pub const BinaryStorage = struct {
             defer merge_iter.deinit();
 
             const file_name = try self.storage.table_file_manager.generateFileName(self.level + 1);
-            std.log.info("Compaction: creating new sstable file {s}", .{file_name});
 
             const configurator = global_context.getConfigurator().?;
             var sstable = try SSTable.create(
@@ -318,20 +318,9 @@ pub const BinaryStorage = struct {
             allocator.destroy(self);
         }
 
-        fn file_delete_condition(value: ?*[]const u8, expected: []const u8) bool {
-            return value != null and std.mem.eql(u8, value.?.*, expected);
-        }
-
         fn markOldFilesDeleted(self: *CompactionTask, helper: *const CompactionHelper) void {
-            const files_ptr = self.storage.table_file_manager.files[self.level];
-            if (files_ptr == null) return;
-            const files = files_ptr.?;
-
             for (helper.handles) |handle| {
-                files.markDelete(
-                    file_delete_condition,
-                    handle.table.path,
-                );
+                self.storage.table_file_manager.deleteFileAtLevel(self.level, handle.table.path);
             }
         }
     };
@@ -474,11 +463,11 @@ pub const BinaryStorage = struct {
         var result_id: u64 = 0;
         const max_level = global_context.getConfigurator().?.compactionMaxLevel();
         for (0..max_level) |level| {
-            if (@atomicLoad(?*AppendDeleteList([]const u8, []const u8), &self.table_file_manager.files[level], .seq_cst)) |files| {
+            if (@atomicLoad(?*FileList, &self.table_file_manager.files[level], .seq_cst)) |files| {
                 var it = files.iterator();
                 defer it.deinit();
                 while (it.next()) |node| {
-                    const file_name = node.entry.?.*;
+                    const file_name = node.entry.?.name;
                     var handle = try self.sstable_cache.get(file_name);
                     defer handle.release();
 
@@ -566,7 +555,7 @@ fn cleanup(storage: *BinaryStorage) !void {
             var it = files.iterator();
             defer it.deinit();
             while (it.next()) |node| {
-                const file_name = node.entry.?.*;
+                const file_name = node.entry.?.name;
                 try std.fs.cwd().deleteFile(file_name);
             }
         }

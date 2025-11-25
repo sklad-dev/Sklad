@@ -20,16 +20,25 @@ pub const CompactionState = enum(u8) {
 pub const TableFileManager = struct {
     allocator: std.mem.Allocator,
     path: []const u8,
-    files: [256]?*AppendDeleteList(String, String),
+    files: [256]?*FileList,
     level_counters: [256]u16,
     max_file_id_per_level: [256]u64,
     compaction_flags: [256]u8,
 
-    pub fn string_clean_up(allocator: std.mem.Allocator, value: *String) void {
-        std.fs.cwd().deleteFile(value.*) catch |e| {
-            std.log.err("Failed to delete file {s}: {any}\n", .{ value.*, e });
-        };
-        allocator.free(value.*);
+    pub const FileHandler = struct {
+        name: String,
+        to_delete: bool = false,
+    };
+
+    pub const FileList = AppendDeleteList(FileHandler, String);
+
+    pub fn file_clean_up(allocator: std.mem.Allocator, value: *FileHandler) void {
+        if (@atomicLoad(bool, &value.to_delete, .acquire)) {
+            std.fs.cwd().deleteFile(value.name) catch |e| {
+                std.log.err("Failed to delete file {s}: {any}\n", .{ value.name, e });
+            };
+        }
+        allocator.free(value.name);
         allocator.destroy(value);
     }
 
@@ -37,7 +46,7 @@ pub const TableFileManager = struct {
         var manager = TableFileManager{
             .allocator = allocator,
             .path = path,
-            .files = [_]?*AppendDeleteList(String, String){null} ** 256,
+            .files = [_]?*FileList{null} ** 256,
             .level_counters = [_]u16{0} ** 256,
             .max_file_id_per_level = [_]u64{0} ** 256,
             .compaction_flags = [_]u8{0} ** 256,
@@ -113,20 +122,36 @@ pub const TableFileManager = struct {
     }
 
     pub fn addFileAtLevel(self: *TableFileManager, level: u8, file: []const u8) !void {
-        const owned_file = try self.allocator.create([]const u8);
-        owned_file.* = file;
+        const owned_file = try self.allocator.create(FileHandler);
+        owned_file.name = file;
 
-        var files_at_level = @atomicLoad(?*AppendDeleteList(String, String), &self.files[level], .seq_cst);
+        var files_at_level = @atomicLoad(?*FileList, &self.files[level], .seq_cst);
         if (files_at_level == null) {
-            const level_list = try self.allocator.create(AppendDeleteList(String, String));
-            level_list.* = try AppendDeleteList(String, String).init(self.allocator, string_clean_up);
-            if (@cmpxchgWeak(?*AppendDeleteList(String, String), &self.files[level], null, level_list, .seq_cst, .seq_cst) != null) {
+            const level_list = try self.allocator.create(FileList);
+            level_list.* = try FileList.init(self.allocator, file_clean_up);
+            if (@cmpxchgWeak(?*FileList, &self.files[level], null, level_list, .seq_cst, .seq_cst) != null) {
                 level_list.deinit();
                 self.allocator.destroy(level_list);
             }
         }
-        files_at_level = @atomicLoad(?*AppendDeleteList(String, String), &self.files[level], .seq_cst);
+        files_at_level = @atomicLoad(?*FileList, &self.files[level], .seq_cst);
         try files_at_level.?.prepend(owned_file);
+    }
+
+    pub fn deleteFileAtLevel(self: *TableFileManager, level: u8, file_to_delete: []const u8) void {
+        const files_ptr = self.files[level];
+        if (files_ptr == null) return;
+
+        const files = files_ptr.?;
+        files.markDelete(file_delete_condition, file_to_delete);
+    }
+
+    fn file_delete_condition(value: ?*FileHandler, expected: []const u8) bool {
+        const should_delete = value != null and std.mem.eql(u8, value.?.name, expected);
+        if (should_delete) {
+            @atomicStore(bool, &value.?.to_delete, true, .release);
+        }
+        return should_delete;
     }
 
     fn mapSstableFiles(self: *TableFileManager) !void {
@@ -198,7 +223,7 @@ fn cleanup(table_manager: *const TableFileManager) !void {
             var it = files.iterator();
             defer it.deinit();
             while (it.next()) |node| {
-                const file_name = node.entry.?.*;
+                const file_name = node.entry.?.name;
                 try std.fs.cwd().deleteFile(file_name);
             }
         }
@@ -231,6 +256,6 @@ test "TableFileManager#init" {
     try testing.expect(manager.max_file_id_per_level[4] == 0);
     try testing.expect(manager.max_file_id_per_level[4] == 0);
 
-    // try cleanup(&manager);
+    try cleanup(&manager);
     manager.deinit();
 }
