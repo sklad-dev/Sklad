@@ -13,6 +13,7 @@ pub const MetricKind = enum(u8) {
     taskProcessingTime,
     queueWaitTime,
     memtableCounter,
+    workerCounter,
 
     pub fn asInt(comptime T: type, self: MetricKind) T {
         return @as(T, @intFromEnum(self));
@@ -81,6 +82,7 @@ const Metrics = struct {
 
     memtable_count: u64,
     request_count: u64,
+    worker_count: u64,
 
     pub fn init(allocator: std.mem.Allocator) !Metrics {
         return .{
@@ -91,6 +93,7 @@ const Metrics = struct {
             .queue_wait = try Histogram.init(allocator, &DEFAULT_LATENCY_BOUNDS),
             .memtable_count = 0,
             .request_count = 0,
+            .worker_count = 0,
         };
     }
 
@@ -109,7 +112,7 @@ const Metrics = struct {
     }
 };
 
-const Percentile = enum(u8) {
+pub const Percentile = enum(u8) {
     p50,
     p95,
     p99,
@@ -124,7 +127,7 @@ const Percentile = enum(u8) {
 };
 const NUM_PERCENTILES = @typeInfo(Percentile).@"enum".fields.len;
 
-const MetricsSnapshot = struct {
+pub const MetricsSnapshot = struct {
     const Percentiles = [NUM_PERCENTILES]u64;
 
     timestamp: i64,
@@ -133,6 +136,7 @@ const MetricsSnapshot = struct {
     queue_wait_percentiles: Percentiles,
     request_count: u64,
     memtable_count: u64,
+    worker_count: u64,
 
     pub fn init(metrics: *Metrics) MetricsSnapshot {
         return .{
@@ -142,6 +146,7 @@ const MetricsSnapshot = struct {
             .queue_wait_percentiles = populatePercentiles(&metrics.queue_wait),
             .request_count = metrics.request_count,
             .memtable_count = metrics.memtable_count,
+            .worker_count = metrics.worker_count,
         };
     }
 
@@ -256,7 +261,20 @@ pub const MetricsAggregator = struct {
                     MetricKind.asInt(u32, .taskProcessingTime) => self.metrics.task_latency.record(m.value),
                     MetricKind.asInt(u32, .queueWaitTime) => self.metrics.queue_wait.record(m.value),
                     MetricKind.asInt(u32, .requestCounter) => self.metrics.request_count += 1,
-                    MetricKind.asInt(u32, .memtableCounter) => self.metrics.memtable_count += 1,
+                    MetricKind.asInt(u32, .memtableCounter) => {
+                        if (m.value == 1) {
+                            self.metrics.memtable_count += 1;
+                        } else if (m.value == 0 and self.metrics.memtable_count > 0) {
+                            self.metrics.memtable_count -= 1;
+                        }
+                    },
+                    MetricKind.asInt(u32, .workerCounter) => {
+                        if (m.value == 1) {
+                            self.metrics.worker_count += 1;
+                        } else if (m.value == 0 and self.metrics.worker_count > 0) {
+                            self.metrics.worker_count -= 1;
+                        }
+                    },
                     else => {},
                 }
             }
@@ -287,6 +305,16 @@ pub const MetricsAggregator = struct {
         return false;
     }
 };
+
+pub fn recordMetric(aggregator: ?*MetricsAggregator, kind: MetricKind, value: u64) void {
+    if (aggregator) |a| {
+        _ = a.record(.{
+            .timestamp = std.time.microTimestamp(),
+            .value = value,
+            .kind = @intFromEnum(kind),
+        });
+    }
+}
 
 pub const MetricRequestError = error{
     MetricRequestFailed,

@@ -2,6 +2,7 @@ const std = @import("std");
 
 const global_context = @import("./global_context.zig");
 const MetricKind = @import("./metrics.zig").MetricKind;
+const recordMetric = @import("./metrics.zig").recordMetric;
 const Queue = @import("./lock_free.zig").Queue;
 
 pub const Task = struct {
@@ -14,20 +15,20 @@ pub const Task = struct {
 
     pub fn run(self: *Task) void {
         self.picked_at = std.time.microTimestamp();
-        _ = global_context.getMetricsAggregator().?.record(.{
-            .timestamp = std.time.microTimestamp(),
-            .value = @intCast(self.picked_at - self.enqued_at),
-            .kind = @intFromEnum(MetricKind.queueWaitTime),
-        });
+        recordMetric(
+            global_context.getMetricsAggregator(),
+            MetricKind.queueWaitTime,
+            @intCast(self.picked_at - self.enqued_at),
+        );
 
         self.run_fn(self.context);
 
         const exec_time = std.time.microTimestamp() - self.picked_at;
-        _ = global_context.getMetricsAggregator().?.record(.{
-            .timestamp = std.time.microTimestamp(),
-            .value = @intCast(exec_time),
-            .kind = @intFromEnum(MetricKind.taskProcessingTime),
-        });
+        recordMetric(
+            global_context.getMetricsAggregator(),
+            MetricKind.taskProcessingTime,
+            @intCast(exec_time),
+        );
     }
 
     pub fn destroy(self: *const Task, allocator: std.mem.Allocator) void {

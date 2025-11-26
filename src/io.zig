@@ -7,6 +7,7 @@ const ApplicationError = @import("./constants.zig").ApplicationError;
 const QueryProcessingTask = @import("./parse.zig").QueryProcessingTask;
 const MetricKind = @import("./metrics.zig").MetricKind;
 const MetricRequestTask = @import("./metrics.zig").MetricRequestTask;
+const recordMetric = @import("./metrics.zig").recordMetric;
 const Task = @import("./task_queue.zig").Task;
 
 pub const DEFAULT_PORT: u16 = 7733;
@@ -220,11 +221,7 @@ pub const IO = struct {
                 continue;
             };
 
-            _ = global_context.getMetricsAggregator().?.record(.{
-                .timestamp = std.time.microTimestamp(),
-                .value = 1,
-                .kind = @intFromEnum(MetricKind.requestCounter),
-            });
+            recordMetric(global_context.getMetricsAggregator(), MetricKind.requestCounter, 1);
 
             const start_time = std.time.microTimestamp();
             const task_queue = global_context.getTaskQueue();

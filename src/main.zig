@@ -8,6 +8,7 @@ const JsonConfigurator = @import("./json_configurator.zig").JsonConfigurator;
 const TypedStorage = @import("./typed_storage.zig").TypedStorage;
 const TaskQueue = @import("./task_queue.zig").TaskQueue;
 const MetricsAggregator = @import("./metrics.zig").MetricsAggregator;
+const WorkerManager = @import("./worker.zig").WorkerManager;
 const runMetricAggregator = @import("./metrics.zig").runMetricAggregator;
 
 const DEFAULT_CONFIGURATION_FILE_PATH = @import("./json_configurator.zig").DEFAULT_CONFIGURATION_FILE_PATH;
@@ -37,13 +38,21 @@ pub fn main() !void {
     defer metrics.stop();
     std.log.info("Metrics aggregator is initialized", .{});
 
-    global_context.init(&storage, &task_queue, &metrics);
+    var worker_manager = WorkerManager.init(
+        conf.minWorkers(),
+        conf.maxWorkers(),
+        conf.idleTimeout() * std.time.us_per_s,
+        conf.taskWaitThreshold(),
+    );
+
+    global_context.init(&storage, &task_queue, &metrics, &worker_manager);
 
     var metrics_thread = try std.Thread.spawn(.{}, runMetricAggregator, .{});
     metrics_thread.detach();
 
-    var worker_thread = try std.Thread.spawn(.{}, worker.runTask, .{});
-    worker_thread.detach();
+    for (0..conf.minWorkers()) |_| {
+        _ = worker_manager.trySpawnExtraWorker();
+    }
 
     const thread = try std.Thread.spawn(.{}, io.runIoWorker, .{});
     std.log.info("Listening port {d}", .{io.DEFAULT_PORT});

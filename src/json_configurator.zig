@@ -11,6 +11,7 @@ pub const JsonConfigurator = struct {
         sstable: SSTableConfiguration,
         sstable_cache: SSTableCacheConfiguration,
         compaction: CompactionConfiguration,
+        worker_pool: WorkerPoolConfiguration,
     };
 
     const MemtableConfiguration = struct {
@@ -37,8 +38,15 @@ pub const JsonConfigurator = struct {
         level_threshold: u8,
     };
 
+    const WorkerPoolConfiguration = struct {
+        min_workers: u8,
+        max_workers: u8,
+        idle_timeout_seconds: i64,
+        task_wait_threshold_us: u64,
+    };
+
     pub fn init(allocator: std.mem.Allocator, path: []const u8) !JsonConfigurator {
-        const data = try std.fs.cwd().readFileAlloc(allocator, path, 512);
+        const data = try std.fs.cwd().readFileAlloc(allocator, path, 1024);
         defer allocator.free(data);
 
         const config = try std.json.parseFromSlice(
@@ -63,6 +71,10 @@ pub const JsonConfigurator = struct {
             .compaction_max_level_fn = compactionMaxLevel,
             .compaction_level_multiplier_fn = compactionLevelMultiplier,
             .compaction_level_threshold_fn = compactionLevelThreshold,
+            .worker_pool_min_workers_fn = minWorkers,
+            .worker_pool_max_workers_fn = maxWorkers,
+            .worker_pool_idle_timeout_seconds_fn = idleTimeout,
+            .worker_pool_task_wait_threshold_us_fn = taskWaitThreshold,
         };
     }
 
@@ -104,5 +116,25 @@ pub const JsonConfigurator = struct {
     pub fn compactionLevelThreshold(ptr: *anyopaque) u8 {
         const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
         return self.config.compaction.tiered.level_threshold;
+    }
+
+    pub fn minWorkers(ptr: *anyopaque) u8 {
+        const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
+        return self.config.worker_pool.min_workers;
+    }
+
+    pub fn maxWorkers(ptr: *anyopaque) u8 {
+        const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
+        return self.config.worker_pool.max_workers;
+    }
+
+    pub fn idleTimeout(ptr: *anyopaque) i64 {
+        const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
+        return self.config.worker_pool.idle_timeout_seconds;
+    }
+
+    pub fn taskWaitThreshold(ptr: *anyopaque) u64 {
+        const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
+        return self.config.worker_pool.task_wait_threshold_us;
     }
 };

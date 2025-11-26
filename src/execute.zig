@@ -6,6 +6,7 @@ const parse = @import("./parse.zig");
 const utils = @import("./utils.zig");
 
 const MetricKind = @import("./metrics.zig").MetricKind;
+const recordMetric = @import("./metrics.zig").recordMetric;
 const Task = @import("./task_queue.zig").Task;
 const TypedBinaryData = @import("./data_types.zig").TypedBinaryData;
 const TypedStorage = @import("./typed_storage.zig").TypedStorage;
@@ -46,11 +47,7 @@ pub const ExecuteTask = struct {
         const self: *ExecuteTask = @ptrCast(@alignCast(ptr));
         defer {
             const exec_time = std.time.microTimestamp() - self.io_context.start_time;
-            _ = global_context.getMetricsAggregator().?.record(.{
-                .timestamp = std.time.microTimestamp(),
-                .value = @intCast(exec_time),
-                .kind = @intFromEnum(MetricKind.requestProcessingTime),
-            });
+            recordMetric(global_context.getMetricsAggregator(), MetricKind.requestProcessingTime, @intCast(exec_time));
             std.posix.close(self.io_context.socket);
         }
 

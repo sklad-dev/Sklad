@@ -12,6 +12,7 @@ const CompactionState = @import("./table_file_manager.zig").CompactionState;
 const Memtable = @import("./memtable.zig").Memtable;
 const MergeIterator = @import("./merge_iterator.zig").MergeIterator;
 const MetricKind = @import("./metrics.zig").MetricKind;
+const recordMetric = @import("./metrics.zig").recordMetric;
 const SSTable = @import("./sstable.zig").SSTable;
 const SSTableCache = @import("./sstable_cache.zig").SSTableCache;
 const Handle = @import("./sstable_cache.zig").Handle;
@@ -109,11 +110,7 @@ pub const BinaryStorage = struct {
                 return;
             };
 
-            _ = global_context.getMetricsAggregator().?.record(.{
-                .timestamp = std.time.microTimestamp(),
-                .value = 1,
-                .kind = @intFromEnum(MetricKind.memtableCounter),
-            });
+            recordMetric(global_context.getMetricsAggregator(), MetricKind.memtableCounter, 0);
 
             self.storage.memtables.markDelete(condition, self.memtable_key);
             self.submitCompactionTask();
@@ -376,11 +373,20 @@ pub const BinaryStorage = struct {
                         .id = memtable_key,
                         .memtable = current,
                     };
-                    try self.memtables.prepend(keyed); // TODO: handle failure to prepend
+                    self.memtables.prepend(keyed) catch |e| {
+                        std.log.err("Failed to create a new memtable: {any}", .{e});
+                        self.swap_in_progress.store(false, .release);
+                        new_memtable.destroy();
+                        self.allocator.destroy(new_memtable);
+                        self.allocator.destroy(keyed);
+                        continue;
+                    };
 
                     self.active_memtable.store(new_memtable, .release);
                     filled_memtable = current;
                     filled_memtable_key = memtable_key;
+
+                    recordMetric(global_context.getMetricsAggregator(), MetricKind.memtableCounter, 1);
                 }
                 self.swap_in_progress.store(false, .release);
                 continue;
@@ -523,6 +529,8 @@ pub const BinaryStorage = struct {
                 wal.allocator.free(wal.path);
             }
         }
+
+        recordMetric(global_context.getMetricsAggregator(), MetricKind.memtableCounter, 1);
 
         return memtable;
     }

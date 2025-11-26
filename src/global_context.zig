@@ -4,20 +4,23 @@ const Configurator = @import("./configurator.zig").Configurator;
 const TypedStorage = @import("./typed_storage.zig").TypedStorage;
 const TaskQueue = @import("./task_queue.zig").TaskQueue;
 const MetricsAggregator = @import("./metrics.zig").MetricsAggregator;
+const WorkerManager = @import("./worker.zig").WorkerManager;
 
 var CONFIGURATOR = std.atomic.Value(?*Configurator).init(null);
 var TYPED_STORAGE = std.atomic.Value(?*TypedStorage).init(null);
 var TASK_QUEUE = std.atomic.Value(?*TaskQueue).init(null);
 var METRICS_AGGREGATOR = std.atomic.Value(?*MetricsAggregator).init(null);
+var WORKER_MANAGER = std.atomic.Value(?*WorkerManager).init(null);
 
 pub inline fn loadConfiguration(configurator: *Configurator) void {
     _ = CONFIGURATOR.cmpxchgStrong(null, configurator, .acq_rel, .monotonic);
 }
 
-pub inline fn init(graph_storage: *TypedStorage, task_queue: *TaskQueue, metrics_aggregator: *MetricsAggregator) void {
+pub inline fn init(graph_storage: *TypedStorage, task_queue: *TaskQueue, metrics_aggregator: *MetricsAggregator, worker_manager: *WorkerManager) void {
     _ = TYPED_STORAGE.cmpxchgStrong(null, graph_storage, .acq_rel, .monotonic);
     _ = TASK_QUEUE.cmpxchgStrong(null, task_queue, .acq_rel, .monotonic);
     _ = METRICS_AGGREGATOR.cmpxchgStrong(null, metrics_aggregator, .acq_rel, .monotonic);
+    _ = WORKER_MANAGER.cmpxchgStrong(null, worker_manager, .acq_rel, .monotonic);
 }
 
 pub inline fn getConfigurator() ?*Configurator {
@@ -34,6 +37,10 @@ pub inline fn getTaskQueue() ?*TaskQueue {
 
 pub inline fn getMetricsAggregator() ?*MetricsAggregator {
     return METRICS_AGGREGATOR.load(.acquire);
+}
+
+pub inline fn getWorkerManager() ?*WorkerManager {
+    return WORKER_MANAGER.load(.acquire);
 }
 
 // Testing helpers
