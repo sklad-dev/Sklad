@@ -230,6 +230,8 @@ pub fn AppendOnlyQueue(E: type) type {
     };
 }
 
+// WARNING: AppendDeleteList is broken and should not be used in production
+// markDelete causes memory leaks if used concurrently
 pub fn AppendDeleteList(E: type, C: type) type {
     return struct {
         const Self = @This();
@@ -311,7 +313,8 @@ pub fn AppendDeleteList(E: type, C: type) type {
                             curr = succ;
                             curr_ptr = toPurePointer(curr);
 
-                            self.list.retire_lists[@atomicLoad(u8, &self.list.current_epoch, .seq_cst)].enqueue(toPurePointer(tmp).?);
+                            const retire_list = @atomicLoad(*AppendOnlyQueue(Node), &self.list.retire_lists[self.current_epoch], .seq_cst);
+                            retire_list.enqueue(toPurePointer(tmp).?);
                         }
                         if (curr_ptr == null) return null;
 
@@ -394,7 +397,8 @@ pub fn AppendDeleteList(E: type, C: type) type {
                         curr = succ;
                         curr_ptr = toPurePointer(curr);
 
-                        self.retire_lists[@atomicLoad(u8, &self.current_epoch, .seq_cst)].enqueue(toPurePointer(tmp).?);
+                        const retire_list = @atomicLoad(*AppendOnlyQueue(Node), &self.retire_lists[current_epoch], .seq_cst);
+                        retire_list.enqueue(toPurePointer(tmp).?);
                     }
                 }
 
@@ -435,7 +439,8 @@ pub fn AppendDeleteList(E: type, C: type) type {
                         curr = succ;
                         curr_ptr = toPurePointer(curr);
 
-                        self.retire_lists[@atomicLoad(u8, &self.current_epoch, .seq_cst)].enqueue(toPurePointer(tmp).?);
+                        const retire_list = @atomicLoad(*AppendOnlyQueue(Node), &self.retire_lists[current_epoch], .seq_cst);
+                        retire_list.enqueue(toPurePointer(tmp).?);
                     }
                     if (curr_ptr == null) return;
 
@@ -460,26 +465,29 @@ pub fn AppendDeleteList(E: type, C: type) type {
             while (true) {
                 const current_epoch: u8 = @atomicLoad(u8, &self.current_epoch, .seq_cst);
                 const prev_epoch: u8 = if (current_epoch == 0) 2 else (current_epoch - 1);
-                var old_aoq = @atomicLoad(*AppendOnlyQueue(Node), &self.retire_lists[prev_epoch], .seq_cst);
 
-                if (self.epoch_counters[prev_epoch] == 0) {
-                    const next_epoch: u8 = (current_epoch + 1) % 3;
-                    if (@cmpxchgWeak(u8, &self.current_epoch, current_epoch, next_epoch, .seq_cst, .seq_cst) != null) continue;
+                if (@atomicLoad(u64, &self.epoch_counters[prev_epoch], .seq_cst) != 0) return;
 
-                    var aoq = self.allocator.create(AppendOnlyQueue(Node)) catch unreachable;
-                    aoq.* = AppendOnlyQueue(Node).init(self.allocator, nodeCleanup);
-                    if (@cmpxchgWeak(*AppendOnlyQueue(Node), &self.retire_lists[prev_epoch], old_aoq, aoq, .seq_cst, .seq_cst) != null) {
-                        aoq.deinit();
-                        self.allocator.destroy(aoq);
-                        continue;
-                    }
+                const next_epoch: u8 = (current_epoch + 1) % 3;
+                if (@cmpxchgWeak(u8, &self.current_epoch, current_epoch, next_epoch, .seq_cst, .seq_cst) != null) continue;
 
-                    old_aoq.deinit();
-                    self.allocator.destroy(old_aoq);
-                    return;
-                } else {
-                    return;
+                while (@atomicLoad(u64, &self.epoch_counters[prev_epoch], .seq_cst) != 0) {
+                    std.atomic.spinLoopHint();
                 }
+
+                var aoq = self.allocator.create(AppendOnlyQueue(Node)) catch unreachable;
+                aoq.* = AppendOnlyQueue(Node).init(self.allocator, nodeCleanup);
+
+                var old_aoq = @atomicLoad(*AppendOnlyQueue(Node), &self.retire_lists[prev_epoch], .seq_cst);
+                if (@cmpxchgWeak(*AppendOnlyQueue(Node), &self.retire_lists[prev_epoch], old_aoq, aoq, .seq_cst, .seq_cst) != null) {
+                    aoq.deinit();
+                    self.allocator.destroy(aoq);
+                    continue;
+                }
+
+                old_aoq.deinit();
+                self.allocator.destroy(old_aoq);
+                return;
             }
         }
     };
@@ -958,22 +966,22 @@ test "RingBuffer" {
 }
 
 // fn testJob(list: *AppendDeleteList(u64, u64), thread_number: usize) void {
-//     var active_ids = std.ArrayList(u64).init(testing.allocator);
-//     defer active_ids.deinit();
+//     var active_ids = std.ArrayList(u64).initCapacity(testing.allocator, 1024) catch return;
+//     defer active_ids.deinit(testing.allocator);
 
 //     var operation: u8 = 0;
-//     const max_iteration = 625000;
+//     const max_iteration = 10000;
 //     for (0..max_iteration) |i| {
-//         if (i % 5000 == 0) {
+//         if (i % 5000 == 0 or i == max_iteration - 1) {
 //             std.debug.print("[TEST] {d}: {d}\n", .{ std.Thread.getCurrentId(), i });
 //         }
 
 //         if (operation == 0) {
-//             const data = list.allocator.create(u64) catch continue;
+//             const data = list.allocator.create(u64) catch return;
 //             data.* = max_iteration * thread_number + i;
-//             active_ids.append(data.*) catch continue;
-//             list.prepend(data) catch continue;
-//         } else if (operation > 0 and operation <= 8) {
+//             list.prepend(data) catch @panic("AppendDeleteList.prepend failed in testJob");
+//             active_ids.append(testing.allocator, data.*) catch {};
+//         } else if ((operation > 0 and operation <= 7) or operation == 9) {
 //             var iter = list.iterator();
 //             defer iter.deinit();
 
@@ -984,6 +992,7 @@ test "RingBuffer" {
 //             }
 //         } else {
 //             if (active_ids.items.len > 0) {
+//                 // _ = active_ids.orderedRemove(0);
 //                 const data = active_ids.orderedRemove(0);
 //                 list.markDelete(testCondition(u64, u64).match, data);
 //             }
@@ -1105,7 +1114,7 @@ test "RingBuffer" {
 //         }
 
 //         _ = queue.enqueue(thread_number);
-//         std.time.sleep(rand.intRangeAtMost(u64, 5, 20));
+//         std.Thread.sleep(rand.intRangeAtMost(u64, 5, 20));
 //     }
 // }
 
@@ -1144,7 +1153,7 @@ test "RingBuffer" {
 //         }
 
 //         buffer.push(&thread_number);
-//         std.time.sleep(rand.intRangeAtMost(u64, 5, 20));
+//         std.Thread.sleep(rand.intRangeAtMost(u64, 5, 20));
 //     }
 // }
 
