@@ -1,5 +1,55 @@
 const std = @import("std");
 
+pub fn RefCounted(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        allocator: ?std.mem.Allocator,
+        ref_count: std.atomic.Value(u64),
+        value: T,
+
+        pub fn init(allocator: ?std.mem.Allocator, value: T) Self {
+            return .{
+                .allocator = allocator,
+                .ref_count = std.atomic.Value(u64).init(1),
+                .value = value,
+            };
+        }
+
+        pub fn release(self: *Self) u64 {
+            const prev_count = self.ref_count.fetchSub(1, .acq_rel);
+            if (prev_count == 1) {
+                if (comptime blk: {
+                    const info = @typeInfo(T);
+                    break :blk switch (info) {
+                        .@"struct" => @hasDecl(T, "deinit"),
+                        else => false,
+                    };
+                }) {
+                    self.value.deinit();
+                }
+                if (self.allocator) |alloc| {
+                    alloc.destroy(self);
+                }
+                return 0;
+            }
+            return prev_count - 1;
+        }
+
+        pub inline fn acquire(self: *Self) u64 {
+            return self.ref_count.fetchAdd(1, .acq_rel) + 1;
+        }
+
+        pub inline fn get(self: *Self) *T {
+            return &self.value;
+        }
+
+        pub inline fn getConst(self: *const Self) *const T {
+            return &self.value;
+        }
+    };
+}
+
 // S have to be power of 2 so it is possible to use bitwise and to compute modulo
 pub fn DestroyBuffer(E: type, comptime S: usize) type {
     comptime {
@@ -178,23 +228,21 @@ pub fn Queue(E: type, S: u64) type {
     };
 }
 
-pub fn AppendOnlyQueue(E: type) type {
+pub fn AppendOnlyQueue(E: type, nodeCleanupFn: ?*const fn (allocator: std.mem.Allocator, data: E) void) type {
     return struct {
         const Self = @This();
 
         allocator: std.mem.Allocator,
         head: *Node,
         tail: *Node,
-        node_cleanup_fn: NodeCleanupFn,
 
-        const NodeCleanupFn = *const fn (allocator: std.mem.Allocator, data_ptr: *E) void;
         const Node = struct {
-            entry: ?*E,
+            entry: ?E,
             next: ?*Node,
             _padding: u8 align(std.atomic.cache_line) = 0,
         };
 
-        pub fn init(allocator: std.mem.Allocator, node_cleanup_fn: NodeCleanupFn) Self {
+        pub fn init(allocator: std.mem.Allocator) Self {
             const sentinel_node = allocator.create(Node) catch unreachable;
             sentinel_node.* = Node{
                 .entry = null,
@@ -205,7 +253,6 @@ pub fn AppendOnlyQueue(E: type) type {
                 .allocator = allocator,
                 .head = sentinel_node,
                 .tail = sentinel_node,
-                .node_cleanup_fn = node_cleanup_fn,
             };
         }
 
@@ -214,14 +261,16 @@ pub fn AppendOnlyQueue(E: type) type {
             while (pointer != null) {
                 const next_node = pointer.?.next;
                 if (pointer.?.entry) |e| {
-                    self.node_cleanup_fn(self.allocator, e);
+                    if (comptime nodeCleanupFn) |fn_ptr| {
+                        fn_ptr(self.allocator, e);
+                    }
                 }
                 self.allocator.destroy(pointer.?);
                 pointer = next_node;
             }
         }
 
-        pub fn enqueue(self: *Self, entry: *E) void {
+        pub fn enqueue(self: *Self, entry: E) void {
             const node = self.allocator.create(Node) catch unreachable;
             node.* = Node{ .entry = entry, .next = null };
             const prev = @atomicRmw(*Node, &self.tail, .Xchg, node, .acq_rel);
@@ -240,7 +289,7 @@ pub fn AppendDeleteList(E: type, C: type) type {
         head: MarkablePointer,
         current_epoch: u8 = 0,
         epoch_counters: [3]u64 = .{ 0, 0, 0 },
-        retire_lists: [3]*AppendOnlyQueue(Node),
+        retire_lists: [3]*AppendOnlyQueue(*Node, nodeCleanup),
         node_cleanup_fn: NodeCleanupFn,
 
         const MarkablePointer = usize;
@@ -313,7 +362,7 @@ pub fn AppendDeleteList(E: type, C: type) type {
                             curr = succ;
                             curr_ptr = toPurePointer(curr);
 
-                            const retire_list = @atomicLoad(*AppendOnlyQueue(Node), &self.list.retire_lists[self.current_epoch], .seq_cst);
+                            const retire_list = @atomicLoad(*AppendOnlyQueue(*Node, nodeCleanup), &self.list.retire_lists[self.current_epoch], .seq_cst);
                             retire_list.enqueue(toPurePointer(tmp).?);
                         }
                         if (curr_ptr == null) return null;
@@ -335,13 +384,12 @@ pub fn AppendDeleteList(E: type, C: type) type {
                 .node_cleanup_fn = node_cleanup_fn,
             };
 
-            const aoq0 = try allocator.create(AppendOnlyQueue(Node));
-            aoq0.* = AppendOnlyQueue(Node).init(allocator, nodeCleanup);
-            const aoq1 = try allocator.create(AppendOnlyQueue(Node));
-            aoq1.* = AppendOnlyQueue(Node).init(allocator, nodeCleanup);
-            const aoq2 = try allocator.create(AppendOnlyQueue(Node));
-            aoq2.* = AppendOnlyQueue(Node).init(allocator, nodeCleanup);
-
+            const aoq0 = try allocator.create(AppendOnlyQueue(*Node, nodeCleanup));
+            aoq0.* = AppendOnlyQueue(*Node, nodeCleanup).init(allocator);
+            const aoq1 = try allocator.create(AppendOnlyQueue(*Node, nodeCleanup));
+            aoq1.* = AppendOnlyQueue(*Node, nodeCleanup).init(allocator);
+            const aoq2 = try allocator.create(AppendOnlyQueue(*Node, nodeCleanup));
+            aoq2.* = AppendOnlyQueue(*Node, nodeCleanup).init(allocator);
             return .{
                 .allocator = allocator,
                 .head = toMarkedPointer(sentinel_node, false),
@@ -397,7 +445,7 @@ pub fn AppendDeleteList(E: type, C: type) type {
                         curr = succ;
                         curr_ptr = toPurePointer(curr);
 
-                        const retire_list = @atomicLoad(*AppendOnlyQueue(Node), &self.retire_lists[current_epoch], .seq_cst);
+                        const retire_list = @atomicLoad(*AppendOnlyQueue(*Node, nodeCleanup), &self.retire_lists[current_epoch], .seq_cst);
                         retire_list.enqueue(toPurePointer(tmp).?);
                     }
                 }
@@ -439,7 +487,7 @@ pub fn AppendDeleteList(E: type, C: type) type {
                         curr = succ;
                         curr_ptr = toPurePointer(curr);
 
-                        const retire_list = @atomicLoad(*AppendOnlyQueue(Node), &self.retire_lists[current_epoch], .seq_cst);
+                        const retire_list = @atomicLoad(*AppendOnlyQueue(*Node, nodeCleanup), &self.retire_lists[current_epoch], .seq_cst);
                         retire_list.enqueue(toPurePointer(tmp).?);
                     }
                     if (curr_ptr == null) return;
@@ -475,11 +523,11 @@ pub fn AppendDeleteList(E: type, C: type) type {
                     std.atomic.spinLoopHint();
                 }
 
-                var aoq = self.allocator.create(AppendOnlyQueue(Node)) catch unreachable;
-                aoq.* = AppendOnlyQueue(Node).init(self.allocator, nodeCleanup);
+                var aoq = self.allocator.create(AppendOnlyQueue(*Node, nodeCleanup)) catch unreachable;
+                aoq.* = AppendOnlyQueue(*Node, nodeCleanup).init(self.allocator);
 
-                var old_aoq = @atomicLoad(*AppendOnlyQueue(Node), &self.retire_lists[prev_epoch], .seq_cst);
-                if (@cmpxchgWeak(*AppendOnlyQueue(Node), &self.retire_lists[prev_epoch], old_aoq, aoq, .seq_cst, .seq_cst) != null) {
+                var old_aoq = @atomicLoad(*AppendOnlyQueue(*Node, nodeCleanup), &self.retire_lists[prev_epoch], .seq_cst);
+                if (@cmpxchgWeak(*AppendOnlyQueue(*Node, nodeCleanup), &self.retire_lists[prev_epoch], old_aoq, aoq, .seq_cst, .seq_cst) != null) {
                     aoq.deinit();
                     self.allocator.destroy(aoq);
                     continue;
@@ -657,11 +705,11 @@ pub fn RingBuffer(comptime T: type) type {
 // Testing
 const testing = std.testing;
 
-fn testCleanup(allocator: std.mem.Allocator, data: *u8) void {
+fn testCleanupRefU8(allocator: std.mem.Allocator, data: *u8) void {
     allocator.destroy(data);
 }
 
-fn testCleanupU64(allocator: std.mem.Allocator, data: *u64) void {
+fn testCleanupRefU64(allocator: std.mem.Allocator, data: *u64) void {
     allocator.destroy(data);
 }
 
@@ -675,6 +723,62 @@ fn testCondition(T: type, C: type) type {
             return value != null and value.?.* == expected;
         }
     };
+}
+
+test "RefCounted no allocator, no deinit" {
+    const RefCountedU64 = RefCounted(u64);
+    var rc = RefCountedU64.init(null, 42);
+
+    try testing.expect(rc.get().* == 42);
+    try testing.expect(rc.acquire() == 2);
+    try testing.expect(rc.release() == 1);
+    try testing.expect(rc.release() == 0);
+}
+
+const TestStruct = struct {
+    allocator: std.mem.Allocator,
+    value: *u64,
+
+    pub fn init(allocator: std.mem.Allocator, value: u64) TestStruct {
+        const v = allocator.create(u64) catch unreachable;
+        v.* = value;
+
+        return .{
+            .allocator = allocator,
+            .value = v,
+        };
+    }
+
+    pub fn deinit(self: *TestStruct) void {
+        self.allocator.destroy(self.value);
+    }
+};
+
+test "RefCounted no allocator, deinit" {
+    const RefCountedU64 = RefCounted(TestStruct);
+    var rc = RefCountedU64.init(
+        null,
+        TestStruct.init(testing.allocator, 42),
+    );
+
+    try testing.expect(rc.get().value.* == 42);
+    try testing.expect(rc.acquire() == 2);
+    try testing.expect(rc.release() == 1);
+    try testing.expect(rc.release() == 0);
+}
+
+test "RefCounted allocator, deinit" {
+    const RefCountedU64 = RefCounted(TestStruct);
+    var rc = try testing.allocator.create(RefCountedU64);
+    rc.* = RefCountedU64.init(
+        testing.allocator,
+        TestStruct.init(testing.allocator, 42),
+    );
+
+    try testing.expect(rc.get().value.* == 42);
+    try testing.expect(rc.acquire() == 2);
+    try testing.expect(rc.release() == 1);
+    try testing.expect(rc.release() == 0);
 }
 
 test "DestroyBuffer" {
@@ -705,8 +809,8 @@ test "DestroyBuffer" {
     try testing.expect(destroy_buffer.buffer[0].?.* == 2);
 }
 
-test "AppendOnlyQueue" {
-    var queue = AppendOnlyQueue(u8).init(testing.allocator, testCleanup);
+test "AppendOnlyQueue, reference type with cleanup" {
+    var queue = AppendOnlyQueue(*u8, testCleanupRefU8).init(testing.allocator);
     defer queue.deinit();
 
     const e1 = try testing.allocator.create(u8);
@@ -729,6 +833,26 @@ test "AppendOnlyQueue" {
     try testing.expect(queue.head.next.?.entry.?.* == 0);
     try testing.expect(queue.head.next.?.next.?.entry.?.* == 1);
     try testing.expect(queue.head.next.?.next.?.next.?.entry.?.* == 2);
+}
+
+test "AppendOnlyQueue, value type, no cleanup" {
+    var queue = AppendOnlyQueue(u8, null).init(testing.allocator);
+    defer queue.deinit();
+
+    queue.enqueue(0);
+    try testing.expect(queue.tail.entry.? == 0);
+    try testing.expect(queue.head.next.?.entry.? == 0);
+
+    queue.enqueue(1);
+    try testing.expect(queue.tail.entry.? == 1);
+    try testing.expect(queue.head.next.?.entry.? == 0);
+    try testing.expect(queue.head.next.?.next.?.entry.? == 1);
+
+    queue.enqueue(2);
+    try testing.expect(queue.tail.entry.? == 2);
+    try testing.expect(queue.head.next.?.entry.? == 0);
+    try testing.expect(queue.head.next.?.next.?.entry.? == 1);
+    try testing.expect(queue.head.next.?.next.?.next.?.entry.? == 2);
 }
 
 test "Queue#enqueue" {
@@ -782,7 +906,7 @@ test "Queue#dequeue" {
 }
 
 test "AppendDeleteList#prepend" {
-    var list = try AppendDeleteList(u8, u8).init(testing.allocator, testCleanup);
+    var list = try AppendDeleteList(u8, u8).init(testing.allocator, testCleanupRefU8);
     defer list.deinit();
 
     const head_ptr = toPointer(list.head).?;
@@ -803,7 +927,7 @@ test "AppendDeleteList#prepend" {
 }
 
 test "AppendDeleteList#prepend with marked" {
-    var list = try AppendDeleteList(u8, u8).init(testing.allocator, testCleanup);
+    var list = try AppendDeleteList(u8, u8).init(testing.allocator, testCleanupRefU8);
     defer list.deinit();
 
     const head_ptr = toPointer(list.head).?;
@@ -840,7 +964,7 @@ test "AppendDeleteList#prepend with marked" {
 }
 
 test "AppendDeleteList Iterator" {
-    var list = try AppendDeleteList(u8, u8).init(testing.allocator, testCleanup);
+    var list = try AppendDeleteList(u8, u8).init(testing.allocator, testCleanupRefU8);
     defer list.deinit();
 
     const v1 = try list.allocator.create(u8);
@@ -1002,7 +1126,7 @@ test "RingBuffer" {
 // }
 
 // test "AppendDeleteList concurrency" {
-//     var list = try AppendDeleteList(u64, u64).init(testing.allocator, testCleanupU64);
+//     var list = try AppendDeleteList(u64, u64).init(testing.allocator, testCleanupRefU64);
 
 //     var threads: [16]std.Thread = undefined;
 //     for (0..16) |i| {
@@ -1075,7 +1199,7 @@ test "RingBuffer" {
 //     testing.allocator.free(buf.buffer);
 // }
 
-// fn appendOnlyQueueTestJob(queue: *AppendOnlyQueue(u64), thread_number: usize) void {
+// fn appendOnlyQueueTestJob(queue: *AppendOnlyQueue(*u64, testCleanupRefU64), thread_number: usize) void {
 //     const max_iteration = 10000;
 //     for (0..max_iteration) |i| {
 //         if (i % 100 == 0) {
@@ -1089,7 +1213,7 @@ test "RingBuffer" {
 // }
 
 // test "AppendOnlyQueue concurrency" {
-//     var queue = AppendOnlyQueue(u64).init(testing.allocator, testCleanupU64);
+//     var queue = AppendOnlyQueue(*u64, testCleanupRefU64).init(testing.allocator);
 //     defer queue.deinit();
 
 //     var threads: [16]std.Thread = undefined;
