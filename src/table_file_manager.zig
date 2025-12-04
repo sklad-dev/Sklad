@@ -10,6 +10,7 @@ const Memtable = @import("./memtable.zig").Memtable;
 const SSTable = @import("./sstable.zig").SSTable;
 const MemtableIteratorAdapter = @import("./sstable.zig").MemtableIteratorAdapter;
 const StorageRecord = @import("./data_types.zig").StorageRecord;
+const fileNameFromHandle = @import("./sstable.zig").fileNameFromHandle;
 
 const String = []const u8;
 
@@ -79,18 +80,6 @@ pub const TableFileManager = struct {
             buf,
             "{s}/{d}.{d}.sstable",
             .{ self.path, level, next_id },
-        );
-
-        return file_name;
-    }
-
-    pub inline fn fileNameFromId(allocator: std.mem.Allocator, path: []const u8, level: u8, file_id: u64) ![]u8 {
-        const buf_size = 10 + path.len + utils.numDigits(u8, level) + utils.numDigits(u64, file_id);
-        const buf = try allocator.alloc(u8, buf_size);
-        const file_name = try std.fmt.bufPrint(
-            buf,
-            "{s}/{d}.{d}.sstable",
-            .{ path, level, file_id },
         );
 
         return file_name;
@@ -260,7 +249,11 @@ fn cleanup(table_manager: *const TableFileManager) !void {
         if (table_manager.files[level].load(.unordered)) |files| {
             var curr = files.get().head.next;
             while (curr) |node| : (curr = node.next) {
-                const file_name = TableFileManager.fileNameFromId(testing.allocator, table_manager.path, @intCast(level), node.entry.?) catch unreachable;
+                const file_name = fileNameFromHandle(
+                    testing.allocator,
+                    table_manager.path,
+                    .{ .level = @intCast(level), .id = node.entry.? },
+                ) catch unreachable;
                 defer testing.allocator.free(file_name);
                 try std.fs.cwd().deleteFile(file_name);
             }
