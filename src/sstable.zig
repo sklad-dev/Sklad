@@ -347,10 +347,7 @@ pub const SSTable = struct {
         const path = try fileNameFromHandle(allocator, global_context.getRootFolder(), handle);
         defer allocator.free(path);
 
-        const file = try std.fs.cwd().createFile(path, .{
-            .read = true,
-            .truncate = false,
-        });
+        const file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
         const file_max_position = try file.getEndPos();
         var reader = file.reader(getWorkerContext().?.reader_buffer[0..]);
 

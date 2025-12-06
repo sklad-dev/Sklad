@@ -1,7 +1,9 @@
 const std = @import("std");
-const SSTable = @import("./sstable.zig").SSTable;
+
 const FileHandle = @import("./sstable.zig").FileHandle;
 const RefCounted = @import("./lock_free.zig").RefCounted;
+const SSTable = @import("./sstable.zig").SSTable;
+const TableFileManager = @import("./table_file_manager.zig").TableFileManager;
 
 pub const SSTableCache = struct {
     allocator: std.mem.Allocator,
@@ -45,7 +47,7 @@ pub const SSTableCache = struct {
         self.allocator.free(self.entries);
     }
 
-    pub fn get(self: *SSTableCache, handle: FileHandle) !*CacheRecord {
+    pub fn get(self: *SSTableCache, handle: FileHandle, file_manager: *TableFileManager) !?*CacheRecord {
         for (0..self.capacity) |i| {
             if (self.entries[i].load(.acquire)) |record| {
                 const record_handle = record.getConst().table.handle;
@@ -66,6 +68,24 @@ pub const SSTableCache = struct {
                     }
                 }
             }
+        }
+
+        const file_list = file_manager.acquireFilesAtLevel(handle.level) orelse return null;
+        defer _ = file_list.release();
+
+        var found = false;
+        var curr = file_list.get().head.next;
+        while (curr) |node| : (curr = node.next) {
+            if (node.entry) |file_id| {
+                if (file_id == handle.id) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        if (!found) {
+            return null;
         }
 
         if (self.size.load(.acquire) >= self.capacity) {
@@ -101,10 +121,6 @@ pub const SSTableCache = struct {
                 inserted = true;
                 break;
             }
-        }
-
-        if (!inserted) {
-            return record;
         }
 
         _ = record.acquire();

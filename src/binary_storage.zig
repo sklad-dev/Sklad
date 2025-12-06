@@ -149,33 +149,39 @@ pub const BinaryStorage = struct {
             records_number: u32,
 
             fn init(base_task: *CompactionTask, files: *AppendOnlyQueue(u64, null), multiplier: usize) !CompactionHelper {
-                var files_tail = try base_task.allocator.alloc(u64, multiplier);
+                var file_count: usize = 0;
+                var current = files.head.next;
+                while (current) |node| : (current = node.next) {
+                    if (node.entry) |_| file_count += 1;
+                }
+                const files_to_compact = @min(file_count, multiplier);
+
+                var files_tail = try base_task.allocator.alloc(u64, files_to_compact);
 
                 var i: usize = 0;
-                var current = files.head.next;
-                while (i < multiplier and current != null) : (current = current.?.next) {
+                current = files.head.next;
+                while (i < files_to_compact and current != null) : (current = current.?.next) {
                     if (current.?.entry) |entry| {
                         files_tail[i] = entry;
                         i += 1;
                     }
                 }
 
-                var adapters = try base_task.allocator.alloc(SSTableIteratorAdapter, multiplier);
+                var adapters = try base_task.allocator.alloc(SSTableIteratorAdapter, files_to_compact);
                 errdefer base_task.allocator.free(adapters);
 
-                var sstables = try base_task.allocator.alloc(*SSTableCache.CacheRecord, multiplier);
+                var sstables = try base_task.allocator.alloc(*SSTableCache.CacheRecord, files_to_compact);
                 errdefer base_task.allocator.free(sstables);
 
-                var iters = try base_task.allocator.alloc(StorageRecord.Iterator, multiplier);
+                var iters = try base_task.allocator.alloc(StorageRecord.Iterator, files_to_compact);
                 errdefer base_task.allocator.free(iters);
 
                 var total_records: u32 = 0;
-                var j: usize = 0;
-                while (j < multiplier) : (j += 1) {
-                    sstables[j] = try base_task.storage.sstable_cache.get(.{
+                for (0..files_to_compact) |j| {
+                    sstables[j] = (try base_task.storage.sstable_cache.get(.{
                         .level = base_task.level,
                         .id = files_tail[j],
-                    });
+                    }, &base_task.storage.table_file_manager)).?;
                     total_records += sstables[j].getConst().table.records_number;
                     adapters[j] = try SSTableIteratorAdapter.init(sstables[j].getConst().table);
                     iters[j] = adapters[j].iterator();
@@ -317,14 +323,15 @@ pub const BinaryStorage = struct {
         var table_file_manager = try TableFileManager.init(allocator, path);
         const memtable = try restoreMemtables(&table_file_manager);
         const config = global_context.getConfigurator().?;
-        const storage = BinaryStorage{
+        var storage = BinaryStorage{
             .allocator = allocator,
             .path = path,
             .active_memtable = std.atomic.Value(*Memtable).init(memtable),
             .pending_memtables = std.atomic.Value(?*PendingMemtableList).init(null),
             .table_file_manager = table_file_manager,
-            .sstable_cache = try SSTableCache.init(allocator, config.sstableCacheSize()),
+            .sstable_cache = undefined,
         };
+        storage.sstable_cache = try SSTableCache.init(allocator, config.sstableCacheSize());
         return storage;
     }
 
@@ -487,7 +494,7 @@ pub const BinaryStorage = struct {
                     var cached_record = try self.sstable_cache.get(.{
                         .level = @intCast(level),
                         .id = file_id,
-                    });
+                    }, &self.table_file_manager) orelse continue;
                     defer _ = cached_record.release();
 
                     if (try cached_record.getConst().table.find(key)) |value| {
@@ -620,7 +627,7 @@ fn cleanup(storage: *BinaryStorage) !void {
                     var cached_record = try storage.sstable_cache.get(.{
                         .level = @intCast(level),
                         .id = file_id,
-                    });
+                    }, &storage.table_file_manager) orelse continue;
                     defer _ = cached_record.release();
                 }
             }
@@ -815,7 +822,7 @@ test "CompactionTask" {
             testing.allocator,
             &memtable_iterator,
             test_memtable.size,
-            .{ .level = 0, .id = @as(u64, i + 1) },
+            .{ .level = 0, .id = @as(u64, i) },
             block_size,
             20,
         );
