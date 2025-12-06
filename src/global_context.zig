@@ -11,7 +11,7 @@ var TYPED_STORAGE = std.atomic.Value(?*TypedStorage).init(null);
 var TASK_QUEUE = std.atomic.Value(?*TaskQueue).init(null);
 var METRICS_AGGREGATOR = std.atomic.Value(?*MetricsAggregator).init(null);
 var WORKER_MANAGER = std.atomic.Value(?*WorkerManager).init(null);
-const ROOT_FOLDER: []const u8 = "./sklad";
+const ROOT_FOLDER: []const u8 = ".sklad";
 threadlocal var TEST_ROOT_FOLDER: ?[]const u8 = null;
 
 pub inline fn loadConfiguration(configurator: *Configurator) void {
