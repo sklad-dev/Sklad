@@ -58,35 +58,12 @@ pub const TableFileManager = struct {
         return try std.fmt.parseInt(u64, file_name[first_dot + 1 .. second_dot], 10);
     }
 
-    pub fn generateFileName(self: *TableFileManager, level: u8) ![]u8 {
-        const next_id = @atomicRmw(
-            u64,
-            &self.max_file_id_per_level[level],
-            .Add,
-            1,
-            .seq_cst,
-        );
-        errdefer _ = @atomicRmw(
-            u64,
-            &self.max_file_id_per_level[level],
-            .Sub,
-            1,
-            .seq_cst,
-        );
-
-        const buf_size = 10 + self.path.len + utils.numDigits(u8, level) + utils.numDigits(u64, next_id);
-        const buf = try self.allocator.alloc(u8, buf_size);
-        const file_name = try std.fmt.bufPrint(
-            buf,
-            "{s}/{d}.{d}.sstable",
-            .{ self.path, level, next_id },
-        );
-
-        return file_name;
+    pub fn nextFileIdForLevel(self: *TableFileManager, level: u8) u64 {
+        return @atomicRmw(u64, &self.max_file_id_per_level[level], .Add, 1, .seq_cst);
     }
 
     pub fn flushMemtable(self: *TableFileManager, memtable: *Memtable) !void {
-        const file_name = try self.generateFileName(0);
+        const file_id = self.nextFileIdForLevel(0);
 
         var adapter = MemtableIteratorAdapter.init(memtable);
         var iterator = adapter.iterator();
@@ -96,12 +73,12 @@ pub const TableFileManager = struct {
             self.allocator,
             &iterator,
             memtable.size,
-            file_name,
+            .{ .level = 0, .id = file_id },
             configurator.sstableBlockSize(),
             configurator.sstableBloomBitsPerKey(),
         );
 
-        try self.addFileAtLevel(0, sstable.file_id);
+        try self.addFileAtLevel(0, sstable.handle.id);
 
         sstable.close(false);
         try memtable.wal.deleteFile();
@@ -111,10 +88,6 @@ pub const TableFileManager = struct {
         const file_list = self.files[level].load(.acquire) orelse return null;
         _ = file_list.acquire();
         return file_list;
-    }
-
-    pub inline fn releaseFileList(file_list: *FileList) void {
-        _ = file_list.release();
     }
 
     pub fn addFileAtLevel(self: *TableFileManager, level: u8, file_id: u64) !void {
@@ -305,7 +278,7 @@ test "TableFileManager#deleteFilesAtLevel" {
     try manager.deleteFilesAtLevel(0, &[_]u64{ 2, 4 });
 
     const list = manager.acquireFilesAtLevel(0).?;
-    TableFileManager.releaseFileList(list);
+    _ = list.release();
 
     var counter: usize = 0;
     var curr = list.get().head.next;

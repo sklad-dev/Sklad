@@ -3,10 +3,10 @@ const FileWriter = std.fs.File.Writer;
 const FileReader = std.fs.File.Reader;
 
 const data_types = @import("./data_types.zig");
+const global_context = @import("./global_context.zig");
 const Memtable = @import("./memtable.zig").Memtable;
 const BloomFilter = @import("./bloom.zig").BloomFilter;
 const utils = @import("./utils.zig");
-const getConfigurator = @import("./global_context.zig").getConfigurator;
 const getWorkerContext = @import("./worker.zig").getWorkerContext;
 
 const StorageRecord = data_types.StorageRecord;
@@ -190,7 +190,7 @@ pub const SSTable = struct {
         block_size: u32,
         bits_per_key: u8,
     ) !SSTable {
-        const path = try fileNameFromHandle(allocator, "./", handle); // TODO: use the actual path
+        const path = try fileNameFromHandle(allocator, global_context.getRootFolder(), handle);
         defer allocator.free(path);
 
         const file = try std.fs.cwd().createFile(path, .{
@@ -344,7 +344,7 @@ pub const SSTable = struct {
     }
 
     pub fn open(allocator: std.mem.Allocator, handle: FileHandle) !SSTable {
-        const path = try fileNameFromHandle(allocator, "./", handle); // TODO: use the actual path
+        const path = try fileNameFromHandle(allocator, global_context.getRootFolder(), handle);
         defer allocator.free(path);
 
         const file = try std.fs.cwd().createFile(path, .{
@@ -552,7 +552,7 @@ pub const SSTable = struct {
 const testing = std.testing;
 
 fn cleanup(file: SSTable, memtable: Memtable) !void {
-    const path = try fileNameFromHandle(testing.allocator, "./", file.handle);
+    const path = try fileNameFromHandle(testing.allocator, global_context.getRootFolder(), file.handle);
     defer testing.allocator.free(path);
 
     try std.fs.cwd().deleteFile(path);
@@ -560,7 +560,11 @@ fn cleanup(file: SSTable, memtable: Memtable) !void {
 }
 
 test "SSTable#create" {
+    global_context.setRootFolderForTests("./");
+    defer global_context.resetRootFolderForTests();
+
     const block_size: u32 = 52;
+
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
 
@@ -598,6 +602,9 @@ test "SSTable#create" {
 }
 
 test "SSTable#open" {
+    global_context.setRootFolderForTests("./");
+    defer global_context.resetRootFolderForTests();
+
     const block_size: u32 = 52;
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
@@ -642,6 +649,9 @@ test "SSTable#open" {
 }
 
 test "SSTable#find" {
+    global_context.setRootFolderForTests("./");
+    defer global_context.resetRootFolderForTests();
+
     const block_size: u32 = 52;
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
@@ -694,6 +704,9 @@ test "SSTable#find" {
 }
 
 test "SSTable#iterator" {
+    global_context.setRootFolderForTests("./");
+    defer global_context.resetRootFolderForTests();
+
     const block_size: u32 = 64;
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();

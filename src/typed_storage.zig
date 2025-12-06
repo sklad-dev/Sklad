@@ -1,22 +1,22 @@
 const std = @import("std");
+
+const global_context = @import("./global_context.zig");
 const utils = @import("./utils.zig");
 const BinaryStorage = @import("./binary_storage.zig").BinaryStorage;
 const ValueType = @import("./data_types.zig").ValueType;
 const BinaryData = @import("./data_types.zig").BinaryData;
 const TypedBinaryData = @import("./data_types.zig").TypedBinaryData;
 
-const DATABASE_STORAGE = ".sklad";
-
 pub const TypedStorage = struct {
     allocator: std.mem.Allocator,
     storage: BinaryStorage,
 
     pub fn init(allocator: std.mem.Allocator) !TypedStorage {
-        try utils.makeDirIfNotExists(DATABASE_STORAGE);
+        try utils.makeDirIfNotExists(global_context.getRootFolder());
 
         return .{
             .allocator = allocator,
-            .storage = try BinaryStorage.start(allocator, DATABASE_STORAGE),
+            .storage = try BinaryStorage.start(allocator, global_context.getRootFolder()),
         };
     }
 
@@ -48,35 +48,58 @@ pub const TypedStorage = struct {
 
 // Tests
 const testing = std.testing;
-const global_context = @import("./global_context.zig");
 const TestingConfigurator = @import("./configurator.zig").TestingConfigurator;
 const TaskQueue = @import("./task_queue.zig").TaskQueue;
 
-fn cleanup(typed_storage: *TypedStorage) void {
-    var iter = typed_storage.storage.memtables.iterator();
-    defer iter.deinit();
+fn cleanup(typed_storage: *TypedStorage) !void {
+    if (typed_storage.storage.pending_memtables.load(.acquire)) |list| {
+        _ = list.acquire();
+        defer _ = list.release();
 
-    typed_storage.storage.active_memtable.load(.unordered).wal.deleteFile() catch {
-        const out = std.io.getStdOut().writer();
-        std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
-        return;
-    };
-
-    while (iter.next()) |node| {
-        node.entry.?.memtable.wal.deleteFile() catch {
-            const out = std.io.getStdOut().writer();
-            std.fmt.format(out, "failed to clean up after the test\n", .{}) catch unreachable;
-        };
+        var curr = list.get().head.next;
+        while (curr) |node| : (curr = node.next) {
+            if (node.entry) |entry| {
+                try entry.memtable.wal.deleteFile();
+            }
+        }
     }
 
     for (0..typed_storage.storage.table_file_manager.files.len) |level| {
-        if (typed_storage.storage.table_file_manager.files[level]) |files| {
-            var it = files.iterator();
-            defer it.deinit();
-            while (it.next()) |node| {
-                const file_name = node.entry.?.name;
-                std.fs.cwd().deleteFile(file_name) catch unreachable;
+        if (typed_storage.storage.table_file_manager.acquireFilesAtLevel(@intCast(level))) |files| {
+            defer _ = files.release();
+
+            var current = files.get().head.next;
+            while (current) |node| : (current = node.next) {
+                if (node.entry) |file_id| {
+                    var cached_record = try typed_storage.storage.sstable_cache.get(.{
+                        .level = @intCast(level),
+                        .id = file_id,
+                    });
+                    defer _ = cached_record.release();
+                }
             }
+        }
+    }
+
+    var dir = try std.fs.cwd().openDir("./", .{
+        .access_sub_paths = false,
+        .iterate = true,
+        .no_follow = true,
+    });
+    defer dir.close();
+
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind == .file and (std.mem.endsWith(
+            u8,
+            entry.name,
+            ".sstable",
+        ) or std.mem.endsWith(
+            u8,
+            entry.name,
+            ".wal",
+        ))) {
+            try std.fs.cwd().deleteFile(entry.name);
         }
     }
 }
@@ -90,10 +113,13 @@ inline fn buildTypedData(comptime T: type, value_type: ValueType, value: T) !Typ
 }
 
 test "NodeStorage#set" {
-    defer global_context.deinitConfigurationForTests();
+    global_context.setRootFolderForTests("./");
+    defer global_context.resetRootFolderForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
     configurator.* = TestingConfigurator.init();
+    defer global_context.deinitConfigurationForTests();
+
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 
@@ -101,9 +127,11 @@ test "NodeStorage#set" {
     global_context.initTaskQueueForTests(&task_queue);
     defer global_context.cleanAndDeinitTaskQueueForTests();
 
+    try @import("./worker.zig").initWorkerContext(testing.allocator, conf.sstableBlockSize());
+    defer @import("./worker.zig").deinitWorkerContext();
+
     var test_storage = try TypedStorage.init(testing.allocator);
     defer test_storage.stop();
-    defer cleanup(&test_storage);
 
     try test_storage.set(
         try buildTypedData(u8, .smallint, 2),
@@ -136,13 +164,18 @@ test "NodeStorage#set" {
     };
     try test_storage.set(data, data);
     try testing.expect(test_storage.storage.active_memtable.load(.unordered).size == 5);
+
+    try cleanup(&test_storage);
 }
 
 test "NodeStorage#get" {
-    defer global_context.deinitConfigurationForTests();
+    global_context.setRootFolderForTests("./");
+    defer global_context.resetRootFolderForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
     configurator.* = TestingConfigurator.init();
+    defer global_context.deinitConfigurationForTests();
+
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 
@@ -150,9 +183,11 @@ test "NodeStorage#get" {
     global_context.initTaskQueueForTests(&task_queue);
     defer global_context.cleanAndDeinitTaskQueueForTests();
 
+    try @import("./worker.zig").initWorkerContext(testing.allocator, conf.sstableBlockSize());
+    defer @import("./worker.zig").deinitWorkerContext();
+
     var test_storage = try TypedStorage.init(testing.allocator);
     defer test_storage.stop();
-    defer cleanup(&test_storage);
 
     const key = try buildTypedData(u8, .smallint, 2);
     const value = try buildTypedData(f32, .float, 1.23);
@@ -161,4 +196,6 @@ test "NodeStorage#get" {
     defer testing.allocator.free(result.?.data);
 
     try testing.expect(std.mem.eql(u8, result.?.data, value.data));
+
+    try cleanup(&test_storage);
 }

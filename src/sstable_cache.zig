@@ -2,7 +2,6 @@ const std = @import("std");
 const SSTable = @import("./sstable.zig").SSTable;
 const FileHandle = @import("./sstable.zig").FileHandle;
 const RefCounted = @import("./lock_free.zig").RefCounted;
-const fileNameFromHandle = @import("./sstable.zig").fileNameFromHandle;
 
 pub const SSTableCache = struct {
     allocator: std.mem.Allocator,
@@ -50,7 +49,7 @@ pub const SSTableCache = struct {
         for (0..self.capacity) |i| {
             if (self.entries[i].load(.acquire)) |record| {
                 const record_handle = record.getConst().table.handle;
-                if (record_handle == handle) {
+                if (record_handle.level == handle.level and record_handle.id == handle.id) {
                     var current = record.ref_count.load(.acquire);
                     while (current > 0) {
                         if (record.ref_count.cmpxchgWeak(
