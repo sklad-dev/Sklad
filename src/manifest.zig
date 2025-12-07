@@ -68,7 +68,7 @@ pub const Manifest = struct {
         self.append(record);
     }
 
-    pub fn deleteFile(self: *Manifest, level: u8, file_id: u64) void {
+    pub fn removeFile(self: *Manifest, level: u8, file_id: u64) void {
         const record = ManifestEntry{
             .entry_type = .fileRemoved,
             .level = level,
@@ -138,7 +138,7 @@ test "Manifest#append and flush" {
     defer manifest.deinit();
 
     manifest.addFile(0, 42);
-    manifest.deleteFile(1, 84);
+    manifest.removeFile(1, 84);
     try testing.expect(try manifest.flush());
 
     var buffer: [18]u8 = undefined;

@@ -1,28 +1,30 @@
 const std = @import("std");
 
+const fileNameFromHandle = @import("./sstable.zig").fileNameFromHandle;
 const global_context = @import("./global_context.zig");
 const utils = @import("./utils.zig");
 
 const AppendOnlyQueue = @import("./lock_free.zig").AppendOnlyQueue;
+const Manifest = @import("./manifest.zig").Manifest;
+const Memtable = @import("./memtable.zig").Memtable;
+const MemtableIteratorAdapter = @import("./sstable.zig").MemtableIteratorAdapter;
 const Queue = @import("./lock_free.zig").Queue;
 const RefCounted = @import("./lock_free.zig").RefCounted;
-const Memtable = @import("./memtable.zig").Memtable;
 const SSTable = @import("./sstable.zig").SSTable;
-const MemtableIteratorAdapter = @import("./sstable.zig").MemtableIteratorAdapter;
 const StorageRecord = @import("./data_types.zig").StorageRecord;
-const fileNameFromHandle = @import("./sstable.zig").fileNameFromHandle;
 
 const String = []const u8;
 
 pub const CompactionState = enum(u8) {
-    .none,
-    .scheduled,
-    .running,
+    none,
+    scheduled,
+    running,
 };
 
 pub const TableFileManager = struct {
     allocator: std.mem.Allocator,
     path: []const u8,
+    manifest: Manifest,
     files: [256]std.atomic.Value(?*FileList),
     level_counters: [256]u16,
     max_file_id_per_level: [256]u64,
@@ -34,6 +36,7 @@ pub const TableFileManager = struct {
         var manager = TableFileManager{
             .allocator = allocator,
             .path = path,
+            .manifest = try Manifest.init(allocator, path),
             .files = [_]std.atomic.Value(?*FileList){std.atomic.Value(?*FileList).init(null)} ** 256,
             .level_counters = [_]u16{0} ** 256,
             .max_file_id_per_level = [_]u64{0} ** 256,
@@ -44,6 +47,7 @@ pub const TableFileManager = struct {
     }
 
     pub fn deinit(self: *TableFileManager) void {
+        self.manifest.deinit();
         for (0..256) |i| {
             if (self.files[i].load(.acquire)) |file_list| {
                 file_list.get().deinit();
@@ -107,6 +111,9 @@ pub const TableFileManager = struct {
 
         _ = @atomicRmw(u16, &self.level_counters[level], .Add, 1, .seq_cst);
         files_at_level.?.get().enqueue(file_id);
+
+        self.manifest.addFile(level, file_id);
+        _ = try self.manifest.flush();
     }
 
     pub fn deleteFilesAtLevel(self: *TableFileManager, level: u8, file_ids: []const u64) !void {
@@ -168,6 +175,11 @@ pub const TableFileManager = struct {
             deleted_count,
             .seq_cst,
         );
+
+        for (file_ids) |file_id| {
+            self.manifest.removeFile(level, file_id);
+        }
+        _ = try self.manifest.flush();
     }
 
     fn mapSstableFiles(self: *TableFileManager) !void {
@@ -293,4 +305,6 @@ test "TableFileManager#deleteFilesAtLevel" {
     try testing.expect(seen.contains(1));
     try testing.expect(seen.contains(3));
     try testing.expect(manager.level_counters[0] == 2);
+
+    try std.fs.cwd().deleteFile("./MANIFEST");
 }
