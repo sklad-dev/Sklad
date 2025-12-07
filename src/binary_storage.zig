@@ -267,8 +267,8 @@ pub const BinaryStorage = struct {
             if (@cmpxchgWeak(
                 u8,
                 &self.storage.table_file_manager.compaction_flags[self.level],
-                @intFromEnum(CompactionState.Scheduled),
-                @intFromEnum(CompactionState.Running),
+                @intFromEnum(CompactionState.scheduled),
+                @intFromEnum(CompactionState.running),
                 .seq_cst,
                 .seq_cst,
             ) != null) {
@@ -280,8 +280,8 @@ pub const BinaryStorage = struct {
                 _ = @cmpxchgWeak(
                     u8,
                     &self.storage.table_file_manager.compaction_flags[self.level],
-                    @intFromEnum(CompactionState.Running),
-                    @intFromEnum(CompactionState.None),
+                    @intFromEnum(CompactionState.running),
+                    @intFromEnum(CompactionState.none),
                     .seq_cst,
                     .seq_cst,
                 );
@@ -301,8 +301,8 @@ pub const BinaryStorage = struct {
             _ = @cmpxchgWeak(
                 u8,
                 &self.storage.table_file_manager.compaction_flags[self.level],
-                @intFromEnum(CompactionState.Running),
-                @intFromEnum(CompactionState.None),
+                @intFromEnum(CompactionState.running),
+                @intFromEnum(CompactionState.none),
                 .seq_cst,
                 .seq_cst,
             );
@@ -434,8 +434,8 @@ pub const BinaryStorage = struct {
         if (@cmpxchgWeak(
             u8,
             &self.table_file_manager.compaction_flags[level],
-            @intFromEnum(CompactionState.None),
-            @intFromEnum(CompactionState.Scheduled),
+            @intFromEnum(CompactionState.none),
+            @intFromEnum(CompactionState.scheduled),
             .seq_cst,
             .seq_cst,
         ) == null) {
@@ -853,8 +853,8 @@ test "CompactionTask" {
     _ = @cmpxchgWeak(
         u8,
         &storage.table_file_manager.compaction_flags[0],
-        @intFromEnum(CompactionState.None),
-        @intFromEnum(CompactionState.Scheduled),
+        @intFromEnum(CompactionState.none),
+        @intFromEnum(CompactionState.scheduled),
         .seq_cst,
         .seq_cst,
     );

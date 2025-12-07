@@ -15,9 +15,9 @@ const fileNameFromHandle = @import("./sstable.zig").fileNameFromHandle;
 const String = []const u8;
 
 pub const CompactionState = enum(u8) {
-    None,
-    Scheduled,
-    Running,
+    .none,
+    .scheduled,
+    .running,
 };
 
 pub const TableFileManager = struct {

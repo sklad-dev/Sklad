@@ -1,19 +1,23 @@
 const std = @import("std");
 const utils = @import("utils.zig");
+const RefCounted = @import("lock_free.zig").RefCounted;
 const AppendOnlyQueue = @import("lock_free.zig").AppendOnlyQueue;
 
-pub const ManifsetEntryType = enum(u8) {
-    MARK_DELETED,
+pub const ManifestEntryType = enum(u8) {
+    fileAdded,
+    fileRemoved,
+    cleanupCheckpoint,
 };
 
 pub const ManifestEntry = struct {
-    entry_type: ManifsetEntryType,
+    entry_type: ManifestEntryType,
     level: u8,
     file_number: u64,
+    timestamp: i64,
 };
 
 pub const Manifest = struct {
-    const EntryBuffer = AppendOnlyQueue(ManifestEntry, null);
+    const EntryBuffer = RefCounted(AppendOnlyQueue(ManifestEntry, null));
 
     allocator: std.mem.Allocator,
     path: []const u8,
@@ -33,7 +37,10 @@ pub const Manifest = struct {
         });
 
         const initial_buffer = try allocator.create(EntryBuffer);
-        initial_buffer.* = EntryBuffer.init(allocator);
+        initial_buffer.* = EntryBuffer.init(
+            allocator,
+            AppendOnlyQueue(ManifestEntry, null).init(allocator),
+        );
 
         return .{
             .allocator = allocator,
@@ -46,47 +53,79 @@ pub const Manifest = struct {
 
     pub fn deinit(self: *Manifest) void {
         const buffer = self.buffer.load(.acquire);
-        buffer.deinit();
-        self.allocator.destroy(buffer);
+        _ = buffer.release();
         self.file.close();
         self.allocator.free(self.path);
     }
 
-    pub fn append(self: *Manifest, level: u8, file_number: u64) !void {
-        self.buffer.load(.acquire).enqueue(.{
-            .entry_type = .MARK_DELETED,
+    pub fn addFile(self: *Manifest, level: u8, file_id: u64) void {
+        const record = ManifestEntry{
+            .entry_type = .fileAdded,
             .level = level,
-            .file_number = file_number,
-        });
+            .file_number = file_id,
+            .timestamp = std.time.microTimestamp(),
+        };
+        self.append(record);
     }
 
-    pub fn flush(self: *Manifest) !void {
-        if (self.is_flushing.swap(true, .acquire)) return;
+    pub fn deleteFile(self: *Manifest, level: u8, file_id: u64) void {
+        const record = ManifestEntry{
+            .entry_type = .fileRemoved,
+            .level = level,
+            .file_number = file_id,
+            .timestamp = std.time.microTimestamp(),
+        };
+        self.append(record);
+    }
+
+    pub fn recordCleanupCheckpoint(self: *Manifest, last_cleaned_offset: u64) void {
+        const record = ManifestEntry{
+            .entry_type = .cleanupCheckpoint,
+            .level = 0, // Unused for checkpoint
+            .file_number = last_cleaned_offset,
+            .timestamp = std.time.microTimestamp(),
+        };
+        self.append(record);
+    }
+
+    fn append(self: *Manifest, record: ManifestEntry) void {
+        const current_buffer = self.buffer.load(.acquire);
+        _ = current_buffer.acquire();
+        defer _ = current_buffer.release();
+
+        current_buffer.get().enqueue(record);
+    }
+
+    pub fn flush(self: *Manifest) !bool {
+        if (self.is_flushing.swap(true, .acquire)) return false;
         defer self.is_flushing.store(false, .release);
 
         const new_buffer = try self.allocator.create(EntryBuffer);
-        new_buffer.* = EntryBuffer.init(self.allocator);
+        new_buffer.* = EntryBuffer.init(
+            self.allocator,
+            AppendOnlyQueue(ManifestEntry, null).init(self.allocator),
+        );
 
         const old_buffer = self.buffer.swap(new_buffer, .acq_rel);
-        defer {
-            old_buffer.deinit();
-            self.allocator.destroy(old_buffer);
-        }
+        defer _ = old_buffer.release();
 
         const max_position = try self.file.getEndPos();
         var writer = self.file.writer(&[0]u8{});
         try writer.seekTo(max_position);
 
-        var current = old_buffer.head.next;
+        var current = old_buffer.get().head.next;
         while (current) |node| : (current = node.next) {
             if (node.entry) |entry| {
                 try utils.writeNumber(u8, &writer.interface, @intFromEnum(entry.entry_type));
                 try utils.writeNumber(u8, &writer.interface, entry.level);
                 try utils.writeNumber(u64, &writer.interface, entry.file_number);
+                try utils.writeNumber(i64, &writer.interface, entry.timestamp);
             }
         }
 
         try self.file.sync();
+
+        return true;
     }
 };
 
@@ -98,11 +137,11 @@ test "Manifest#append and flush" {
     var manifest = try Manifest.init(allocator, "./");
     defer manifest.deinit();
 
-    try manifest.append(0, 42);
-    try manifest.append(1, 84);
-    try manifest.flush();
+    manifest.addFile(0, 42);
+    manifest.deleteFile(1, 84);
+    try testing.expect(try manifest.flush());
 
-    var buffer: [10]u8 = undefined;
+    var buffer: [18]u8 = undefined;
     var reader = manifest.file.reader(&buffer);
     try reader.seekTo(0);
 
@@ -111,19 +150,19 @@ test "Manifest#append and flush" {
     const level1: u8 = try utils.readNumber(u8, &reader.interface);
     try reader.seekTo(2);
     const file_number1: u64 = try utils.readNumber(u64, &reader.interface);
-    try reader.seekTo(10);
 
-    try testing.expect(entry_type1 == @intFromEnum(ManifsetEntryType.MARK_DELETED));
+    try testing.expect(entry_type1 == @intFromEnum(ManifestEntryType.fileAdded));
     try testing.expect(level1 == 0);
     try testing.expect(file_number1 == 42);
 
+    try reader.seekTo(18);
     const entry_type2: u8 = try utils.readNumber(u8, &reader.interface);
-    try reader.seekTo(11);
+    try reader.seekTo(19);
     const level2: u8 = try utils.readNumber(u8, &reader.interface);
-    try reader.seekTo(12);
+    try reader.seekTo(20);
     const file_number2: u64 = try utils.readNumber(u64, &reader.interface);
 
-    try testing.expect(entry_type2 == @intFromEnum(ManifsetEntryType.MARK_DELETED));
+    try testing.expect(entry_type2 == @intFromEnum(ManifestEntryType.fileRemoved));
     try testing.expect(level2 == 1);
     try testing.expect(file_number2 == 84);
 
