@@ -865,6 +865,16 @@ test "CompactionTask" {
     };
     compaction_task.task().run_fn(&compaction_task);
 
+    var curr = storage.table_file_manager.acquireFilesAtLevel(0).?.get().head.next;
+    while (curr) |node| : (curr = node.next) {
+        if (node.entry) |file_id| {
+            try testing.expect(file_id != 0);
+            try testing.expect(file_id != 1);
+            try testing.expect(file_id != 2);
+            try testing.expect(file_id != 3);
+        }
+    }
+
     for (0..50) |i| {
         const r = try storage.find(&utils.intToBytes(usize, i));
         try testing.expect(std.mem.eql(u8, r.?, &utils.intToBytes(u8, 255)));
