@@ -15,6 +15,7 @@ pub const SSTableCache = struct {
     pub const Handle = struct {
         allocator: std.mem.Allocator,
         table: *SSTable,
+        is_deleted: std.atomic.Value(bool),
 
         pub fn deinit(self: *Handle) void {
             handleCleanup(self.allocator, self);
@@ -49,24 +50,25 @@ pub const SSTableCache = struct {
 
     pub fn get(self: *SSTableCache, handle: FileHandle, file_manager: *TableFileManager) !?*CacheRecord {
         for (0..self.capacity) |i| {
-            if (self.entries[i].load(.acquire)) |record| {
-                const record_handle = record.getConst().table.handle;
-                if (record_handle.level == handle.level and record_handle.file_id == handle.file_id) {
-                    var current = record.ref_count.load(.acquire);
-                    while (current > 0) {
-                        if (record.ref_count.cmpxchgWeak(
-                            current,
-                            current + 1,
-                            .acq_rel,
-                            .acquire,
-                        )) |updated| {
-                            current = updated;
-                            continue;
-                        }
+            const record = self.entries[i].load(.acquire) orelse continue;
 
-                        return record;
-                    }
+            const old_count = record.acquire() - 1;
+            if (old_count == 0) {
+                _ = record.release();
+                continue;
+            }
+            defer _ = record.release();
+
+            if (record.getConst().is_deleted.load(.acquire)) continue;
+
+            const record_handle = record.getConst().table.handle;
+            if (record_handle.level == handle.level and record_handle.file_id == handle.file_id) {
+                if (record.getConst().is_deleted.load(.acquire)) {
+                    return null;
                 }
+
+                _ = record.acquire();
+                return record;
             }
         }
 
@@ -98,14 +100,13 @@ pub const SSTableCache = struct {
         errdefer self.allocator.destroy(table_ptr);
         table_ptr.* = table_value;
 
-        const handle_value = Handle{
-            .allocator = self.allocator,
-            .table = table_ptr,
-        };
-
         const record = try self.allocator.create(CacheRecord);
         errdefer self.allocator.destroy(record);
-        record.* = CacheRecord.init(self.allocator, handle_value);
+        record.* = CacheRecord.init(self.allocator, .{
+            .allocator = self.allocator,
+            .table = table_ptr,
+            .is_deleted = std.atomic.Value(bool).init(false),
+        });
 
         var inserted = false;
         for (0..self.capacity) |i| {

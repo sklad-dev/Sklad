@@ -199,6 +199,7 @@ pub const BinaryStorage = struct {
             pub fn deinit(self: *CompactionHelper, allocator: std.mem.Allocator) void {
                 for (0..self.adapters.len) |i| {
                     self.adapters[i].sstable_iterator.deinit();
+                    self.sstables[i].get().is_deleted.store(true, .release);
                     _ = self.sstables[i].release();
                 }
 
