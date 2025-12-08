@@ -603,6 +603,7 @@ const TestingConfigurator = @import("./configurator.zig").TestingConfigurator;
 const TaskQueue = @import("./task_queue.zig").TaskQueue;
 
 fn cleanup(storage: *BinaryStorage) !void {
+    try std.fs.cwd().deleteFile("./MANIFEST");
     try storage.active_memtable.load(.unordered).wal.deleteFile();
 
     if (storage.pending_memtables.load(.acquire)) |list| {
@@ -842,7 +843,6 @@ test "CompactionTask" {
     defer global_context.cleanAndDeinitTaskQueueForTests();
 
     var storage = try BinaryStorage.start(testing.allocator, ".");
-    defer storage.stop();
 
     for (0..50) |i| {
         const r = try storage.find(&utils.intToBytes(usize, i));
@@ -889,6 +889,26 @@ test "CompactionTask" {
     try testing.expect(test_sstable.records_number == 40);
     try testing.expect(test_sstable.block_size == block_size);
     try testing.expect(test_sstable.index_records_num == 10);
+    storage.stop();
+
+    storage = try BinaryStorage.start(testing.allocator, ".");
+    defer storage.stop();
+
+    curr = storage.table_file_manager.acquireFilesAtLevel(0).?.get().head.next;
+    while (curr) |node| : (curr = node.next) {
+        if (node.entry) |file_id| {
+            try testing.expect(file_id != 0);
+            try testing.expect(file_id != 1);
+            try testing.expect(file_id != 2);
+            try testing.expect(file_id != 3);
+        }
+    }
+
+    for (0..50) |i| {
+        const r = try storage.find(&utils.intToBytes(usize, i));
+        try testing.expect(std.mem.eql(u8, r.?, &utils.intToBytes(u8, 255)));
+        testing.allocator.free(r.?);
+    }
 
     try cleanup(&storage);
 }

@@ -3,7 +3,7 @@ const utils = @import("./utils.zig");
 const File = std.fs.File;
 const Allocator = std.mem.Allocator;
 
-pub const FileHandle = packed struct {
+pub const FileHandle = struct {
     level: u8,
     file_id: u64,
 };

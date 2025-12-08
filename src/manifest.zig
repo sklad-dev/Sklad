@@ -10,12 +10,13 @@ pub const ManifestEntryType = enum(u8) {
     cleanupCheckpoint,
 };
 
-pub const ManifestEntry = packed struct {
+pub const ManifestEntry = struct {
     entry_type: ManifestEntryType,
     level: u8,
     file_id: u64,
     timestamp: i64,
 };
+pub const MANIFEST_ENTRY_SIZE = @sizeOf(u8) + @sizeOf(u8) + @sizeOf(u64) + @sizeOf(i64);
 
 pub const Manifest = struct {
     const EntryBuffer = RefCounted(AppendOnlyQueue(ManifestEntry, null));
@@ -91,15 +92,17 @@ pub const Manifest = struct {
 
     pub fn recover(self: *Manifest, deleted_files: *std.AutoHashMap(FileHandle, void)) !void {
         var last_checkpoint_offset: u64 = 0;
-        var reader_buffer: [@sizeOf(ManifestEntry)]u8 = undefined;
+        var reader_buffer: [8]u8 = undefined;
         var reader = self.file.reader(&reader_buffer);
         const end_position = try self.file.getEndPos();
-        if (end_position >= @sizeOf(ManifestEntry)) {
-            var offset: u64 = end_position - @sizeOf(ManifestEntry);
+        if (end_position >= MANIFEST_ENTRY_SIZE) {
+            var offset: u64 = end_position - MANIFEST_ENTRY_SIZE;
             while (offset >= last_checkpoint_offset) {
                 try reader.seekTo(offset);
                 const entry_type: ManifestEntryType = @enumFromInt(try utils.readNumber(u8, &reader.interface));
+                try reader.seekTo(offset + 1);
                 const level: u8 = try utils.readNumber(u8, &reader.interface);
+                try reader.seekTo(offset + 2);
                 const file_id: u64 = try utils.readNumber(u64, &reader.interface);
 
                 switch (entry_type) {
@@ -120,8 +123,8 @@ pub const Manifest = struct {
                     },
                 }
 
-                if (offset < @sizeOf(ManifestEntry)) break;
-                offset -= @sizeOf(ManifestEntry);
+                if (offset < MANIFEST_ENTRY_SIZE) break;
+                offset -= MANIFEST_ENTRY_SIZE;
             }
         }
     }
@@ -179,7 +182,7 @@ test "Manifest#append and flush" {
     manifest.removeFile(1, 84);
     try testing.expect(try manifest.flush());
 
-    var buffer: [18]u8 = undefined;
+    var buffer: [MANIFEST_ENTRY_SIZE]u8 = undefined;
     var reader = manifest.file.reader(&buffer);
     try reader.seekTo(0);
 
@@ -193,7 +196,7 @@ test "Manifest#append and flush" {
     try testing.expect(level1 == 0);
     try testing.expect(file_id1 == 42);
 
-    try reader.seekTo(18);
+    try reader.seekTo(MANIFEST_ENTRY_SIZE);
     const entry_type2: u8 = try utils.readNumber(u8, &reader.interface);
     try reader.seekTo(19);
     const level2: u8 = try utils.readNumber(u8, &reader.interface);
