@@ -5,6 +5,7 @@ const global_context = @import("./global_context.zig");
 const utils = @import("./utils.zig");
 
 const AppendOnlyQueue = @import("./lock_free.zig").AppendOnlyQueue;
+const FileHandle = @import("./data_types.zig").FileHandle;
 const Manifest = @import("./manifest.zig").Manifest;
 const Memtable = @import("./memtable.zig").Memtable;
 const MemtableIteratorAdapter = @import("./sstable.zig").MemtableIteratorAdapter;
@@ -77,12 +78,12 @@ pub const TableFileManager = struct {
             self.allocator,
             &iterator,
             memtable.size,
-            .{ .level = 0, .id = file_id },
+            .{ .level = 0, .file_id = file_id },
             configurator.sstableBlockSize(),
             configurator.sstableBloomBitsPerKey(),
         );
 
-        try self.addFileAtLevel(0, sstable.handle.id);
+        try self.addFileAtLevel(0, sstable.handle.file_id);
 
         sstable.close(false);
         try memtable.wal.deleteFile();
@@ -95,22 +96,7 @@ pub const TableFileManager = struct {
     }
 
     pub fn addFileAtLevel(self: *TableFileManager, level: u8, file_id: u64) !void {
-        var files_at_level = self.files[level].load(.seq_cst);
-        if (files_at_level == null) {
-            const level_list = try self.allocator.create(FileList);
-            level_list.* = FileList.init(self.allocator, AppendOnlyQueue(u64, null).init(self.allocator));
-            const result = self.files[level].cmpxchgWeak(null, level_list, .seq_cst, .seq_cst);
-            if (result) |existing| {
-                level_list.get().deinit();
-                self.allocator.destroy(level_list);
-                files_at_level = existing;
-            } else {
-                files_at_level = level_list;
-            }
-        }
-
-        _ = @atomicRmw(u16, &self.level_counters[level], .Add, 1, .seq_cst);
-        files_at_level.?.get().enqueue(file_id);
+        try self.addFile(level, file_id);
 
         self.manifest.addFile(level, file_id);
         _ = try self.manifest.flush();
@@ -182,6 +168,25 @@ pub const TableFileManager = struct {
         _ = try self.manifest.flush();
     }
 
+    fn addFile(self: *TableFileManager, level: u8, file_id: u64) !void {
+        var files_at_level = self.files[level].load(.seq_cst);
+        if (files_at_level == null) {
+            const level_list = try self.allocator.create(FileList);
+            level_list.* = FileList.init(self.allocator, AppendOnlyQueue(u64, null).init(self.allocator));
+            const result = self.files[level].cmpxchgWeak(null, level_list, .seq_cst, .seq_cst);
+            if (result) |existing| {
+                level_list.get().deinit();
+                self.allocator.destroy(level_list);
+                files_at_level = existing;
+            } else {
+                files_at_level = level_list;
+            }
+        }
+
+        _ = @atomicRmw(u16, &self.level_counters[level], .Add, 1, .seq_cst);
+        files_at_level.?.get().enqueue(file_id);
+    }
+
     fn mapSstableFiles(self: *TableFileManager) !void {
         var dir = try std.fs.cwd().openDir(self.path, .{
             .access_sub_paths = false,
@@ -189,6 +194,10 @@ pub const TableFileManager = struct {
             .no_follow = true,
         });
         defer dir.close();
+
+        var deleted_files = std.AutoHashMap(FileHandle, void).init(self.allocator);
+        defer deleted_files.deinit();
+        try self.manifest.recover(&deleted_files);
 
         var it = dir.iterate();
         while (try it.next()) |entry| {
@@ -204,7 +213,9 @@ pub const TableFileManager = struct {
                     self.max_file_id_per_level[level_id] = file_id + 1;
                 }
 
-                try self.addFileAtLevel(level_id, file_id);
+                if (!deleted_files.contains(.{ .level = level_id, .file_id = file_id })) {
+                    try self.addFile(level_id, file_id);
+                }
             }
         }
     }
@@ -237,7 +248,7 @@ fn cleanup(table_manager: *const TableFileManager) !void {
                 const file_name = fileNameFromHandle(
                     testing.allocator,
                     table_manager.path,
-                    .{ .level = @intCast(level), .id = node.entry.? },
+                    .{ .level = @intCast(level), .file_id = node.entry.? },
                 ) catch unreachable;
                 defer testing.allocator.free(file_name);
                 try std.fs.cwd().deleteFile(file_name);

@@ -9,7 +9,7 @@ const constants = @import("./constants.zig");
 const ApplicationError = @import("./constants.zig").ApplicationError;
 const AppendOnlyQueue = @import("./lock_free.zig").AppendOnlyQueue;
 const CompactionState = @import("./table_file_manager.zig").CompactionState;
-const FileHandle = @import("./sstable.zig").FileHandle;
+const FileHandle = @import("./data_types.zig").FileHandle;
 const Memtable = @import("./memtable.zig").Memtable;
 const MergeIterator = @import("./merge_iterator.zig").MergeIterator;
 const MetricKind = @import("./metrics.zig").MetricKind;
@@ -180,7 +180,7 @@ pub const BinaryStorage = struct {
                 for (0..files_to_compact) |j| {
                     sstables[j] = (try base_task.storage.sstable_cache.get(.{
                         .level = base_task.level,
-                        .id = files_tail[j],
+                        .file_id = files_tail[j],
                     }, &base_task.storage.table_file_manager)).?;
                     total_records += sstables[j].getConst().table.records_number;
                     adapters[j] = try SSTableIteratorAdapter.init(sstables[j].getConst().table);
@@ -251,13 +251,13 @@ pub const BinaryStorage = struct {
                 self.allocator,
                 &records_merge_iterator,
                 helper.records_number,
-                .{ .level = self.level + 1, .id = file_id },
+                .{ .level = self.level + 1, .file_id = file_id },
                 configurator.sstableBlockSize(),
                 configurator.sstableBloomBitsPerKey(),
             );
             defer sstable.close(false);
 
-            try self.storage.table_file_manager.addFileAtLevel(self.level + 1, sstable.handle.id);
+            try self.storage.table_file_manager.addFileAtLevel(self.level + 1, sstable.handle.file_id);
             try self.storage.table_file_manager.deleteFilesAtLevel(self.level, helper.file_ids);
         }
 
@@ -493,7 +493,7 @@ pub const BinaryStorage = struct {
                 if (node.entry) |file_id| {
                     var cached_record = try self.sstable_cache.get(.{
                         .level = @intCast(level),
-                        .id = file_id,
+                        .file_id = file_id,
                     }, &self.table_file_manager) orelse continue;
                     defer _ = cached_record.release();
 
@@ -626,7 +626,7 @@ fn cleanup(storage: *BinaryStorage) !void {
                 if (node.entry) |file_id| {
                     var cached_record = try storage.sstable_cache.get(.{
                         .level = @intCast(level),
-                        .id = file_id,
+                        .file_id = file_id,
                     }, &storage.table_file_manager) orelse continue;
                     defer _ = cached_record.release();
                 }
@@ -822,7 +822,7 @@ test "CompactionTask" {
             testing.allocator,
             &memtable_iterator,
             test_memtable.size,
-            .{ .level = 0, .id = @as(u64, i) },
+            .{ .level = 0, .file_id = @as(u64, i) },
             block_size,
             20,
         );
@@ -881,7 +881,7 @@ test "CompactionTask" {
         testing.allocator.free(r.?);
     }
 
-    var test_sstable = try SSTable.open(testing.allocator, .{ .level = 1, .id = 0 });
+    var test_sstable = try SSTable.open(testing.allocator, .{ .level = 1, .file_id = 0 });
     defer test_sstable.close(true);
 
     try testing.expect(std.mem.eql(u8, test_sstable.min_key.?, &utils.intToBytes(usize, 0)));

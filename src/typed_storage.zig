@@ -73,7 +73,7 @@ fn cleanup(typed_storage: *TypedStorage) !void {
                 if (node.entry) |file_id| {
                     var cached_record = try typed_storage.storage.sstable_cache.get(.{
                         .level = @intCast(level),
-                        .id = file_id,
+                        .file_id = file_id,
                     }, &typed_storage.storage.table_file_manager);
                     defer _ = cached_record.?.release();
                 }

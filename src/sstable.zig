@@ -9,6 +9,7 @@ const BloomFilter = @import("./bloom.zig").BloomFilter;
 const utils = @import("./utils.zig");
 const getWorkerContext = @import("./worker.zig").getWorkerContext;
 
+const FileHandle = data_types.FileHandle;
 const StorageRecord = data_types.StorageRecord;
 
 pub const MemtableIteratorAdapter = struct {
@@ -63,18 +64,13 @@ pub const SSTableIteratorAdapter = struct {
     }
 };
 
-pub const FileHandle = struct {
-    level: u8,
-    id: u64,
-};
-
 pub inline fn fileNameFromHandle(allocator: std.mem.Allocator, path: []const u8, handle: FileHandle) ![]u8 {
-    const buf_size = 10 + path.len + utils.numDigits(u8, handle.level) + utils.numDigits(u64, handle.id);
+    const buf_size = 10 + path.len + utils.numDigits(u8, handle.level) + utils.numDigits(u64, handle.file_id);
     const buf = try allocator.alloc(u8, buf_size);
     const file_name = try std.fmt.bufPrint(
         buf,
         "{s}/{d}.{d}.sstable",
-        .{ path, handle.level, handle.id },
+        .{ path, handle.level, handle.file_id },
     );
 
     return file_name;
@@ -582,7 +578,7 @@ test "SSTable#create" {
         testing.allocator,
         &memtable_iterator,
         test_memtable.size,
-        .{ .level = 0, .id = 0 },
+        .{ .level = 0, .file_id = 0 },
         block_size,
         20,
     );
@@ -623,13 +619,13 @@ test "SSTable#open" {
         testing.allocator,
         &memtable_iterator,
         test_memtable.size,
-        .{ .level = 0, .id = 0 },
+        .{ .level = 0, .file_id = 0 },
         block_size,
         20,
     );
     test_sstable.close(false);
 
-    test_sstable = try SSTable.open(testing.allocator, .{ .level = 0, .id = 0 });
+    test_sstable = try SSTable.open(testing.allocator, .{ .level = 0, .file_id = 0 });
 
     try testing.expect(std.mem.eql(u8, test_sstable.min_key.?, &utils.intToBytes(usize, 254)));
     try testing.expect(std.mem.eql(u8, test_sstable.max_key.?, &utils.intToBytes(usize, 263)));
@@ -670,13 +666,13 @@ test "SSTable#find" {
         testing.allocator,
         &memtable_iterator,
         test_memtable.size,
-        .{ .level = 0, .id = 0 },
+        .{ .level = 0, .file_id = 0 },
         block_size,
         0,
     );
     test_sstable.close(false);
 
-    test_sstable = try SSTable.open(testing.allocator, .{ .level = 0, .id = 0 });
+    test_sstable = try SSTable.open(testing.allocator, .{ .level = 0, .file_id = 0 });
     defer test_sstable.close(true);
 
     for (0..30) |v| {
@@ -725,13 +721,13 @@ test "SSTable#iterator" {
         testing.allocator,
         &memtable_iterator,
         test_memtable.size,
-        .{ .level = 0, .id = 0 },
+        .{ .level = 0, .file_id = 0 },
         block_size,
         20,
     );
     test_sstable.close(false);
 
-    test_sstable = try SSTable.open(testing.allocator, .{ .level = 0, .id = 0 });
+    test_sstable = try SSTable.open(testing.allocator, .{ .level = 0, .file_id = 0 });
     defer test_sstable.close(true);
 
     var iterator = try test_sstable.iterator();

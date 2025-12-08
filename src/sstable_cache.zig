@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const FileHandle = @import("./sstable.zig").FileHandle;
+const FileHandle = @import("./data_types.zig").FileHandle;
 const RefCounted = @import("./lock_free.zig").RefCounted;
 const SSTable = @import("./sstable.zig").SSTable;
 const TableFileManager = @import("./table_file_manager.zig").TableFileManager;
@@ -51,7 +51,7 @@ pub const SSTableCache = struct {
         for (0..self.capacity) |i| {
             if (self.entries[i].load(.acquire)) |record| {
                 const record_handle = record.getConst().table.handle;
-                if (record_handle.level == handle.level and record_handle.id == handle.id) {
+                if (record_handle.level == handle.level and record_handle.file_id == handle.file_id) {
                     var current = record.ref_count.load(.acquire);
                     while (current > 0) {
                         if (record.ref_count.cmpxchgWeak(
@@ -77,7 +77,7 @@ pub const SSTableCache = struct {
         var curr = file_list.get().head.next;
         while (curr) |node| : (curr = node.next) {
             if (node.entry) |file_id| {
-                if (file_id == handle.id) {
+                if (file_id == handle.file_id) {
                     found = true;
                     break;
                 }
