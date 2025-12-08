@@ -106,12 +106,6 @@ pub const Manifest = struct {
                 const file_id: u64 = try utils.readNumber(u64, &reader.interface);
 
                 switch (entry_type) {
-                    .fileAdded => {
-                        _ = deleted_files.remove(.{
-                            .level = level,
-                            .file_id = file_id,
-                        });
-                    },
                     .fileRemoved => {
                         _ = try deleted_files.put(.{
                             .level = level,
@@ -121,6 +115,7 @@ pub const Manifest = struct {
                     .cleanupCheckpoint => {
                         last_checkpoint_offset = file_id;
                     },
+                    else => {},
                 }
 
                 if (offset < MANIFEST_ENTRY_SIZE) break;
