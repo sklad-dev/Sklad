@@ -59,7 +59,7 @@ pub const CleanupTask = struct {
         };
     }
 
-    pub fn task(self: *CleanupTask) std.task.Task {
+    pub fn task(self: *CleanupTask) Task {
         return .{
             .context = self,
             .run_fn = run,
@@ -108,6 +108,7 @@ pub const CleanupTask = struct {
         if (last_successful_delete_offset) |checkpoint_offset| {
             self.storage.table_file_manager.manifest.recordCleanupCheckpoint(checkpoint_offset);
             _ = try self.storage.table_file_manager.manifest.flush();
+            self.storage.recordCleanupComplete();
         }
     }
 
@@ -125,6 +126,9 @@ pub const BinaryStorage = struct {
     swap_in_progress: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     table_file_manager: TableFileManager,
     sstable_cache: SSTableCache,
+
+    last_cleanup_timestamp: std.atomic.Value(i64),
+    deleted_files_since_cleanup: std.atomic.Value(u32),
 
     pub const PendingMemtable = struct {
         id: u64,
@@ -332,6 +336,7 @@ pub const BinaryStorage = struct {
 
             try self.storage.table_file_manager.addFileAtLevel(self.level + 1, sstable.handle.file_id);
             try self.storage.table_file_manager.deleteFilesAtLevel(self.level, helper.file_ids);
+            self.storage.incrementDeletedFilesBy(@intCast(helper.file_ids.len));
         }
 
         fn run(ptr: *anyopaque) void {
@@ -403,6 +408,8 @@ pub const BinaryStorage = struct {
             .pending_memtables = std.atomic.Value(?*PendingMemtableList).init(null),
             .table_file_manager = table_file_manager,
             .sstable_cache = undefined,
+            .last_cleanup_timestamp = std.atomic.Value(i64).init(0),
+            .deleted_files_since_cleanup = std.atomic.Value(u32).init(0),
         };
         storage.sstable_cache = try SSTableCache.init(allocator, config.sstableCacheSize());
         return storage;
@@ -504,6 +511,8 @@ pub const BinaryStorage = struct {
     }
 
     pub fn enqueueCompactionTask(self: *BinaryStorage, level: u8) void {
+        const task_queue = global_context.getTaskQueue();
+
         if (@cmpxchgWeak(
             u8,
             &self.table_file_manager.compaction_flags[level],
@@ -512,7 +521,6 @@ pub const BinaryStorage = struct {
             .seq_cst,
             .seq_cst,
         ) == null) {
-            const task_queue = global_context.getTaskQueue();
             var compaction_task = task_queue.?.allocator.create(CompactionTask) catch |e| {
                 std.log.err("Error! Failed to create compaction task: {any}", .{e});
                 return;
@@ -526,6 +534,37 @@ pub const BinaryStorage = struct {
 
             task_queue.?.enqueue(compaction_task.task());
         }
+
+        if (self.shouldRunCleanup()) {
+            var cleanup_task = task_queue.?.allocator.create(CleanupTask) catch |e| {
+                std.log.err("Error! Failed to create cleanup task: {any}", .{e});
+                return;
+            };
+            cleanup_task.* = try CleanupTask.init(task_queue.?.allocator, self);
+            task_queue.?.enqueue(cleanup_task.task());
+        }
+    }
+
+    pub fn shouldRunCleanup(self: *BinaryStorage) bool {
+        const now = std.time.microTimestamp();
+        const last_cleanup = self.last_cleanup_timestamp.load(.acquire);
+        const deleted_count = self.deleted_files_since_cleanup.load(.acquire);
+
+        // TODO: use configurator
+        const time_threshold = 60 * std.time.us_per_s;
+        const count_threshold = 4;
+
+        const time_elapsed = now - last_cleanup;
+        return time_elapsed >= time_threshold and deleted_count >= count_threshold;
+    }
+
+    pub fn recordCleanupComplete(self: *BinaryStorage) void {
+        self.last_cleanup_timestamp.store(std.time.microTimestamp(), .release);
+        self.deleted_files_since_cleanup.store(0, .release);
+    }
+
+    pub fn incrementDeletedFilesBy(self: *BinaryStorage, count: u32) void {
+        _ = self.deleted_files_since_cleanup.fetchAdd(count, .acq_rel);
     }
 
     fn addPendingMemtable(self: *BinaryStorage, id: u64, memtable: *Memtable) !void {
