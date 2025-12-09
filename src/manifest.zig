@@ -29,6 +29,52 @@ pub const Manifest = struct {
     is_flushing: std.atomic.Value(bool),
     _padding2: u8 align(std.atomic.cache_line) = 0,
 
+    pub const RemovedFileEntriesIterator = struct {
+        reader: std.fs.File.Reader,
+        current_offset: u64,
+        end_offset: u64,
+        reader_buffer: [8]u8 = undefined,
+
+        pub fn init(manifest: *Manifest, last_checkpoint_offset: u64) !RemovedFileEntriesIterator {
+            var iterator = RemovedFileEntriesIterator{
+                .reader = undefined,
+                .current_offset = last_checkpoint_offset,
+                .end_offset = try manifest.file.getEndPos(),
+            };
+            iterator.reader = manifest.file.reader(&iterator.reader_buffer);
+            return iterator;
+        }
+
+        pub fn next(self: *RemovedFileEntriesIterator) !?ManifestEntry {
+            if (self.end_offset == 0) return null;
+            if (self.current_offset >= self.end_offset) return null;
+
+            while (self.current_offset < self.end_offset) {
+                const offset = self.current_offset;
+                self.current_offset += MANIFEST_ENTRY_SIZE;
+
+                try self.reader.seekTo(offset);
+                const entry_type: ManifestEntryType = @enumFromInt(try utils.readNumber(u8, &self.reader.interface));
+                if (entry_type == .fileRemoved) {
+                    try self.reader.seekTo(offset + 1);
+                    const level: u8 = try utils.readNumber(u8, &self.reader.interface);
+                    try self.reader.seekTo(offset + 2);
+                    const file_id: u64 = try utils.readNumber(u64, &self.reader.interface);
+                    try self.reader.seekTo(offset + 10);
+                    const timestamp: i64 = try utils.readNumber(i64, &self.reader.interface);
+                    return ManifestEntry{
+                        .entry_type = entry_type,
+                        .level = level,
+                        .file_id = file_id,
+                        .timestamp = timestamp,
+                    };
+                }
+            }
+
+            return null;
+        }
+    };
+
     pub fn init(allocator: std.mem.Allocator, path: []const u8) !Manifest {
         const manifest_path = try std.fmt.allocPrint(allocator, "{s}/MANIFEST", .{path});
         errdefer allocator.free(manifest_path);
@@ -124,6 +170,41 @@ pub const Manifest = struct {
         }
     }
 
+    pub fn removedFileEntriesIterator(self: *Manifest) !RemovedFileEntriesIterator {
+        return try RemovedFileEntriesIterator.init(
+            self,
+            try self.findLastCheckpointOffset(),
+        );
+    }
+
+    fn findLastCheckpointOffset(self: *Manifest) !u64 {
+        const end_position = try self.file.getEndPos();
+        if (end_position == 0) return 0;
+
+        var last_checkpoint_offset: u64 = 0;
+        var reader_buffer: [8]u8 = undefined;
+        var reader = self.file.reader(&reader_buffer);
+
+        if (end_position >= MANIFEST_ENTRY_SIZE) {
+            var offset: u64 = end_position - MANIFEST_ENTRY_SIZE;
+            while (offset >= last_checkpoint_offset) {
+                try reader.seekTo(offset);
+                const entry_type: ManifestEntryType = @enumFromInt(try utils.readNumber(u8, &reader.interface));
+
+                if (entry_type == .cleanupCheckpoint) {
+                    try reader.seekTo(offset + 2);
+                    last_checkpoint_offset = try utils.readNumber(u64, &reader.interface);
+                    break;
+                }
+
+                if (offset < MANIFEST_ENTRY_SIZE) break;
+                offset -= MANIFEST_ENTRY_SIZE;
+            }
+        }
+
+        return last_checkpoint_offset;
+    }
+
     fn append(self: *Manifest, record: ManifestEntry) void {
         const current_buffer = self.buffer.load(.acquire);
         _ = current_buffer.acquire();
@@ -143,6 +224,18 @@ pub const Manifest = struct {
         );
 
         const old_buffer = self.buffer.swap(new_buffer, .acq_rel);
+        errdefer {
+            const current_buffer = self.buffer.load(.acquire);
+            _ = current_buffer.acquire();
+            defer _ = current_buffer.release();
+
+            var curr = old_buffer.get().head.next;
+            while (curr) |node| : (curr = node.next) {
+                if (node.entry) |entry| {
+                    current_buffer.get().enqueue(entry);
+                }
+            }
+        }
         defer _ = old_buffer.release();
 
         const max_position = try self.file.getEndPos();

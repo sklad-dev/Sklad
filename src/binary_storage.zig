@@ -20,7 +20,10 @@ const SSTableIteratorAdapter = @import("./sstable.zig").SSTableIteratorAdapter;
 const TableFileManager = @import("./table_file_manager.zig").TableFileManager;
 const Task = @import("./task_queue.zig").Task;
 const Wal = @import("./wal.zig").Wal;
+
+const fileNameFromHandle = @import("./sstable.zig").fileNameFromHandle;
 const recordMetric = @import("./metrics.zig").recordMetric;
+const MANIFEST_ENTRY_SIZE = @import("./manifest.zig").MANIFEST_ENTRY_SIZE;
 
 const StorageRecord = data_types.StorageRecord;
 const FileList = TableFileManager.FileList;
@@ -42,6 +45,75 @@ const MergeIteratorAdapter = struct {
             .context = self,
             .next_fn = nextFn,
         };
+    }
+};
+
+pub const CleanupTask = struct {
+    allocator: std.mem.Allocator,
+    storage: *BinaryStorage,
+
+    pub fn init(allocator: std.mem.Allocator, storage: *BinaryStorage) !CleanupTask {
+        return .{
+            .allocator = allocator,
+            .storage = storage,
+        };
+    }
+
+    pub fn task(self: *CleanupTask) std.task.Task {
+        return .{
+            .context = self,
+            .run_fn = run,
+            .destroy_fn = destroy,
+            .enqued_at = std.time.microTimestamp(),
+        };
+    }
+
+    fn run(ptr: *anyopaque) void {
+        const self: *CleanupTask = @ptrCast(@alignCast(ptr));
+        self.doCleanup() catch |e| {
+            std.log.err("CleanupTask failed: {any}", .{e});
+        };
+    }
+
+    fn doCleanup(self: *CleanupTask) !void {
+        var last_successful_delete_offset: ?u64 = null;
+
+        var iterator = try self.storage.table_file_manager.manifest.removedFileEntriesIterator();
+        while (try iterator.next()) |entry| {
+            const handle = FileHandle{ .level = entry.level, .file_id = entry.file_id };
+            const cache_record = try self.storage.sstable_cache.get(
+                handle,
+                &self.storage.table_file_manager,
+            );
+            if (cache_record) |record| {
+                _ = record.release();
+                break;
+            }
+
+            const file_name = fileNameFromHandle(
+                self.allocator,
+                self.storage.table_file_manager.path,
+                handle,
+            ) catch {
+                break;
+            };
+            defer self.allocator.free(file_name);
+            std.fs.cwd().deleteFile(file_name) catch {
+                break;
+            };
+
+            last_successful_delete_offset = iterator.current_offset;
+        }
+
+        if (last_successful_delete_offset) |checkpoint_offset| {
+            self.storage.table_file_manager.manifest.recordCleanupCheckpoint(checkpoint_offset);
+            _ = try self.storage.table_file_manager.manifest.flush();
+        }
+    }
+
+    fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+        const self: *CleanupTask = @ptrCast(@alignCast(ptr));
+        allocator.destroy(self);
     }
 };
 
@@ -796,7 +868,7 @@ test "BinaryStorage#find returns the newest value" {
     try cleanup(&storage);
 }
 
-test "CompactionTask" {
+test "BinaryStorage compaction and cleanup" {
     global_context.setRootFolderForTests("./");
     defer global_context.resetRootFolderForTests();
 
@@ -910,6 +982,20 @@ test "CompactionTask" {
         try testing.expect(std.mem.eql(u8, r.?, &utils.intToBytes(u8, 255)));
         testing.allocator.free(r.?);
     }
+
+    var cleanup_task = try CleanupTask.init(testing.allocator, &storage);
+    try cleanup_task.doCleanup();
+    for (0..4) |i| {
+        const file_name = try fileNameFromHandle(testing.allocator, ".", .{ .level = 0, .file_id = i });
+        defer testing.allocator.free(file_name);
+        try testing.expectError(error.FileNotFound, std.fs.cwd().access(file_name, .{}));
+    }
+
+    var reader_buffer: [8]u8 = undefined;
+    var reader = storage.table_file_manager.manifest.file.reader(&reader_buffer);
+    try reader.seekTo(try storage.table_file_manager.manifest.file.getEndPos() - 16);
+    const offset = try utils.readNumber(u64, &reader.interface);
+    try testing.expect(offset == 0x5A);
 
     try cleanup(&storage);
 }
