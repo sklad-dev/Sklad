@@ -3,12 +3,13 @@ const FileWriter = std.fs.File.Writer;
 const FileReader = std.fs.File.Reader;
 
 const data_types = @import("./data_types.zig");
+const global_context = @import("./global_context.zig");
 const Memtable = @import("./memtable.zig").Memtable;
 const BloomFilter = @import("./bloom.zig").BloomFilter;
 const utils = @import("./utils.zig");
-const getConfigurator = @import("./global_context.zig").getConfigurator;
 const getWorkerContext = @import("./worker.zig").getWorkerContext;
 
+const FileHandle = data_types.FileHandle;
 const StorageRecord = data_types.StorageRecord;
 
 pub const MemtableIteratorAdapter = struct {
@@ -63,9 +64,21 @@ pub const SSTableIteratorAdapter = struct {
     }
 };
 
+pub inline fn fileNameFromHandle(allocator: std.mem.Allocator, path: []const u8, handle: FileHandle) ![]u8 {
+    const buf_size = 10 + path.len + utils.numDigits(u8, handle.level) + utils.numDigits(u64, handle.file_id);
+    const buf = try allocator.alloc(u8, buf_size);
+    const file_name = try std.fmt.bufPrint(
+        buf,
+        "{s}/{d}.{d}.sstable",
+        .{ path, handle.level, handle.file_id },
+    );
+
+    return file_name;
+}
+
 pub const SSTable = struct {
     allocator: std.mem.Allocator,
-    path: []const u8,
+    handle: FileHandle,
     file: std.fs.File,
     records_number: u32,
     block_size: u32,
@@ -169,10 +182,13 @@ pub const SSTable = struct {
         allocator: std.mem.Allocator,
         record_iterator: *StorageRecord.Iterator,
         records_number: u32,
-        path: []const u8,
+        handle: FileHandle,
         block_size: u32,
         bits_per_key: u8,
     ) !SSTable {
+        const path = try fileNameFromHandle(allocator, global_context.getRootFolder(), handle);
+        defer allocator.free(path);
+
         const file = try std.fs.cwd().createFile(path, .{
             .read = true,
             .truncate = false,
@@ -181,7 +197,7 @@ pub const SSTable = struct {
 
         var sstable = SSTable{
             .allocator = allocator,
-            .path = path,
+            .handle = handle,
             .file = file,
             .records_number = records_number,
             .block_size = block_size,
@@ -205,6 +221,8 @@ pub const SSTable = struct {
         try sstable.writeBloom(&writer);
         try sstable.writeMinMaxKeys(&writer);
         try sstable.writeFooter(&writer);
+
+        try sstable.file.sync();
 
         return sstable;
     }
@@ -323,11 +341,11 @@ pub const SSTable = struct {
         try utils.writeNumber(u32, &writer.interface, self.block_size);
     }
 
-    pub fn open(allocator: std.mem.Allocator, path: []const u8) !SSTable {
-        const file = try std.fs.cwd().createFile(path, .{
-            .read = true,
-            .truncate = false,
-        });
+    pub fn open(allocator: std.mem.Allocator, handle: FileHandle) !SSTable {
+        const path = try fileNameFromHandle(allocator, global_context.getRootFolder(), handle);
+        defer allocator.free(path);
+
+        const file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
         const file_max_position = try file.getEndPos();
         var reader = file.reader(getWorkerContext().?.reader_buffer[0..]);
 
@@ -363,7 +381,7 @@ pub const SSTable = struct {
 
         return SSTable{
             .allocator = allocator,
-            .path = path,
+            .handle = handle,
             .file = file,
             .records_number = records_number,
             .block_size = block_size,
@@ -528,15 +546,20 @@ pub const SSTable = struct {
 // Tests
 const testing = std.testing;
 
-const TEST_SSTABLE_PATH = "./test.sstable";
+fn cleanup(file: SSTable, memtable: Memtable) !void {
+    const path = try fileNameFromHandle(testing.allocator, global_context.getRootFolder(), file.handle);
+    defer testing.allocator.free(path);
 
-fn cleanup(storage: SSTable, memtable: Memtable) !void {
-    try std.fs.cwd().deleteFile(storage.path);
+    try std.fs.cwd().deleteFile(path);
     try memtable.wal.deleteFile();
 }
 
 test "SSTable#create" {
+    global_context.setRootFolderForTests("./");
+    defer global_context.resetRootFolderForTests();
+
     const block_size: u32 = 52;
+
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
 
@@ -557,7 +580,7 @@ test "SSTable#create" {
         testing.allocator,
         &memtable_iterator,
         test_memtable.size,
-        TEST_SSTABLE_PATH,
+        .{ .level = 0, .file_id = 0 },
         block_size,
         20,
     );
@@ -574,6 +597,9 @@ test "SSTable#create" {
 }
 
 test "SSTable#open" {
+    global_context.setRootFolderForTests("./");
+    defer global_context.resetRootFolderForTests();
+
     const block_size: u32 = 52;
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
@@ -595,13 +621,13 @@ test "SSTable#open" {
         testing.allocator,
         &memtable_iterator,
         test_memtable.size,
-        TEST_SSTABLE_PATH,
+        .{ .level = 0, .file_id = 0 },
         block_size,
         20,
     );
     test_sstable.close(false);
 
-    test_sstable = try SSTable.open(testing.allocator, TEST_SSTABLE_PATH);
+    test_sstable = try SSTable.open(testing.allocator, .{ .level = 0, .file_id = 0 });
 
     try testing.expect(std.mem.eql(u8, test_sstable.min_key.?, &utils.intToBytes(usize, 254)));
     try testing.expect(std.mem.eql(u8, test_sstable.max_key.?, &utils.intToBytes(usize, 263)));
@@ -618,6 +644,9 @@ test "SSTable#open" {
 }
 
 test "SSTable#find" {
+    global_context.setRootFolderForTests("./");
+    defer global_context.resetRootFolderForTests();
+
     const block_size: u32 = 52;
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
@@ -639,13 +668,13 @@ test "SSTable#find" {
         testing.allocator,
         &memtable_iterator,
         test_memtable.size,
-        TEST_SSTABLE_PATH,
+        .{ .level = 0, .file_id = 0 },
         block_size,
         0,
     );
     test_sstable.close(false);
 
-    test_sstable = try SSTable.open(testing.allocator, TEST_SSTABLE_PATH);
+    test_sstable = try SSTable.open(testing.allocator, .{ .level = 0, .file_id = 0 });
     defer test_sstable.close(true);
 
     for (0..30) |v| {
@@ -670,6 +699,9 @@ test "SSTable#find" {
 }
 
 test "SSTable#iterator" {
+    global_context.setRootFolderForTests("./");
+    defer global_context.resetRootFolderForTests();
+
     const block_size: u32 = 64;
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
@@ -691,13 +723,13 @@ test "SSTable#iterator" {
         testing.allocator,
         &memtable_iterator,
         test_memtable.size,
-        TEST_SSTABLE_PATH,
+        .{ .level = 0, .file_id = 0 },
         block_size,
         20,
     );
     test_sstable.close(false);
 
-    test_sstable = try SSTable.open(testing.allocator, TEST_SSTABLE_PATH);
+    test_sstable = try SSTable.open(testing.allocator, .{ .level = 0, .file_id = 0 });
     defer test_sstable.close(true);
 
     var iterator = try test_sstable.iterator();

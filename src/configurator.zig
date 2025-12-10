@@ -12,6 +12,8 @@ pub const Configurator = struct {
     worker_pool_max_workers_fn: *const fn (ptr: *anyopaque) u8,
     worker_pool_idle_timeout_seconds_fn: *const fn (ptr: *anyopaque) i64,
     worker_pool_task_wait_threshold_us_fn: *const fn (ptr: *anyopaque) u64,
+    cleanup_interval_seconds_fn: *const fn (ptr: *anyopaque) i64,
+    cleanup_file_count_threshold_fn: *const fn (ptr: *anyopaque) u16,
 
     pub fn memtableMaxSize(self: *const Configurator) u64 {
         return self.memtable_max_size_fn(self.ptr);
@@ -60,6 +62,14 @@ pub const Configurator = struct {
     pub fn taskWaitThreshold(self: *const Configurator) u64 {
         return self.worker_pool_task_wait_threshold_us_fn(self.ptr);
     }
+
+    pub fn cleanupIntervalSeconds(self: *const Configurator) i64 {
+        return self.cleanup_interval_seconds_fn(self.ptr);
+    }
+
+    pub fn cleanupFileCountThreshold(self: *const Configurator) u16 {
+        return self.cleanup_file_count_threshold_fn(self.ptr);
+    }
 };
 
 pub const TestingConfigurator = struct {
@@ -75,21 +85,25 @@ pub const TestingConfigurator = struct {
     max_workers: u8,
     idle_timeout_seconds: i64,
     task_wait_threshold_us: u64,
+    cleanup_interval_seconds: i64,
+    cleanup_file_count_threshold: u16,
 
-    pub fn init() TestingConfigurator {
+    pub fn init(max_size: u64, max_level: u8, block_size: u32) TestingConfigurator {
         return .{
-            .max_size = 1536,
-            .max_level = 2,
-            .block_size = 64,
+            .max_size = max_size,
+            .max_level = max_level,
+            .block_size = block_size,
             .bits_per_key = 20,
             .sstable_cache_size = 8,
             .compaction_max_level = 4,
             .compaction_level_multiplier = 4,
             .compaction_level_threshold = 4,
             .min_workers = 1,
-            .max_workers = 1,
+            .max_workers = 4,
             .idle_timeout_seconds = 5,
             .task_wait_threshold_us = 5000,
+            .cleanup_interval_seconds = 60,
+            .cleanup_file_count_threshold = 4,
         };
     }
 
@@ -108,6 +122,8 @@ pub const TestingConfigurator = struct {
             .worker_pool_max_workers_fn = maxWorkers,
             .worker_pool_idle_timeout_seconds_fn = idleTimeout,
             .worker_pool_task_wait_threshold_us_fn = taskWaitThreshold,
+            .cleanup_interval_seconds_fn = cleanupIntervalSeconds,
+            .cleanup_file_count_threshold_fn = cleanupFileCountThreshold,
         };
     }
 
@@ -169,5 +185,15 @@ pub const TestingConfigurator = struct {
     pub fn taskWaitThreshold(ptr: *anyopaque) u64 {
         const self: *TestingConfigurator = @ptrCast(@alignCast(ptr));
         return self.task_wait_threshold_us;
+    }
+
+    pub fn cleanupIntervalSeconds(ptr: *anyopaque) i64 {
+        const self: *TestingConfigurator = @ptrCast(@alignCast(ptr));
+        return self.cleanup_interval_seconds;
+    }
+
+    pub fn cleanupFileCountThreshold(ptr: *anyopaque) u16 {
+        const self: *TestingConfigurator = @ptrCast(@alignCast(ptr));
+        return self.cleanup_file_count_threshold;
     }
 };

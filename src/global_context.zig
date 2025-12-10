@@ -11,6 +11,8 @@ var TYPED_STORAGE = std.atomic.Value(?*TypedStorage).init(null);
 var TASK_QUEUE = std.atomic.Value(?*TaskQueue).init(null);
 var METRICS_AGGREGATOR = std.atomic.Value(?*MetricsAggregator).init(null);
 var WORKER_MANAGER = std.atomic.Value(?*WorkerManager).init(null);
+const ROOT_FOLDER: []const u8 = ".sklad";
+threadlocal var TEST_ROOT_FOLDER: ?[]const u8 = null;
 
 pub inline fn loadConfiguration(configurator: *Configurator) void {
     _ = CONFIGURATOR.cmpxchgStrong(null, configurator, .acq_rel, .monotonic);
@@ -21,6 +23,13 @@ pub inline fn init(graph_storage: *TypedStorage, task_queue: *TaskQueue, metrics
     _ = TASK_QUEUE.cmpxchgStrong(null, task_queue, .acq_rel, .monotonic);
     _ = METRICS_AGGREGATOR.cmpxchgStrong(null, metrics_aggregator, .acq_rel, .monotonic);
     _ = WORKER_MANAGER.cmpxchgStrong(null, worker_manager, .acq_rel, .monotonic);
+}
+
+pub fn getRootFolder() []const u8 {
+    if (TEST_ROOT_FOLDER) |test_path| {
+        return test_path;
+    }
+    return ROOT_FOLDER;
 }
 
 pub inline fn getConfigurator() ?*Configurator {
@@ -46,6 +55,14 @@ pub inline fn getWorkerManager() ?*WorkerManager {
 // Testing helpers
 const testing = std.testing;
 const TestingConfigurator = @import("./configurator.zig").TestingConfigurator;
+
+pub fn setRootFolderForTests(path: []const u8) void {
+    TEST_ROOT_FOLDER = path;
+}
+
+pub fn resetRootFolderForTests() void {
+    TEST_ROOT_FOLDER = null;
+}
 
 pub fn deinitConfigurationForTests() void {
     if (getConfigurator()) |conf| {

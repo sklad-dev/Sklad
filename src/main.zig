@@ -17,6 +17,7 @@ pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
     var json_conf = try JsonConfigurator.init(allocator, DEFAULT_CONFIGURATION_FILE_PATH);
+
     var conf = json_conf.configurator();
     global_context.loadConfiguration(&conf);
     std.log.info("Configuration is loaded", .{});
