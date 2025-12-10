@@ -117,7 +117,7 @@ pub const SSTableCache = struct {
         const start = self.eviction_cursor.load(.acquire);
         var inserted = false;
         for (0..self.capacity) |offset| {
-            const i = (start + offset) % self.capacity;
+            const i = (start + self.capacity - offset) % self.capacity;
             if (self.entries[i].cmpxchgStrong(
                 null,
                 record,
