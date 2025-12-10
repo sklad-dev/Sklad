@@ -222,6 +222,8 @@ pub const SSTable = struct {
         try sstable.writeMinMaxKeys(&writer);
         try sstable.writeFooter(&writer);
 
+        try sstable.file.sync();
+
         return sstable;
     }
 

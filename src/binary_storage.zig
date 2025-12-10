@@ -9,6 +9,7 @@ const constants = @import("./constants.zig");
 const ApplicationError = @import("./constants.zig").ApplicationError;
 const AppendOnlyQueue = @import("./lock_free.zig").AppendOnlyQueue;
 const CompactionState = @import("./table_file_manager.zig").CompactionState;
+const Configurator = @import("./configurator.zig").Configurator;
 const FileHandle = @import("./data_types.zig").FileHandle;
 const Memtable = @import("./memtable.zig").Memtable;
 const MergeIterator = @import("./merge_iterator.zig").MergeIterator;
@@ -126,6 +127,7 @@ pub const BinaryStorage = struct {
     swap_in_progress: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     table_file_manager: TableFileManager,
     sstable_cache: SSTableCache,
+    configurator: *Configurator,
 
     last_cleanup_timestamp: std.atomic.Value(i64),
     deleted_files_since_cleanup: std.atomic.Value(u32),
@@ -204,7 +206,7 @@ pub const BinaryStorage = struct {
         }
 
         fn submitCompactionTask(self: *FlushTask) void {
-            const threshold = global_context.getConfigurator().?.compactionLevelThreshold();
+            const threshold = self.storage.configurator.compactionLevelThreshold();
             const files_count = @atomicLoad(u16, &self.storage.table_file_manager.level_counters[0], .acquire);
             if (files_count >= threshold) {
                 self.storage.enqueueCompactionTask(0);
@@ -304,7 +306,7 @@ pub const BinaryStorage = struct {
         }
 
         fn do_run(self: *CompactionTask) !void {
-            const multiplier = global_context.getConfigurator().?.compactionLevelMultiplier();
+            const multiplier = self.storage.configurator.compactionLevelMultiplier();
 
             const files = self.storage.table_file_manager.acquireFilesAtLevel(self.level) orelse return;
             defer _ = files.release();
@@ -323,14 +325,13 @@ pub const BinaryStorage = struct {
 
             const file_id = self.storage.table_file_manager.nextFileIdForLevel(self.level + 1);
 
-            const configurator = global_context.getConfigurator().?;
             var sstable = try SSTable.create(
                 self.allocator,
                 &records_merge_iterator,
                 helper.records_number,
                 .{ .level = self.level + 1, .file_id = file_id },
-                configurator.sstableBlockSize(),
-                configurator.sstableBloomBitsPerKey(),
+                self.storage.configurator.sstableBlockSize(),
+                self.storage.configurator.sstableBloomBitsPerKey(),
             );
             defer sstable.close(false);
 
@@ -372,9 +373,8 @@ pub const BinaryStorage = struct {
                 return;
             };
 
-            const configurator = global_context.getConfigurator().?;
-            const threshold = configurator.compactionLevelThreshold();
-            const max_level = configurator.compactionMaxLevel();
+            const threshold = self.storage.configurator.compactionLevelThreshold();
+            const max_level = self.storage.configurator.compactionMaxLevel();
 
             _ = @cmpxchgWeak(
                 u8,
@@ -400,7 +400,6 @@ pub const BinaryStorage = struct {
     pub fn start(allocator: std.mem.Allocator, path: []const u8) !BinaryStorage {
         var table_file_manager = try TableFileManager.init(allocator, path);
         const memtable = try restoreMemtables(&table_file_manager);
-        const config = global_context.getConfigurator().?;
         var storage = BinaryStorage{
             .allocator = allocator,
             .path = path,
@@ -408,10 +407,11 @@ pub const BinaryStorage = struct {
             .pending_memtables = std.atomic.Value(?*PendingMemtableList).init(null),
             .table_file_manager = table_file_manager,
             .sstable_cache = undefined,
+            .configurator = global_context.getConfigurator().?,
             .last_cleanup_timestamp = std.atomic.Value(i64).init(0),
             .deleted_files_since_cleanup = std.atomic.Value(u32).init(0),
         };
-        storage.sstable_cache = try SSTableCache.init(allocator, config.sstableCacheSize());
+        storage.sstable_cache = try SSTableCache.init(allocator, storage.configurator.sstableCacheSize());
         return storage;
     }
 
@@ -550,9 +550,8 @@ pub const BinaryStorage = struct {
         const last_cleanup = self.last_cleanup_timestamp.load(.acquire);
         const deleted_count = self.deleted_files_since_cleanup.load(.acquire);
 
-        // TODO: use configurator
-        const time_threshold = 60 * std.time.us_per_s;
-        const count_threshold = 4;
+        const time_threshold = self.configurator.cleanupIntervalSeconds() * std.time.us_per_s;
+        const count_threshold = self.configurator.cleanupFileCountThreshold();
 
         const time_elapsed = now - last_cleanup;
         return time_elapsed >= time_threshold and deleted_count >= count_threshold;
@@ -595,7 +594,7 @@ pub const BinaryStorage = struct {
     fn findInTables(self: *BinaryStorage, key: []const u8) !?[]const u8 {
         var result: ?[]const u8 = null;
         var result_id: u64 = 0;
-        const max_level = global_context.getConfigurator().?.compactionMaxLevel();
+        const max_level = self.configurator.compactionMaxLevel();
         for (0..max_level) |level| {
             var files = self.table_file_manager.acquireFilesAtLevel(@intCast(level)) orelse continue;
             defer _ = files.release();
@@ -767,7 +766,7 @@ test "BinaryStorage#put" {
     defer global_context.resetRootFolderForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
-    configurator.* = TestingConfigurator.init();
+    configurator.* = TestingConfigurator.init(1536, 2, 64);
     defer global_context.deinitConfigurationForTests();
 
     var conf = configurator.configurator();
@@ -792,7 +791,7 @@ test "Restore memtable from wal" {
     defer global_context.resetRootFolderForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
-    configurator.* = TestingConfigurator.init();
+    configurator.* = TestingConfigurator.init(1536, 2, 64);
     defer global_context.deinitConfigurationForTests();
 
     var conf = configurator.configurator();
@@ -825,7 +824,7 @@ test "BinaryStorage#find" {
     defer global_context.resetRootFolderForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
-    configurator.* = TestingConfigurator.init();
+    configurator.* = TestingConfigurator.init(1536, 2, 64);
     defer global_context.deinitConfigurationForTests();
 
     var conf = configurator.configurator();
@@ -872,7 +871,7 @@ test "BinaryStorage#find returns the newest value" {
     defer global_context.deinitConfigurationForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
-    configurator.* = TestingConfigurator.init();
+    configurator.* = TestingConfigurator.init(1536, 2, 64);
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 
@@ -946,7 +945,7 @@ test "BinaryStorage compaction and cleanup" {
     defer global_context.deinitConfigurationForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
-    configurator.* = TestingConfigurator.init();
+    configurator.* = TestingConfigurator.init(1536, 2, 64);
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 

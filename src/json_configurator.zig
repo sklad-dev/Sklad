@@ -12,6 +12,7 @@ pub const JsonConfigurator = struct {
         sstable_cache: SSTableCacheConfiguration,
         compaction: CompactionConfiguration,
         worker_pool: WorkerPoolConfiguration,
+        cleanup: CleanupConfiguration,
     };
 
     const MemtableConfiguration = struct {
@@ -45,6 +46,11 @@ pub const JsonConfigurator = struct {
         task_wait_threshold_us: u64,
     };
 
+    const CleanupConfiguration = struct {
+        interval_seconds: i64,
+        file_count_threshold: u16,
+    };
+
     pub fn init(allocator: std.mem.Allocator, path: []const u8) !JsonConfigurator {
         const data = try std.fs.cwd().readFileAlloc(allocator, path, 1024);
         defer allocator.free(data);
@@ -75,6 +81,8 @@ pub const JsonConfigurator = struct {
             .worker_pool_max_workers_fn = maxWorkers,
             .worker_pool_idle_timeout_seconds_fn = idleTimeout,
             .worker_pool_task_wait_threshold_us_fn = taskWaitThreshold,
+            .cleanup_interval_seconds_fn = cleanupIntervalSeconds,
+            .cleanup_file_count_threshold_fn = cleanupFileCountThreshold,
         };
     }
 
@@ -136,5 +144,15 @@ pub const JsonConfigurator = struct {
     pub fn taskWaitThreshold(ptr: *anyopaque) u64 {
         const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
         return self.config.worker_pool.task_wait_threshold_us;
+    }
+
+    pub fn cleanupIntervalSeconds(ptr: *anyopaque) i64 {
+        const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
+        return self.config.cleanup.interval_seconds;
+    }
+
+    pub fn cleanupFileCountThreshold(ptr: *anyopaque) u16 {
+        const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
+        return self.config.cleanup.file_count_threshold;
     }
 };

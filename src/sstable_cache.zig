@@ -59,7 +59,13 @@ pub const SSTableCache = struct {
             }
             defer _ = record.release();
 
-            if (record.getConst().is_deleted.load(.acquire)) continue;
+            if (record.getConst().is_deleted.load(.acquire)) {
+                if (self.entries[i].cmpxchgStrong(record, null, .acq_rel, .acquire) == null) {
+                    _ = self.size.fetchSub(1, .acq_rel);
+                    _ = record.release();
+                }
+                continue;
+            }
 
             const record_handle = record.getConst().table.handle;
             if (record_handle.level == handle.level and record_handle.file_id == handle.file_id) {
@@ -108,8 +114,10 @@ pub const SSTableCache = struct {
             .is_deleted = std.atomic.Value(bool).init(false),
         });
 
+        const start = self.eviction_cursor.load(.acquire);
         var inserted = false;
-        for (0..self.capacity) |i| {
+        for (0..self.capacity) |offset| {
+            const i = (start + offset) % self.capacity;
             if (self.entries[i].cmpxchgStrong(
                 null,
                 record,
@@ -119,6 +127,7 @@ pub const SSTableCache = struct {
                 continue;
             } else {
                 _ = self.size.fetchAdd(1, .acq_rel);
+                self.eviction_cursor.store((i + 1) % self.capacity, .release);
                 inserted = true;
                 break;
             }

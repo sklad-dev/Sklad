@@ -83,9 +83,8 @@ pub const TableFileManager = struct {
             configurator.sstableBloomBitsPerKey(),
         );
 
-        try self.addFileAtLevel(0, sstable.handle.file_id);
-
         sstable.close(false);
+        try self.addFileAtLevel(0, sstable.handle.file_id);
         try memtable.wal.deleteFile();
     }
 

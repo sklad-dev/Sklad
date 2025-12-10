@@ -117,7 +117,7 @@ test "NodeStorage#set" {
     defer global_context.resetRootFolderForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
-    configurator.* = TestingConfigurator.init();
+    configurator.* = TestingConfigurator.init(1536, 2, 64);
     defer global_context.deinitConfigurationForTests();
 
     var conf = configurator.configurator();
@@ -173,7 +173,7 @@ test "NodeStorage#get" {
     defer global_context.resetRootFolderForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
-    configurator.* = TestingConfigurator.init();
+    configurator.* = TestingConfigurator.init(1536, 2, 64);
     defer global_context.deinitConfigurationForTests();
 
     var conf = configurator.configurator();
