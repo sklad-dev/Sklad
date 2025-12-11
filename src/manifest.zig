@@ -10,13 +10,30 @@ pub const ManifestEntryType = enum(u8) {
     cleanupCheckpoint,
 };
 
-pub const ManifestEntry = struct {
+pub const ManifestEntryKind = enum {
+    fileOperation,
+    checkpoint,
+};
+
+pub const ManifestEntry = union(ManifestEntryKind) {
+    fileOperation: FileOperationManifestEntry,
+    checkpoint: CheckpointManifestEntry,
+};
+pub const MANIFEST_ENTRY_SIZE = @sizeOf(u8) + @sizeOf(u8) + @sizeOf(u64) + @sizeOf(i64);
+
+pub const FileOperationManifestEntry = struct {
     entry_type: ManifestEntryType,
     level: u8,
     file_id: u64,
     timestamp: i64,
 };
-pub const MANIFEST_ENTRY_SIZE = @sizeOf(u8) + @sizeOf(u8) + @sizeOf(u64) + @sizeOf(i64);
+
+pub const CheckpointManifestEntry = struct {
+    entry_type: ManifestEntryType,
+    _reserved: u8 = 0,
+    offset: u64,
+    timestamp: i64,
+};
 
 pub const Manifest = struct {
     const EntryBuffer = RefCounted(AppendOnlyQueue(ManifestEntry, null));
@@ -45,7 +62,7 @@ pub const Manifest = struct {
             return iterator;
         }
 
-        pub fn next(self: *RemovedFileEntriesIterator) !?ManifestEntry {
+        pub fn next(self: *RemovedFileEntriesIterator) !?FileOperationManifestEntry {
             if (self.end_offset == 0) return null;
             if (self.current_offset >= self.end_offset) return null;
 
@@ -62,7 +79,7 @@ pub const Manifest = struct {
                     const file_id: u64 = try utils.readNumber(u64, &self.reader.interface);
                     try self.reader.seekTo(offset + 10);
                     const timestamp: i64 = try utils.readNumber(i64, &self.reader.interface);
-                    return ManifestEntry{
+                    return FileOperationManifestEntry{
                         .entry_type = entry_type,
                         .level = level,
                         .file_id = file_id,
@@ -107,33 +124,35 @@ pub const Manifest = struct {
     }
 
     pub fn addFile(self: *Manifest, level: u8, file_id: u64) void {
-        const record = ManifestEntry{
-            .entry_type = .fileAdded,
-            .level = level,
-            .file_id = file_id,
-            .timestamp = std.time.microTimestamp(),
-        };
-        self.append(record);
+        self.append(.{
+            .fileOperation = .{
+                .entry_type = .fileAdded,
+                .level = level,
+                .file_id = file_id,
+                .timestamp = std.time.microTimestamp(),
+            },
+        });
     }
 
     pub fn removeFile(self: *Manifest, level: u8, file_id: u64) void {
-        const record = ManifestEntry{
-            .entry_type = .fileRemoved,
-            .level = level,
-            .file_id = file_id,
-            .timestamp = std.time.microTimestamp(),
-        };
-        self.append(record);
+        self.append(.{
+            .fileOperation = .{
+                .entry_type = .fileRemoved,
+                .level = level,
+                .file_id = file_id,
+                .timestamp = std.time.microTimestamp(),
+            },
+        });
     }
 
     pub fn recordCleanupCheckpoint(self: *Manifest, last_cleaned_offset: u64) void {
-        const record = ManifestEntry{
-            .entry_type = .cleanupCheckpoint,
-            .level = 0, // Unused for checkpoint
-            .file_id = last_cleaned_offset,
-            .timestamp = std.time.microTimestamp(),
-        };
-        self.append(record);
+        self.append(.{
+            .checkpoint = .{
+                .entry_type = .cleanupCheckpoint,
+                .offset = last_cleaned_offset,
+                .timestamp = std.time.microTimestamp(),
+            },
+        });
     }
 
     pub fn recover(self: *Manifest, deleted_files: *std.AutoHashMap(FileHandle, void)) !void {
@@ -147,19 +166,19 @@ pub const Manifest = struct {
                 try reader.seekTo(offset);
                 const entry_type: ManifestEntryType = @enumFromInt(try utils.readNumber(u8, &reader.interface));
                 try reader.seekTo(offset + 1);
-                const level: u8 = try utils.readNumber(u8, &reader.interface);
+                const second_byte: u8 = try utils.readNumber(u8, &reader.interface);
                 try reader.seekTo(offset + 2);
-                const file_id: u64 = try utils.readNumber(u64, &reader.interface);
+                const main_field: u64 = try utils.readNumber(u64, &reader.interface);
 
                 switch (entry_type) {
                     .fileRemoved => {
                         _ = try deleted_files.put(.{
-                            .level = level,
-                            .file_id = file_id,
+                            .level = second_byte,
+                            .file_id = main_field,
                         }, {});
                     },
                     .cleanupCheckpoint => {
-                        last_checkpoint_offset = file_id;
+                        last_checkpoint_offset = main_field;
                     },
                     else => {},
                 }
@@ -245,10 +264,20 @@ pub const Manifest = struct {
         var current = old_buffer.get().head.next;
         while (current) |node| : (current = node.next) {
             if (node.entry) |entry| {
-                try utils.writeNumber(u8, &writer.interface, @intFromEnum(entry.entry_type));
-                try utils.writeNumber(u8, &writer.interface, entry.level);
-                try utils.writeNumber(u64, &writer.interface, entry.file_id);
-                try utils.writeNumber(i64, &writer.interface, entry.timestamp);
+                switch (entry) {
+                    .fileOperation => |*file_operation| {
+                        try utils.writeNumber(u8, &writer.interface, @intFromEnum(file_operation.entry_type));
+                        try utils.writeNumber(u8, &writer.interface, file_operation.level);
+                        try utils.writeNumber(u64, &writer.interface, file_operation.file_id);
+                        try utils.writeNumber(i64, &writer.interface, file_operation.timestamp);
+                    },
+                    .checkpoint => |*checkpoint| {
+                        try utils.writeNumber(u8, &writer.interface, @intFromEnum(checkpoint.entry_type));
+                        try utils.writeNumber(u8, &writer.interface, 0);
+                        try utils.writeNumber(u64, &writer.interface, checkpoint.offset);
+                        try utils.writeNumber(i64, &writer.interface, checkpoint.timestamp);
+                    },
+                }
             }
         }
 
