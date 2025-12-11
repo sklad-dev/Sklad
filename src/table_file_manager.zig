@@ -33,7 +33,7 @@ pub const TableFileManager = struct {
 
     pub const FileList = RefCounted(AppendOnlyQueue(u64, null));
 
-    pub fn init(allocator: std.mem.Allocator, path: []const u8) !TableFileManager {
+    pub fn init(allocator: std.mem.Allocator, path: []const u8, deleted_files: *std.AutoHashMap(FileHandle, void)) !TableFileManager {
         var manager = TableFileManager{
             .allocator = allocator,
             .path = path,
@@ -43,7 +43,7 @@ pub const TableFileManager = struct {
             .max_file_id_per_level = [_]u64{0} ** 256,
             .compaction_flags = [_]u8{0} ** 256,
         };
-        try manager.mapSstableFiles();
+        try manager.mapSstableFiles(deleted_files);
         return manager;
     }
 
@@ -186,7 +186,7 @@ pub const TableFileManager = struct {
         files_at_level.?.get().enqueue(file_id);
     }
 
-    fn mapSstableFiles(self: *TableFileManager) !void {
+    fn mapSstableFiles(self: *TableFileManager, deleted_files: *std.AutoHashMap(FileHandle, void)) !void {
         var dir = try std.fs.cwd().openDir(self.path, .{
             .access_sub_paths = false,
             .iterate = true,
@@ -194,9 +194,7 @@ pub const TableFileManager = struct {
         });
         defer dir.close();
 
-        var deleted_files = std.AutoHashMap(FileHandle, void).init(self.allocator);
-        defer deleted_files.deinit();
-        try self.manifest.recover(&deleted_files);
+        try self.manifest.recover(deleted_files);
 
         var it = dir.iterate();
         while (try it.next()) |entry| {
@@ -260,7 +258,10 @@ test "TableFileManager#init" {
     // Test that the manager correctly handles existing files
     try createFiles();
 
-    var manager = try TableFileManager.init(testing.allocator, "./");
+    var deleted_files = std.AutoHashMap(FileHandle, void).init(testing.allocator);
+    defer deleted_files.deinit();
+
+    var manager = try TableFileManager.init(testing.allocator, "./", &deleted_files);
 
     for (0..4) |i| {
         try testing.expect(manager.files[i].load(.unordered) != null);
@@ -287,7 +288,10 @@ test "TableFileManager#init" {
 }
 
 test "TableFileManager#deleteFilesAtLevel" {
-    var manager = try TableFileManager.init(testing.allocator, "./");
+    var deleted_files = std.AutoHashMap(FileHandle, void).init(testing.allocator);
+    defer deleted_files.deinit();
+
+    var manager = try TableFileManager.init(testing.allocator, "./", &deleted_files);
     defer manager.deinit();
 
     try manager.addFileAtLevel(0, 1);

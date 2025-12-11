@@ -398,7 +398,10 @@ pub const BinaryStorage = struct {
     };
 
     pub fn start(allocator: std.mem.Allocator, path: []const u8) !BinaryStorage {
-        var table_file_manager = try TableFileManager.init(allocator, path);
+        var deleted_files = std.AutoHashMap(FileHandle, void).init(allocator);
+        defer deleted_files.deinit();
+
+        var table_file_manager = try TableFileManager.init(allocator, path, &deleted_files);
         const memtable = try restoreMemtables(&table_file_manager);
         var storage = BinaryStorage{
             .allocator = allocator,
@@ -409,7 +412,7 @@ pub const BinaryStorage = struct {
             .sstable_cache = undefined,
             .configurator = global_context.getConfigurator().?,
             .last_cleanup_timestamp = std.atomic.Value(i64).init(0),
-            .deleted_files_since_cleanup = std.atomic.Value(u32).init(0),
+            .deleted_files_since_cleanup = std.atomic.Value(u32).init(@intCast(deleted_files.count())),
         };
         storage.sstable_cache = try SSTableCache.init(allocator, storage.configurator.sstableCacheSize());
         return storage;

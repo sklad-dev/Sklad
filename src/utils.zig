@@ -29,14 +29,19 @@ pub inline fn intFromBytes(comptime T: type, buffer: []const u8, offset: usize) 
     return std.mem.readInt(T, buffer[offset .. offset + @sizeOf(T)][0..@sizeOf(T)], .big);
 }
 
-pub inline fn toBytes(comptime T: type, value: T) ![@sizeOf(@TypeOf(value))]u8 {
-    return switch (T) {
-        bool => intToBytes(u8, @as(u8, if (value == true) 1 else 0)),
-        i8, i16, i32, i64, u8, u16, u32, u64 => intToBytes(T, value),
-        f32 => intToBytes(u32, @as(u32, @bitCast(value))),
-        f64 => intToBytes(u64, @as(u64, @bitCast(value))),
-        else => error.DataError,
-    };
+pub inline fn toBytes(comptime T: type, value: T) ![@sizeOf(T)]u8 {
+    if (comptime @typeInfo(T) == .bool) {
+        return intToBytes(u8, @intFromBool(value));
+    } else if (comptime @typeInfo(T) == .int) {
+        return intToBytes(T, value);
+    } else if (comptime @typeInfo(T) == .float) {
+        const IntType = @Type(.{ .int = .{
+            .signedness = .unsigned,
+            .bits = @bitSizeOf(T),
+        } });
+        return intToBytes(IntType, @bitCast(value));
+    }
+    @compileError("Unsupported type: " ++ @typeName(T));
 }
 
 pub inline fn intToBytes(comptime T: type, value: T) [@sizeOf(T)]u8 {

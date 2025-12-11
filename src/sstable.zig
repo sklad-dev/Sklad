@@ -230,7 +230,7 @@ pub const SSTable = struct {
     fn writeDataBlocks(self: *SSTable, writer: *FileWriter, record_iterator: *StorageRecord.Iterator, block_size: u32) !u32 {
         var data_block = DataBlock{ .buffer = getWorkerContext().?.block_buffer };
 
-        var i: u16 = 0;
+        var i: u32 = 0;
         var blocks_number: u32 = 0;
         var block_min_key: []const u8 = undefined;
         var block_offsets = try std.ArrayList(u16).initCapacity(self.allocator, 1);
