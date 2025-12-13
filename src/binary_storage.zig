@@ -8,6 +8,7 @@ const constants = @import("./constants.zig");
 
 const ApplicationError = @import("./constants.zig").ApplicationError;
 const AppendOnlyQueue = @import("./lock_free.zig").AppendOnlyQueue;
+const AddOnlyStack = @import("./lock_free.zig").AddOnlyStack;
 const CompactionState = @import("./table_file_manager.zig").CompactionState;
 const Configurator = @import("./configurator.zig").Configurator;
 const FileHandle = @import("./data_types.zig").FileHandle;
@@ -226,24 +227,27 @@ pub const BinaryStorage = struct {
             iterators: []StorageRecord.Iterator,
             records_number: u32,
 
-            fn init(base_task: *CompactionTask, files: *AppendOnlyQueue(u64, null), multiplier: usize) !CompactionHelper {
+            fn init(base_task: *CompactionTask, files: *AddOnlyStack(u64, null), multiplier: usize) !CompactionHelper {
                 var file_count: usize = 0;
-                var current = files.head.next;
+                var current = files.head;
                 while (current) |node| : (current = node.next) {
-                    if (node.entry) |_| file_count += 1;
+                    file_count += 1;
                 }
                 const files_to_compact = @min(file_count, multiplier);
 
-                var files_tail = try base_task.allocator.alloc(u64, files_to_compact);
+                var all_files = try base_task.allocator.alloc(u64, file_count);
+                defer base_task.allocator.free(all_files);
 
                 var i: usize = 0;
-                current = files.head.next;
-                while (i < files_to_compact and current != null) : (current = current.?.next) {
-                    if (current.?.entry) |entry| {
-                        files_tail[i] = entry;
-                        i += 1;
-                    }
+                current = files.head;
+                while (current) |node| : (current = node.next) {
+                    all_files[i] = node.entry;
+                    i += 1;
                 }
+
+                const files_tail = try base_task.allocator.alloc(u64, files_to_compact);
+                const start_idx = file_count - files_to_compact;
+                @memcpy(files_tail, all_files[start_idx..]);
 
                 var adapters = try base_task.allocator.alloc(SSTableIteratorAdapter, files_to_compact);
                 errdefer base_task.allocator.free(adapters);
@@ -602,23 +606,21 @@ pub const BinaryStorage = struct {
             var files = self.table_file_manager.acquireFilesAtLevel(@intCast(level)) orelse continue;
             defer _ = files.release();
 
-            var current = files.get().head.next;
+            var current = files.get().head;
             while (current) |node| : (current = node.next) {
-                if (node.entry) |file_id| {
-                    var cached_record = try self.sstable_cache.get(.{
-                        .level = @intCast(level),
-                        .file_id = file_id,
-                    }, &self.table_file_manager) orelse continue;
-                    defer _ = cached_record.release();
+                var cached_record = try self.sstable_cache.get(.{
+                    .level = @intCast(level),
+                    .file_id = node.entry,
+                }, &self.table_file_manager) orelse continue;
+                defer _ = cached_record.release();
 
-                    if (try cached_record.getConst().table.find(key)) |value| {
-                        if (file_id >= result_id) {
-                            result_id = file_id;
-                            if (result) |r| self.allocator.free(r);
-                            result = value;
-                        } else {
-                            self.allocator.free(value);
-                        }
+                if (try cached_record.getConst().table.find(key)) |value| {
+                    if (node.entry >= result_id) {
+                        result_id = node.entry;
+                        if (result) |r| self.allocator.free(r);
+                        result = value;
+                    } else {
+                        self.allocator.free(value);
                     }
                 }
             }
@@ -736,15 +738,13 @@ fn cleanup(storage: *BinaryStorage) !void {
         if (storage.table_file_manager.acquireFilesAtLevel(@intCast(level))) |files| {
             defer _ = files.release();
 
-            var current = files.get().head.next;
+            var current = files.get().head;
             while (current) |node| : (current = node.next) {
-                if (node.entry) |file_id| {
-                    var cached_record = try storage.sstable_cache.get(.{
-                        .level = @intCast(level),
-                        .file_id = file_id,
-                    }, &storage.table_file_manager) orelse continue;
-                    defer _ = cached_record.release();
-                }
+                var cached_record = try storage.sstable_cache.get(.{
+                    .level = @intCast(level),
+                    .file_id = node.entry,
+                }, &storage.table_file_manager) orelse continue;
+                defer _ = cached_record.release();
             }
         }
     }
@@ -787,6 +787,8 @@ test "BinaryStorage#put" {
     try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u8, 42)));
 
     try test_storage.active_memtable.load(.unordered).wal.deleteFile();
+
+    try std.fs.cwd().deleteFile("MANIFEST");
 }
 
 test "Restore memtable from wal" {
@@ -820,6 +822,7 @@ test "Restore memtable from wal" {
     try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u16, 0xFAFA)));
 
     try storage2.active_memtable.load(.unordered).wal.deleteFile();
+    try std.fs.cwd().deleteFile("MANIFEST");
 }
 
 test "BinaryStorage#find" {
@@ -958,6 +961,15 @@ test "BinaryStorage compaction and cleanup" {
 
     var storage = try BinaryStorage.start(testing.allocator, ".");
 
+    var file_list = storage.table_file_manager.acquireFilesAtLevel(0);
+    var curr = file_list.?.get().head;
+    var expected_file_id: i64 = 4;
+    while (curr) |node| : (curr = node.next) {
+        try testing.expect(node.entry == @as(u64, @intCast(expected_file_id)));
+        expected_file_id -= 1;
+    }
+    _ = file_list.?.release();
+
     for (0..50) |i| {
         const r = try storage.find(&utils.intToBytes(usize, i));
         defer testing.allocator.free(r.?);
@@ -979,15 +991,15 @@ test "BinaryStorage compaction and cleanup" {
     };
     compaction_task.task().run_fn(&compaction_task);
 
-    var curr = storage.table_file_manager.acquireFilesAtLevel(0).?.get().head.next;
+    file_list = storage.table_file_manager.acquireFilesAtLevel(0);
+    curr = file_list.?.get().head;
     while (curr) |node| : (curr = node.next) {
-        if (node.entry) |file_id| {
-            try testing.expect(file_id != 0);
-            try testing.expect(file_id != 1);
-            try testing.expect(file_id != 2);
-            try testing.expect(file_id != 3);
-        }
+        try testing.expect(node.entry != 0);
+        try testing.expect(node.entry != 1);
+        try testing.expect(node.entry != 2);
+        try testing.expect(node.entry != 3);
     }
+    _ = file_list.?.release();
 
     for (0..50) |i| {
         const r = try storage.find(&utils.intToBytes(usize, i));
@@ -1008,14 +1020,12 @@ test "BinaryStorage compaction and cleanup" {
     storage = try BinaryStorage.start(testing.allocator, ".");
     defer storage.stop();
 
-    curr = storage.table_file_manager.acquireFilesAtLevel(0).?.get().head.next;
+    curr = storage.table_file_manager.acquireFilesAtLevel(0).?.get().head;
     while (curr) |node| : (curr = node.next) {
-        if (node.entry) |file_id| {
-            try testing.expect(file_id != 0);
-            try testing.expect(file_id != 1);
-            try testing.expect(file_id != 2);
-            try testing.expect(file_id != 3);
-        }
+        try testing.expect(node.entry != 0);
+        try testing.expect(node.entry != 1);
+        try testing.expect(node.entry != 2);
+        try testing.expect(node.entry != 3);
     }
 
     for (0..50) |i| {

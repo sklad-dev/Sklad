@@ -279,6 +279,61 @@ pub fn AppendOnlyQueue(E: type, nodeCleanupFn: ?*const fn (allocator: std.mem.Al
     };
 }
 
+pub fn AddOnlyStack(E: type, nodeCleanupFn: ?*const fn (allocator: std.mem.Allocator, data: E) void) type {
+    return struct {
+        const Self = @This();
+
+        allocator: std.mem.Allocator,
+        head: ?*Node,
+
+        const Node = struct {
+            entry: E,
+            next: ?*Node,
+            _padding: u8 align(std.atomic.cache_line) = 0,
+        };
+
+        pub fn init(allocator: std.mem.Allocator) Self {
+            return Self{
+                .allocator = allocator,
+                .head = null,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            var pointer: ?*Node = @atomicLoad(?*Node, &self.head, .acquire);
+            while (pointer) |node| {
+                const next_node = node.next;
+                if (comptime nodeCleanupFn) |fn_ptr| {
+                    fn_ptr(self.allocator, node.entry);
+                }
+                self.allocator.destroy(node);
+                pointer = next_node;
+            }
+        }
+
+        pub fn push(self: *Self, entry: E) void {
+            const node = self.allocator.create(Node) catch unreachable;
+            node.* = Node{ .entry = entry, .next = undefined };
+
+            while (true) {
+                const current_head = @atomicLoad(?*Node, &self.head, .acquire);
+                node.next = current_head;
+
+                if (@cmpxchgWeak(
+                    ?*Node,
+                    &self.head,
+                    current_head,
+                    node,
+                    .acq_rel,
+                    .acquire,
+                ) == null) {
+                    break;
+                }
+            }
+        }
+    };
+}
+
 pub fn BoundedQueue(comptime T: type) type {
     return struct {
         const Self = @This();
@@ -589,6 +644,50 @@ test "AppendOnlyQueue, value type, no cleanup" {
     try testing.expect(queue.head.next.?.next.?.next.?.entry.? == 2);
 }
 
+test "AddOnlyStack, reference type with cleanup" {
+    var stack = AddOnlyStack(*u8, testCleanupRefU8).init(testing.allocator);
+    defer stack.deinit();
+
+    const e1 = try testing.allocator.create(u8);
+    e1.* = 0;
+    stack.push(e1);
+    try testing.expect(stack.head.?.entry.* == 0);
+    try testing.expect(stack.head.?.next == null);
+
+    const e2 = try testing.allocator.create(u8);
+    e2.* = 1;
+    stack.push(e2);
+    try testing.expect(stack.head.?.entry.* == 1);
+    try testing.expect(stack.head.?.next.?.entry.* == 0);
+
+    const e3 = try testing.allocator.create(u8);
+    e3.* = 2;
+    stack.push(e3);
+    try testing.expect(stack.head.?.entry.* == 2);
+    try testing.expect(stack.head.?.next.?.entry.* == 1);
+    try testing.expect(stack.head.?.next.?.next.?.entry.* == 0);
+    try testing.expect(stack.head.?.next.?.next.?.next == null);
+}
+
+test "AddOnlyStack, value type, no cleanup" {
+    var stack = AddOnlyStack(u8, null).init(testing.allocator);
+    defer stack.deinit();
+
+    stack.push(0);
+    try testing.expect(stack.head.?.entry == 0);
+    try testing.expect(stack.head.?.next == null);
+
+    stack.push(1);
+    try testing.expect(stack.head.?.entry == 1);
+    try testing.expect(stack.head.?.next.?.entry == 0);
+
+    stack.push(2);
+    try testing.expect(stack.head.?.entry == 2);
+    try testing.expect(stack.head.?.next.?.entry == 1);
+    try testing.expect(stack.head.?.next.?.next.?.entry == 0);
+    try testing.expect(stack.head.?.next.?.next.?.next == null);
+}
+
 test "Queue#enqueue" {
     var queue = Queue(u8, 2).init(testing.allocator);
     defer queue.deinit();
@@ -809,6 +908,33 @@ test "RingBuffer" {
 //     var threads: [16]std.Thread = undefined;
 //     for (0..16) |i| {
 //         threads[i] = try std.Thread.spawn(.{}, appendOnlyQueueTestJob, .{ &queue, i });
+//     }
+
+//     for (threads) |t| {
+//         t.join();
+//     }
+// }
+
+// fn addOnlyStackTestJob(stack: *AddOnlyStack(*u64, testCleanupRefU64), thread_number: usize) void {
+//     const max_iteration = 10000;
+//     for (0..max_iteration) |i| {
+//         if (i % 100 == 0) {
+//             std.debug.print("[TEST] {d}: {d}\n", .{ std.Thread.getCurrentId(), i });
+//         }
+
+//         const d = stack.allocator.create(u64) catch unreachable;
+//         d.* = thread_number;
+//         stack.push(d);
+//     }
+// }
+
+// test "AddOnlyStack concurrency" {
+//     var stack = AddOnlyStack(*u64, testCleanupRefU64).init(testing.allocator);
+//     defer stack.deinit();
+
+//     var threads: [16]std.Thread = undefined;
+//     for (0..16) |i| {
+//         threads[i] = try std.Thread.spawn(.{}, addOnlyStackTestJob, .{ &stack, i });
 //     }
 
 //     for (threads) |t| {

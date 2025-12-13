@@ -82,13 +82,11 @@ pub const SSTableCache = struct {
         defer _ = file_list.release();
 
         var found = false;
-        var curr = file_list.get().head.next;
+        var curr = file_list.get().head;
         while (curr) |node| : (curr = node.next) {
-            if (node.entry) |file_id| {
-                if (file_id == handle.file_id) {
-                    found = true;
-                    break;
-                }
+            if (node.entry == handle.file_id) {
+                found = true;
+                break;
             }
         }
 
