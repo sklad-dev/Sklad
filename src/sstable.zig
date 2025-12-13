@@ -83,10 +83,10 @@ pub const SSTable = struct {
     records_number: u32,
     block_size: u32,
     bloom_filter: ?BloomFilter,
-    index_start_offset: u32,
-    bloom_start_offset: u32,
-    min_key_start_offset: u32,
-    max_key_start_offset: u32,
+    index_start_offset: u64,
+    bloom_start_offset: u64,
+    min_key_start_offset: u64,
+    max_key_start_offset: u64,
     min_key: ?[]const u8,
     max_key: ?[]const u8,
     index_buffer: ?[]const u8,
@@ -233,7 +233,7 @@ pub const SSTable = struct {
         var i: u32 = 0;
         var blocks_number: u32 = 0;
         var block_min_key: []const u8 = undefined;
-        var block_offsets = try std.ArrayList(u16).initCapacity(self.allocator, 1);
+        var block_offsets = try std.ArrayList(u32).initCapacity(self.allocator, 1);
         defer block_offsets.deinit(self.allocator);
 
         while (try record_iterator.next()) |record| : (i += 1) {
@@ -242,8 +242,8 @@ pub const SSTable = struct {
             self.bloom_filter.?.add(record.key);
             const record_size_with_offset: u32 = @as(u32, @intCast(record.key.len)) +
                 @as(u32, @intCast(record.value.len)) +
-                8 +
-                (@as(u32, @intCast(block_offsets.items.len)) + 1) * 2;
+                4 +
+                (@as(u32, @intCast(block_offsets.items.len)) + 1) * 4;
             if (data_block.offset + record_size_with_offset > block_size) {
                 try self.writeDataBlock(writer, &data_block, &block_offsets);
                 blocks_number += 1;
@@ -263,16 +263,16 @@ pub const SSTable = struct {
         return blocks_number;
     }
 
-    fn writeDataBlock(self: *SSTable, writer: *FileWriter, data_block: *DataBlock, block_offsets: *std.ArrayList(u16)) !void {
+    fn writeDataBlock(self: *SSTable, writer: *FileWriter, data_block: *DataBlock, block_offsets: *std.ArrayList(u32)) !void {
         const num_offsets = block_offsets.items.len;
         const buffer_len = data_block.buffer.len;
         @memcpy(data_block.buffer[buffer_len - 4 ..], &utils.intToBytes(u32, @intCast(block_offsets.items.len)));
         for (block_offsets.items, 0..) |offset, j| {
-            const start_offset = buffer_len - 4 - (num_offsets - j) * 2;
-            @memcpy(data_block.buffer[start_offset .. start_offset + 2], &utils.intToBytes(u16, offset));
+            const start_offset = buffer_len - 4 - (num_offsets - j) * 4;
+            @memcpy(data_block.buffer[start_offset .. start_offset + 4], &utils.intToBytes(u32, offset));
         }
-        if (data_block.offset < buffer_len - 4 - num_offsets * 2) {
-            @memset(data_block.buffer[data_block.offset..(buffer_len - 4 - num_offsets * 2)], 0);
+        if (data_block.offset < buffer_len - 4 - num_offsets * 4) {
+            @memset(data_block.buffer[data_block.offset..(buffer_len - 4 - num_offsets * 4)], 0);
         }
 
         try writer.interface.writeAll(data_block.buffer);
@@ -284,10 +284,10 @@ pub const SSTable = struct {
     inline fn writeIndexBlock(self: *SSTable, writer: *FileWriter, blocks_number: u32) !void {
         self.index_start_offset = @intCast(writer.pos);
 
-        var index_offsets: []u16 = try self.allocator.alloc(u16, blocks_number);
+        var index_offsets: []u32 = try self.allocator.alloc(u32, blocks_number);
         defer self.allocator.free(index_offsets);
 
-        var index_record_offset: u16 = 0;
+        var index_record_offset: u32 = 0;
         var block_buffer = getWorkerContext().?.block_buffer;
         var block_offset: u64 = 0;
         var reader = self.file.reader(getWorkerContext().?.reader_buffer[0..2]);
@@ -303,10 +303,10 @@ pub const SSTable = struct {
             try utils.writeSizedValue(writer, key);
             try utils.writeNumber(u32, &writer.interface, @as(u32, @intCast(block_offset)));
             index_offsets[i] = index_record_offset;
-            index_record_offset += 6 + @as(u16, @intCast(key.len));
+            index_record_offset += 10 + @as(u32, @intCast(key.len));
         }
         for (index_offsets) |index_offset| {
-            try utils.writeNumber(u16, &writer.interface, index_offset);
+            try utils.writeNumber(u32, &writer.interface, index_offset);
         }
         self.index_records_num = @intCast(blocks_number);
         try utils.writeNumber(u32, &writer.interface, self.index_records_num);
@@ -333,10 +333,10 @@ pub const SSTable = struct {
     }
 
     inline fn writeFooter(self: *SSTable, writer: *FileWriter) !void {
-        try utils.writeNumber(u32, &writer.interface, self.index_start_offset);
-        try utils.writeNumber(u32, &writer.interface, self.bloom_start_offset);
-        try utils.writeNumber(u32, &writer.interface, self.min_key_start_offset);
-        try utils.writeNumber(u32, &writer.interface, self.max_key_start_offset);
+        try utils.writeNumber(u64, &writer.interface, self.index_start_offset);
+        try utils.writeNumber(u64, &writer.interface, self.bloom_start_offset);
+        try utils.writeNumber(u64, &writer.interface, self.min_key_start_offset);
+        try utils.writeNumber(u64, &writer.interface, self.max_key_start_offset);
         try utils.writeNumber(u32, &writer.interface, self.records_number);
         try utils.writeNumber(u32, &writer.interface, self.block_size);
     }
@@ -353,19 +353,18 @@ pub const SSTable = struct {
         const block_size = try utils.readNumber(u32, &reader.interface);
         try reader.seekTo(file_max_position - 8);
         const records_number = try utils.readNumber(u32, &reader.interface);
-        try reader.seekTo(file_max_position - 12);
-        const max_key_start_offset = try utils.readNumber(u32, &reader.interface);
-
         try reader.seekTo(file_max_position - 16);
-        const min_key_start_offset = try utils.readNumber(u32, &reader.interface);
+        const max_key_start_offset = try utils.readNumber(u64, &reader.interface);
+        try reader.seekTo(file_max_position - 24);
+        const min_key_start_offset = try utils.readNumber(u64, &reader.interface);
 
-        try reader.seekTo(file_max_position - 20);
-        const bloom_start_offset = try utils.readNumber(u32, &reader.interface);
-        const bloom_size: u32 = min_key_start_offset - bloom_start_offset;
+        try reader.seekTo(file_max_position - 32);
+        const bloom_start_offset = try utils.readNumber(u64, &reader.interface);
+        const bloom_size: u64 = min_key_start_offset - bloom_start_offset;
         const filter = try allocator.alloc(u8, bloom_size);
 
-        try reader.seekTo(file_max_position - 24);
-        const index_start_offset: u32 = try utils.readNumber(u32, &reader.interface);
+        try reader.seekTo(file_max_position - 40);
+        const index_start_offset: u64 = try utils.readNumber(u64, &reader.interface);
 
         try reader.seekTo(@intCast(bloom_start_offset - 4));
         const index_records_num: u32 = try utils.readNumber(u32, &reader.interface);
@@ -558,7 +557,7 @@ test "SSTable#create" {
     global_context.setRootFolderForTests("./");
     defer global_context.resetRootFolderForTests();
 
-    const block_size: u32 = 52;
+    const block_size: u32 = 58;
 
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
@@ -584,10 +583,10 @@ test "SSTable#create" {
         block_size,
         20,
     );
-    try testing.expect(test_sstable.index_start_offset == 0xd0);
-    try testing.expect(test_sstable.bloom_start_offset == 0x114);
-    try testing.expect(test_sstable.min_key_start_offset == 0x12e);
-    try testing.expect(test_sstable.max_key_start_offset == 0x138);
+    try testing.expect(test_sstable.index_start_offset == 0xe8);
+    try testing.expect(test_sstable.bloom_start_offset == 0x134);
+    try testing.expect(test_sstable.min_key_start_offset == 0x14e);
+    try testing.expect(test_sstable.max_key_start_offset == 0x158);
     try testing.expect(test_sstable.records_number == 10);
     try testing.expect(test_sstable.block_size == block_size);
     try testing.expect(test_sstable.index_records_num == 4);
@@ -631,16 +630,16 @@ test "SSTable#open" {
 
     try testing.expect(std.mem.eql(u8, test_sstable.min_key.?, &utils.intToBytes(usize, 254)));
     try testing.expect(std.mem.eql(u8, test_sstable.max_key.?, &utils.intToBytes(usize, 263)));
-    try testing.expect(test_sstable.index_start_offset == 0xd0);
-    try testing.expect(test_sstable.bloom_start_offset == 0x114);
-    try testing.expect(test_sstable.min_key_start_offset == 0x12e);
-    try testing.expect(test_sstable.max_key_start_offset == 0x138);
+    try testing.expect(test_sstable.index_start_offset == 0xe8);
+    try testing.expect(test_sstable.bloom_start_offset == 0x134);
+    try testing.expect(test_sstable.min_key_start_offset == 0x14e);
+    try testing.expect(test_sstable.max_key_start_offset == 0x158);
     try testing.expect(test_sstable.records_number == 10);
     try testing.expect(test_sstable.block_size == block_size);
     try testing.expect(test_sstable.index_records_num == 4);
 
     test_sstable.close(true);
-    try cleanup(test_sstable, test_memtable);
+    // try cleanup(test_sstable, test_memtable);
 }
 
 test "SSTable#find" {
