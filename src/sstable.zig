@@ -301,7 +301,7 @@ pub const SSTable = struct {
             const key = block_buffer[2 .. 2 + key_size];
 
             try utils.writeSizedValue(writer, key);
-            try utils.writeNumber(u32, &writer.interface, @as(u32, @intCast(block_offset)));
+            try utils.writeNumber(u64, &writer.interface, block_offset);
             index_offsets[i] = index_record_offset;
             index_record_offset += 10 + @as(u32, @intCast(key.len));
         }
@@ -584,9 +584,9 @@ test "SSTable#create" {
         20,
     );
     try testing.expect(test_sstable.index_start_offset == 0xe8);
-    try testing.expect(test_sstable.bloom_start_offset == 0x134);
-    try testing.expect(test_sstable.min_key_start_offset == 0x14e);
-    try testing.expect(test_sstable.max_key_start_offset == 0x158);
+    try testing.expect(test_sstable.bloom_start_offset == 0x144);
+    try testing.expect(test_sstable.min_key_start_offset == 0x15e);
+    try testing.expect(test_sstable.max_key_start_offset == 0x168);
     try testing.expect(test_sstable.records_number == 10);
     try testing.expect(test_sstable.block_size == block_size);
     try testing.expect(test_sstable.index_records_num == 4);
