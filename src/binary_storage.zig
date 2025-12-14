@@ -916,7 +916,7 @@ test "BinaryStorage compaction and cleanup" {
     global_context.setRootFolderForTests("./");
     defer global_context.resetRootFolderForTests();
 
-    const block_size: u32 = 64;
+    const block_size: u32 = 72;
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
 
@@ -951,7 +951,7 @@ test "BinaryStorage compaction and cleanup" {
     defer global_context.deinitConfigurationForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
-    configurator.* = TestingConfigurator.init(1536, 2, 64);
+    configurator.* = TestingConfigurator.init(1536, 2, block_size);
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 

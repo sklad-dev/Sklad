@@ -10,7 +10,7 @@ const recordMetric = @import("./metrics.zig").recordMetric;
 const WorkerContext = struct {
     allocator: std.mem.Allocator,
     block_buffer: []u8,
-    reader_buffer: [4]u8 = undefined,
+    reader_buffer: [8]u8 = undefined,
 };
 
 threadlocal var WORKER_CONTEXT: ?*WorkerContext = null;
