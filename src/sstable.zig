@@ -160,7 +160,7 @@ pub const SSTable = struct {
                     return null;
                 }
 
-                try self.reader.seekTo(self.current_block_num * self.sstable.block_size);
+                try self.reader.seekTo(@as(u64, @intCast(self.current_block_num)) * @as(u64, @intCast(self.sstable.block_size)));
                 _ = try self.reader.read(self.block_buffer);
                 self.num_block_elements = utils.intFromBytes(u32, self.block_buffer, self.block_buffer.len - 4);
 
@@ -242,7 +242,7 @@ pub const SSTable = struct {
             self.bloom_filter.?.add(record.key);
             const record_size_with_offset: u32 = @as(u32, @intCast(record.key.len)) +
                 @as(u32, @intCast(record.value.len)) +
-                4 +
+                8 +
                 (@as(u32, @intCast(block_offsets.items.len)) + 1) * 4;
             if (data_block.offset + record_size_with_offset > block_size) {
                 try self.writeDataBlock(writer, &data_block, &block_offsets);
@@ -290,7 +290,7 @@ pub const SSTable = struct {
         var index_record_offset: u32 = 0;
         var block_buffer = getWorkerContext().?.block_buffer;
         var block_offset: u64 = 0;
-        var reader = self.file.reader(getWorkerContext().?.reader_buffer[0..2]);
+        var reader = self.file.reader(getWorkerContext().?.reader_buffer[0..4]);
 
         for (0..blocks_number) |i| {
             block_offset = self.block_size * i;
@@ -423,10 +423,10 @@ pub const SSTable = struct {
         if (utils.compareBitwise(key, self.max_key.?) > 0) return null;
 
         const search_result = try self.findBlockOffset(key);
-        if (search_result < 0) return null;
-
-        const offset: u32 = @as(u32, @intCast(search_result));
-        return try self.findInBlock(key, offset);
+        if (search_result) |offset| {
+            return try self.findInBlock(key, offset);
+        }
+        return null;
     }
 
     pub inline fn readRecordFromOffset(buffer: []const u8, offset: u32) StorageRecord {
@@ -442,7 +442,7 @@ pub const SSTable = struct {
         return try Iterator.init(self.allocator, self);
     }
 
-    fn findBlockOffset(self: *const SSTable, key: data_types.BinaryData) !i64 {
+    fn findBlockOffset(self: *const SSTable, key: data_types.BinaryData) !?u64 {
         var low: u32 = 0;
         var high: u32 = self.index_records_num - 1;
         while (low <= high) {
@@ -450,45 +450,45 @@ pub const SSTable = struct {
             const high_index_record_min_key = readKeyFromBuffer(self.index_buffer.?, high_index_record_offset);
 
             if (utils.compareBitwise(key, high_index_record_min_key) >= 0) {
-                const data_block_offset: u32 = utils.intFromBytes(
-                    u32,
+                const data_block_offset: u64 = utils.intFromBytes(
+                    u64,
                     self.index_buffer.?,
                     high_index_record_offset + 2 + high_index_record_min_key.len,
                 );
-                return @intCast(data_block_offset);
+                return data_block_offset;
             }
 
             const mid = low + (high - low) / 2;
             const index_record_offset: u32 = try self.readIndexRecordOffset(mid);
             if (mid == low) {
                 const key_size: u16 = utils.intFromBytes(u16, self.index_buffer.?, index_record_offset);
-                const data_block_offset: u32 = utils.intFromBytes(
-                    u32,
+                const data_block_offset: u64 = utils.intFromBytes(
+                    u64,
                     self.index_buffer.?,
                     index_record_offset + 2 + key_size,
                 );
-                return @intCast(data_block_offset);
+                return data_block_offset;
             }
 
             const index_record_min_key = readKeyFromBuffer(self.index_buffer.?, index_record_offset);
             const compare_result = utils.compareBitwise(key, index_record_min_key);
             if (compare_result == 0) {
-                const data_block_offset: u32 = utils.intFromBytes(
-                    u32,
+                const data_block_offset: u64 = utils.intFromBytes(
+                    u64,
                     self.index_buffer.?,
                     index_record_offset + 2 + index_record_min_key.len,
                 );
-                return @intCast(data_block_offset);
+                return data_block_offset;
             } else if (compare_result < 0) {
                 high = mid;
             } else {
                 low = mid;
             }
         }
-        return -1;
+        return null;
     }
 
-    fn findInBlock(self: *const SSTable, key: data_types.BinaryData, block_offset: u32) !?data_types.BinaryData {
+    fn findInBlock(self: *const SSTable, key: data_types.BinaryData, block_offset: u64) !?data_types.BinaryData {
         const block_buffer: []u8 = getWorkerContext().?.block_buffer;
         const reader_buffer: []u8 = getWorkerContext().?.reader_buffer[0..2];
 
@@ -501,10 +501,10 @@ pub const SSTable = struct {
         var high: u32 = num_elements - 1;
         while (low <= high) {
             const mid = low + (high - low) / 2;
-            const record_offset: u16 = utils.intFromBytes(
-                u16,
+            const record_offset: u32 = utils.intFromBytes(
+                u32,
                 block_buffer,
-                block_buffer.len - 4 - 2 * (num_elements - mid),
+                block_buffer.len - 4 - 4 * (num_elements - mid),
             );
             const record = readRecordFromOffset(block_buffer, record_offset);
             const compare_result = utils.compareBitwise(key, record.key);
@@ -523,10 +523,12 @@ pub const SSTable = struct {
         return null;
     }
 
-    inline fn readKeyFromOffset(allocator: std.mem.Allocator, reader: *std.fs.File.Reader, offset: u32) ![]const u8 {
+    inline fn readKeyFromOffset(allocator: std.mem.Allocator, reader: *std.fs.File.Reader, offset: u64) ![]const u8 {
         reader.pos = offset;
+        try reader.seekTo(offset);
         const key_size: u16 = try utils.readNumber(u16, &reader.interface);
         reader.pos = offset + 2;
+        try reader.seekTo(offset + 2);
         const key: []u8 = try allocator.alloc(u8, key_size);
         _ = try reader.read(key);
         return key;
@@ -538,7 +540,7 @@ pub const SSTable = struct {
     }
 
     inline fn readIndexRecordOffset(self: *const SSTable, record_number: u32) !u32 {
-        return utils.intFromBytes(u16, self.index_buffer.?, self.index_buffer.?.len - 4 - 2 * (self.index_records_num - record_number));
+        return utils.intFromBytes(u32, self.index_buffer.?, self.index_buffer.?.len - 4 - 4 * (self.index_records_num - record_number));
     }
 };
 
@@ -599,7 +601,7 @@ test "SSTable#open" {
     global_context.setRootFolderForTests("./");
     defer global_context.resetRootFolderForTests();
 
-    const block_size: u32 = 52;
+    const block_size: u32 = 58;
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
 
@@ -631,15 +633,15 @@ test "SSTable#open" {
     try testing.expect(std.mem.eql(u8, test_sstable.min_key.?, &utils.intToBytes(usize, 254)));
     try testing.expect(std.mem.eql(u8, test_sstable.max_key.?, &utils.intToBytes(usize, 263)));
     try testing.expect(test_sstable.index_start_offset == 0xe8);
-    try testing.expect(test_sstable.bloom_start_offset == 0x134);
-    try testing.expect(test_sstable.min_key_start_offset == 0x14e);
-    try testing.expect(test_sstable.max_key_start_offset == 0x158);
+    try testing.expect(test_sstable.bloom_start_offset == 0x144);
+    try testing.expect(test_sstable.min_key_start_offset == 0x15e);
+    try testing.expect(test_sstable.max_key_start_offset == 0x168);
     try testing.expect(test_sstable.records_number == 10);
     try testing.expect(test_sstable.block_size == block_size);
     try testing.expect(test_sstable.index_records_num == 4);
 
     test_sstable.close(true);
-    // try cleanup(test_sstable, test_memtable);
+    try cleanup(test_sstable, test_memtable);
 }
 
 test "SSTable#find" {
@@ -676,13 +678,13 @@ test "SSTable#find" {
     test_sstable = try SSTable.open(testing.allocator, .{ .level = 0, .file_id = 0 });
     defer test_sstable.close(true);
 
-    for (0..30) |v| {
-        const result = try test_sstable.find(&utils.intToBytes(usize, v));
+    for (0..30) |i| {
+        const result = try test_sstable.find(&utils.intToBytes(usize, i));
         defer {
             if (result) |r| testing.allocator.free(r);
         }
 
-        if (v % 3 != 0) {
+        if (i % 3 != 0) {
             try testing.expect(result == null);
         } else {
             try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u8, 0)));
