@@ -428,10 +428,11 @@ pub const BinaryStorage = struct {
         self.sstable_cache.deinit();
     }
 
-    pub fn put(self: *BinaryStorage, key: []const u8, value: []const u8) !void {
+    pub fn put(self: *BinaryStorage, key: []const u8, value: []const u8, timestamp: i64) !void {
         const record = StorageRecord{
             .key = key,
             .value = value,
+            .timestamp = timestamp,
         };
 
         var filled_memtable: ?*Memtable = null;
@@ -471,7 +472,7 @@ pub const BinaryStorage = struct {
         }
 
         try memtable.wal.writeRecord(&record);
-        try memtable.add(key, value, &(data_slot.?));
+        try memtable.add(key, value, timestamp, &(data_slot.?));
 
         if (filled_memtable) |_| {
             const task_queue = global_context.getTaskQueue();

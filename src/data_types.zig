@@ -52,7 +52,8 @@ pub const TypedBinaryData = struct {
 
 pub const StorageRecord = struct {
     key: BinaryData,
-    value: BinaryData,
+    value: ?BinaryData,
+    timestamp: i64,
 
     pub const Iterator = struct {
         context: *anyopaque,
@@ -65,6 +66,7 @@ pub const StorageRecord = struct {
 
     pub fn write(self: *const StorageRecord, writer: *std.fs.File.Writer) !void {
         try utils.writeSizedValue(writer, self.key);
+        try utils.writeNumber(i64, writer, self.timestamp);
         try utils.writeSizedValue(writer, self.value);
     }
 
@@ -83,14 +85,19 @@ pub const StorageRecord = struct {
 
         try reader.seekTo(offset);
         reader.pos = offset + key_size + 2;
+        const timestamp: i64 = try utils.readNumber(i64, &reader.interface);
+
+        try reader.seekTo(offset);
+        reader.pos = offset + key_size + 10;
         const value_size: u16 = try utils.readNumber(u16, &reader.interface);
-        reader.pos = offset + key_size + 4;
+        reader.pos = offset + key_size + 12;
         const value: []u8 = try allocator.alloc(u8, value_size);
         _ = try reader.read(value[0..]);
 
         return .{
             .key = key,
             .value = value,
+            .timestamp = timestamp,
         };
     }
 };
