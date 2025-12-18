@@ -169,8 +169,8 @@ pub const Memtable = struct {
         var slot: ?ReservedDataSlot = null;
         while (wal.readRecord(memtable.allocator, offset)) |record| {
             defer record.destroy(memtable.allocator);
-            offset += @as(u32, @intCast(12 + record.key.len + record.value.len));
-            slot = memtable.reserve(record.key.len + record.value.len);
+            offset += @as(u32, @intCast(record.sizeOnDisk()));
+            slot = memtable.reserve(record.dataSize());
             if (slot) |s| {
                 try memtable.wal.writeRecord(&record);
                 try memtable.add(record.key, record.value, record.timestamp, &s);

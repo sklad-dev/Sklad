@@ -24,7 +24,8 @@ pub const MemtableIteratorAdapter = struct {
         if (self.memtable_iterator.next()) |node| {
             return StorageRecord{
                 .key = node.key.?,
-                .value = node.value.?,
+                .value = node.value,
+                .timestamp = node.timestamp,
             };
         }
         return null;
@@ -51,6 +52,7 @@ pub const SSTableIteratorAdapter = struct {
             return StorageRecord{
                 .key = node.key,
                 .value = node.value,
+                .timestamp = node.timestamp,
             };
         }
         return null;
@@ -101,10 +103,17 @@ pub const SSTable = struct {
             self.offset += 2;
             @memcpy(self.buffer[self.offset..(self.offset + @as(u32, @intCast(record.key.len)))], record.key);
             self.offset += @intCast(record.key.len);
-            @memcpy(self.buffer[self.offset .. self.offset + 2], &utils.intToBytes(u16, @intCast(record.value.len)));
-            self.offset += 2;
-            @memcpy(self.buffer[self.offset..(self.offset + @as(u32, @intCast(record.value.len)))], record.value);
-            self.offset += @intCast(record.value.len);
+            @memcpy(self.buffer[self.offset .. self.offset + 8], &utils.intToBytes(i64, record.timestamp));
+            self.offset += 8;
+            if (record.value) |value| {
+                @memcpy(self.buffer[self.offset .. self.offset + 2], &utils.intToBytes(u16, @intCast(value.len)));
+                self.offset += 2;
+                @memcpy(self.buffer[self.offset..(self.offset + @as(u32, @intCast(value.len)))], value);
+                self.offset += @intCast(value.len);
+            } else {
+                @memcpy(self.buffer[self.offset .. self.offset + 2], &utils.intToBytes(u16, 0));
+                self.offset += 2;
+            }
         }
     };
 
@@ -172,7 +181,7 @@ pub const SSTable = struct {
 
         inline fn readRecordAndAdvance(self: *Iterator) StorageRecord {
             const record = SSTable.readRecordFromOffset(self.block_buffer, self.current_block_offset);
-            self.current_block_offset += @as(u32, @intCast(record.key.len + record.value.len + 4));
+            self.current_block_offset += @as(u32, @intCast(record.sizeOnDisk()));
             self.current_block_element_num += 1;
             return record;
         }
@@ -240,9 +249,8 @@ pub const SSTable = struct {
             if (i == self.records_number - 1) self.max_key = record.key;
 
             self.bloom_filter.?.add(record.key);
-            const record_size_with_offset: u32 = @as(u32, @intCast(record.key.len)) +
-                @as(u32, @intCast(record.value.len)) +
-                8 +
+            const record_size_with_offset: u32 = @as(u32, @intCast(record.sizeOnDisk())) +
+                4 +
                 (@as(u32, @intCast(block_offsets.items.len)) + 1) * 4;
             if (data_block.offset + record_size_with_offset > block_size) {
                 try self.writeDataBlock(writer, &data_block, &block_offsets);
@@ -431,10 +439,12 @@ pub const SSTable = struct {
 
     pub inline fn readRecordFromOffset(buffer: []const u8, offset: u32) StorageRecord {
         const key_size: u16 = utils.intFromBytes(u16, buffer, offset);
-        const value_size: u16 = utils.intFromBytes(u16, buffer, offset + 2 + key_size);
+        const timestamp = utils.intFromBytes(i64, buffer, offset + 2 + key_size);
+        const value_size: u16 = utils.intFromBytes(u16, buffer, offset + 10 + key_size);
         return .{
             .key = buffer[offset + 2 .. offset + 2 + key_size],
-            .value = buffer[offset + key_size + 4 .. offset + key_size + 4 + value_size],
+            .value = if (value_size > 0) buffer[offset + key_size + 12 .. offset + key_size + 12 + value_size] else null,
+            .timestamp = timestamp,
         };
     }
 
@@ -509,9 +519,13 @@ pub const SSTable = struct {
             const record = readRecordFromOffset(block_buffer, record_offset);
             const compare_result = utils.compareBitwise(key, record.key);
             if (compare_result == 0) {
-                const result = try self.allocator.alloc(u8, record.value.len);
-                @memcpy(result, record.value);
-                return result;
+                if (record.value) |value| {
+                    const result = try self.allocator.alloc(u8, value.len);
+                    @memcpy(result, value);
+                    return result;
+                } else {
+                    return null;
+                }
             } else if (compare_result < 0) {
                 if (mid == 0) break;
                 high = mid - 1;
@@ -559,7 +573,7 @@ test "SSTable#create" {
     global_context.setRootFolderForTests("./");
     defer global_context.resetRootFolderForTests();
 
-    const block_size: u32 = 58;
+    const block_size: u32 = 82;
 
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
@@ -571,7 +585,7 @@ test "SSTable#create" {
     var slot: ?Memtable.ReservedDataSlot = null;
     for (254..264) |i| {
         slot = test_memtable.reserve(@sizeOf(usize) + test_value.len);
-        try test_memtable.add(&utils.intToBytes(usize, i), &test_value, &slot.?);
+        try test_memtable.add(&utils.intToBytes(usize, i), &test_value, std.time.milliTimestamp(), &slot.?);
     }
 
     var adapter = MemtableIteratorAdapter.init(&test_memtable);
@@ -585,10 +599,10 @@ test "SSTable#create" {
         block_size,
         20,
     );
-    try testing.expect(test_sstable.index_start_offset == 0xe8);
-    try testing.expect(test_sstable.bloom_start_offset == 0x144);
-    try testing.expect(test_sstable.min_key_start_offset == 0x15e);
-    try testing.expect(test_sstable.max_key_start_offset == 0x168);
+    try testing.expect(test_sstable.index_start_offset == 0x148);
+    try testing.expect(test_sstable.bloom_start_offset == 0x1a4);
+    try testing.expect(test_sstable.min_key_start_offset == 0x1be);
+    try testing.expect(test_sstable.max_key_start_offset == 0x1c8);
     try testing.expect(test_sstable.records_number == 10);
     try testing.expect(test_sstable.block_size == block_size);
     try testing.expect(test_sstable.index_records_num == 4);
@@ -601,7 +615,7 @@ test "SSTable#open" {
     global_context.setRootFolderForTests("./");
     defer global_context.resetRootFolderForTests();
 
-    const block_size: u32 = 58;
+    const block_size: u32 = 82;
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
 
@@ -612,7 +626,7 @@ test "SSTable#open" {
     var slot: ?Memtable.ReservedDataSlot = null;
     for (254..264) |i| {
         slot = test_memtable.reserve(@sizeOf(usize) + test_value.len);
-        try test_memtable.add(&utils.intToBytes(usize, i), &test_value, &slot.?);
+        try test_memtable.add(&utils.intToBytes(usize, i), &test_value, std.time.milliTimestamp(), &slot.?);
     }
 
     var adapter = MemtableIteratorAdapter.init(&test_memtable);
@@ -632,10 +646,10 @@ test "SSTable#open" {
 
     try testing.expect(std.mem.eql(u8, test_sstable.min_key.?, &utils.intToBytes(usize, 254)));
     try testing.expect(std.mem.eql(u8, test_sstable.max_key.?, &utils.intToBytes(usize, 263)));
-    try testing.expect(test_sstable.index_start_offset == 0xe8);
-    try testing.expect(test_sstable.bloom_start_offset == 0x144);
-    try testing.expect(test_sstable.min_key_start_offset == 0x15e);
-    try testing.expect(test_sstable.max_key_start_offset == 0x168);
+    try testing.expect(test_sstable.index_start_offset == 0x148);
+    try testing.expect(test_sstable.bloom_start_offset == 0x1a4);
+    try testing.expect(test_sstable.min_key_start_offset == 0x1be);
+    try testing.expect(test_sstable.max_key_start_offset == 0x1c8);
     try testing.expect(test_sstable.records_number == 10);
     try testing.expect(test_sstable.block_size == block_size);
     try testing.expect(test_sstable.index_records_num == 4);
@@ -648,7 +662,7 @@ test "SSTable#find" {
     global_context.setRootFolderForTests("./");
     defer global_context.resetRootFolderForTests();
 
-    const block_size: u32 = 52;
+    const block_size: u32 = 76;
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
 
@@ -659,7 +673,7 @@ test "SSTable#find" {
     var slot: ?Memtable.ReservedDataSlot = null;
     for (0..10) |i| {
         slot = test_memtable.reserve(@sizeOf(usize) + test_value.len);
-        try test_memtable.add(&utils.intToBytes(usize, i * 3), &test_value, &slot.?);
+        try test_memtable.add(&utils.intToBytes(usize, i * 3), &test_value, std.time.milliTimestamp(), &slot.?);
     }
 
     var adapter = MemtableIteratorAdapter.init(&test_memtable);
@@ -703,7 +717,7 @@ test "SSTable#iterator" {
     global_context.setRootFolderForTests("./");
     defer global_context.resetRootFolderForTests();
 
-    const block_size: u32 = 64;
+    const block_size: u32 = 96;
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
 
@@ -714,7 +728,7 @@ test "SSTable#iterator" {
     var slot: ?Memtable.ReservedDataSlot = null;
     for (0..10) |i| {
         slot = test_memtable.reserve(@sizeOf(usize) + test_value.len);
-        try test_memtable.add(&utils.intToBytes(usize, i), &test_value, &slot.?);
+        try test_memtable.add(&utils.intToBytes(usize, i), &test_value, std.time.milliTimestamp(), &slot.?);
     }
 
     var adapter = MemtableIteratorAdapter.init(&test_memtable);
@@ -739,7 +753,7 @@ test "SSTable#iterator" {
     var expected_key: usize = 0;
     while (try iterator.next()) |record| {
         try testing.expect(std.mem.eql(u8, record.key, &utils.intToBytes(usize, expected_key)));
-        try testing.expect(std.mem.eql(u8, record.value, &utils.intToBytes(u8, 0)));
+        try testing.expect(std.mem.eql(u8, record.value.?, &utils.intToBytes(u8, 0)));
         expected_key += 1;
     }
 

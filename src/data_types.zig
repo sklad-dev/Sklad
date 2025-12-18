@@ -64,15 +64,29 @@ pub const StorageRecord = struct {
         }
     };
 
+    pub inline fn dataSize(self: *const StorageRecord) usize {
+        return self.key.len + if (self.value) |v| v.len else 0;
+    }
+
+    pub inline fn sizeOnDisk(self: *const StorageRecord) usize {
+        return 12 + self.dataSize();
+    }
+
     pub fn write(self: *const StorageRecord, writer: *std.fs.File.Writer) !void {
         try utils.writeSizedValue(writer, self.key);
         try utils.writeNumber(i64, writer, self.timestamp);
-        try utils.writeSizedValue(writer, self.value);
+        if (self.value) |value| {
+            try utils.writeSizedValue(writer, value);
+        } else {
+            try utils.writeNumber(u16, writer, 0);
+        }
     }
 
     pub fn destroy(self: *const StorageRecord, allocator: std.mem.Allocator) void {
         allocator.free(self.key);
-        allocator.free(self.value);
+        if (self.value) |value| {
+            allocator.free(value);
+        }
     }
 
     pub fn read(allocator: Allocator, reader: *std.fs.File.Reader, offset: u32) !StorageRecord {
@@ -90,9 +104,12 @@ pub const StorageRecord = struct {
         try reader.seekTo(offset);
         reader.pos = offset + key_size + 10;
         const value_size: u16 = try utils.readNumber(u16, &reader.interface);
-        reader.pos = offset + key_size + 12;
-        const value: []u8 = try allocator.alloc(u8, value_size);
-        _ = try reader.read(value[0..]);
+        var value: ?[]u8 = null;
+        if (value_size > 0) {
+            reader.pos = offset + key_size + 12;
+            value = try allocator.alloc(u8, value_size);
+            _ = try reader.read(value[0..]);
+        }
 
         return .{
             .key = key,
