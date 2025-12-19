@@ -62,6 +62,7 @@ pub const ExecuteTask = struct {
         switch (self.expression) {
             .set => self.expression.set.destroy(),
             .get => self.expression.get.destroy(),
+            .delete => self.expression.delete.destroy(),
         }
         self.executor.deinit();
         allocator.free(self.query);
@@ -90,12 +91,13 @@ const Executor = struct {
         switch (expression.*) {
             .set => try self.executeSetExpression(&expression.*.set),
             .get => try self.executeGetExpression(&expression.*.get),
+            .delete => try self.executeDeleteExpression(&expression.*.delete),
         }
     }
 
     fn executeSetExpression(self: *Executor, expression: *parse.SetExpression) !void {
         for (expression.pairs.items) |pair| {
-            try self.storage.set(pair.key.value, pair.value.value);
+            try self.storage.set(pair.key.value, pair.value.value, self.io_context.start_time);
         }
         self.io_context.sendResponse(i8, ExecutionError, self.allocator, 0, null);
     }
@@ -108,6 +110,11 @@ const Executor = struct {
         } else {
             self.io_context.sendResponse(i8, ExecutionError, self.allocator, -1, null);
         }
+    }
+
+    fn executeDeleteExpression(self: *Executor, expression: *parse.DeleteExpression) !void {
+        try self.storage.delete(expression.key.value, self.io_context.start_time);
+        self.io_context.sendResponse(i8, ExecutionError, self.allocator, 0, null);
     }
 
     fn sendGetResult(self: *const Executor, result: TypedBinaryData) void {

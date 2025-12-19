@@ -44,6 +44,12 @@ pub const TypedStorage = struct {
 
         return null;
     }
+
+    pub fn delete(self: *TypedStorage, key: TypedBinaryData, timestamp: i64) !void {
+        const key_bytes = try key.toBytes();
+        defer key.allocator.free(key_bytes);
+        try self.storage.delete(key_bytes, timestamp);
+    }
 };
 
 // Tests
@@ -116,7 +122,7 @@ test "NodeStorage#set" {
     defer global_context.resetRootFolderForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
-    configurator.* = TestingConfigurator.init(1536, 2, 64);
+    configurator.* = TestingConfigurator.init(2304, 2, 96);
     defer global_context.deinitConfigurationForTests();
 
     var conf = configurator.configurator();
@@ -176,7 +182,7 @@ test "NodeStorage#get" {
     defer global_context.resetRootFolderForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
-    configurator.* = TestingConfigurator.init(1536, 2, 64);
+    configurator.* = TestingConfigurator.init(2304, 2, 96);
     defer global_context.deinitConfigurationForTests();
 
     var conf = configurator.configurator();
@@ -199,6 +205,42 @@ test "NodeStorage#get" {
     defer testing.allocator.free(result.?.data);
 
     try testing.expect(std.mem.eql(u8, result.?.data, value.data));
+
+    try cleanup(&test_storage);
+}
+
+test "BinaryStorage#delete" {
+    global_context.setRootFolderForTests("./");
+    defer global_context.resetRootFolderForTests();
+
+    var configurator = try testing.allocator.create(TestingConfigurator);
+    configurator.* = TestingConfigurator.init(2304, 2, 96);
+    defer global_context.deinitConfigurationForTests();
+
+    var conf = configurator.configurator();
+    global_context.loadConfiguration(&conf);
+
+    var task_queue = TaskQueue.init(testing.allocator);
+    global_context.initTaskQueueForTests(&task_queue);
+    defer global_context.cleanAndDeinitTaskQueueForTests();
+
+    try @import("./worker.zig").initWorkerContext(testing.allocator, conf.sstableBlockSize());
+    defer @import("./worker.zig").deinitWorkerContext();
+
+    var test_storage = try TypedStorage.init(testing.allocator);
+    defer test_storage.stop();
+
+    const key = try buildTypedData(u8, .smallint, 2);
+    const value = try buildTypedData(f32, .float, 1.23);
+    try test_storage.set(key, value, std.time.milliTimestamp());
+
+    var result = try test_storage.get(try buildTypedData(u8, .smallint, 2));
+    try testing.expect(std.mem.eql(u8, result.?.data, value.data));
+    testing.allocator.free(result.?.data);
+
+    try test_storage.delete(key, std.time.milliTimestamp());
+    result = try test_storage.get(try buildTypedData(u8, .smallint, 2));
+    try testing.expect(result == null);
 
     try cleanup(&test_storage);
 }

@@ -203,11 +203,16 @@ pub const Memtable = struct {
                 node_to_update.*.timestamp = timestamp;
                 node_to_update.*.value = null;
 
-                if (value != null and value.?.len > 0) {
-                    const value_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[slot.node_offset .. slot.node_offset + value.?.len].ptr));
-                    node_to_update.*.value = value_ptr[0..value.?.len];
-                    @memcpy(node_to_update.*.value.?, value.?);
+                if (value) |v| {
+                    if (v.len > 0) {
+                        const value_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[slot.node_offset .. slot.node_offset + v.len].ptr));
+                        node_to_update.*.value = value_ptr[0..v.len];
+                        @memcpy(node_to_update.*.value.?, v);
+                    } else {
+                        node_to_update.*.value = data_types.EMPTY_VALUE;
+                    }
                 }
+
                 return;
             } else {
                 if (!created) {
@@ -226,10 +231,14 @@ pub const Memtable = struct {
                     };
                     @memcpy(new_node.?.*.key.?, key);
 
-                    if (value != null and value.?.len > 0) {
-                        const value_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[slot.data_offset + key.len .. slot.data_offset + key.len + value.?.len].ptr));
-                        new_node.?.*.value = value_ptr[0..value.?.len];
-                        @memcpy(new_node.?.*.value.?, value.?);
+                    if (value) |v| {
+                        if (v.len > 0) {
+                            const value_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[slot.data_offset + key.len .. slot.data_offset + key.len + v.len].ptr));
+                            new_node.?.*.value = value_ptr[0..v.len];
+                            @memcpy(new_node.?.*.value.?, v);
+                        } else {
+                            new_node.?.*.value = data_types.EMPTY_VALUE;
+                        }
                     }
 
                     created = true;
@@ -413,6 +422,33 @@ test "Memtable#add" {
         try testing.expect(std.mem.eql(u8, node.key.?, test_key[0..]));
         try testing.expect(std.mem.eql(u8, node.value.?, test_value[0..]));
     }
+
+    try memtable.wal.deleteFile();
+    memtable.destroy();
+}
+
+test "Memtable#add tombstone" {
+    var memtable = try Memtable.init(
+        testing.allocator,
+        std.crypto.random,
+        8192,
+        8,
+        "./",
+    );
+
+    const k1: [1]u8 = utils.intToBytes(u8, @as(u8, @intCast(0)));
+    const v1: [1]u8 = utils.intToBytes(u8, @as(u8, @intCast(255)));
+    const v2 = [_]u8{};
+
+    var slot = memtable.reserve(k1.len + v1.len);
+    try memtable.add(&k1, &v1, std.time.milliTimestamp(), &(slot.?));
+
+    slot = memtable.reserve(k1.len + v2.len);
+    try memtable.add(&k1, &v2, std.time.milliTimestamp(), &(slot.?));
+
+    const result = memtable.find(&k1);
+    try testing.expect(result != null);
+    try testing.expect(result.?.len == 0);
 
     try memtable.wal.deleteFile();
     memtable.destroy();

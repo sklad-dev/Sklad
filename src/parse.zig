@@ -25,11 +25,13 @@ pub const ParserError = error{
 pub const ExpressionType = enum {
     set,
     get,
+    delete,
 };
 
 pub const Expression = union(ExpressionType) {
     set: SetExpression,
     get: GetExpression,
+    delete: DeleteExpression,
 
     pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !Expression {
         query.current_pos = 0;
@@ -43,6 +45,10 @@ pub const Expression = union(ExpressionType) {
                     } else if (std.mem.eql(u8, token.string(), "get")) {
                         return Expression{
                             .get = try GetExpression.parse(allocator, query),
+                        };
+                    } else if (std.mem.eql(u8, token.string(), "delete")) {
+                        return Expression{
+                            .delete = try DeleteExpression.parse(allocator, query),
                         };
                     } else {
                         return ParserError.UnexpectedToken;
@@ -104,6 +110,28 @@ pub const GetExpression = struct {
     }
 
     pub fn destroy(self: *GetExpression) void {
+        self.key.deinit();
+    }
+};
+
+pub const DeleteExpression = struct {
+    allocator: std.mem.Allocator,
+    key: ValueNode,
+
+    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !DeleteExpression {
+        if (query.peakNextToken()) |token| {
+            switch (token.kind) {
+                .string_value, .numeric_value, .bool_value => return .{
+                    .allocator = allocator,
+                    .key = try ValueNode.parse(allocator, query),
+                },
+                else => return ParserError.UnexpectedToken,
+            }
+        }
+        return ParserError.InvalidQuery;
+    }
+
+    pub fn destroy(self: *DeleteExpression) void {
         self.key.deinit();
     }
 };
@@ -372,6 +400,7 @@ pub const QueryProcessingTask = struct {
         switch (expression.*) {
             .set => expression.set.destroy(),
             .get => expression.get.destroy(),
+            .delete => expression.delete.destroy(),
         }
         self.io_context.sendResponse(i8, ApplicationError, self.allocator, -1, ApplicationError.InternalError);
         std.posix.close(self.io_context.socket);
@@ -425,4 +454,18 @@ test "Parse get query" {
     var expression = try Expression.parse(testing.allocator, &query);
     defer expression.get.destroy();
     try testing.expect(std.mem.eql(u8, expression.get.key.value.data, "test"));
+}
+
+test "Parse delete query" {
+    var tokens = try std.ArrayList(Token).initCapacity(testing.allocator, 16);
+    defer tokens.deinit(testing.allocator);
+
+    const insert_node_query = "delete 'test'";
+    var lexer = lexers.kvLexer(testing.allocator, insert_node_query, &tokens);
+    try testing.expect(lexer.lex() == 0);
+
+    var query = TokenizedQuery.init(testing.allocator, &tokens);
+    var expression = try Expression.parse(testing.allocator, &query);
+    defer expression.delete.destroy();
+    try testing.expect(std.mem.eql(u8, expression.delete.key.value.data, "test"));
 }
