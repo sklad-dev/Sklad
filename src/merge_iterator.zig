@@ -1,6 +1,7 @@
 const std = @import("std");
 const utils = @import("utils.zig");
 const StorageRecord = @import("data_types.zig").StorageRecord;
+const EMPTY_VALUE = @import("data_types.zig").EMPTY_VALUE;
 
 pub const MergeIterator = struct {
     const Self = @This();
@@ -23,10 +24,15 @@ pub const MergeIterator = struct {
                 self.key.clearRetainingCapacity();
                 self.value.clearRetainingCapacity();
                 try self.key.appendSlice(allocator, r.key);
-                try self.value.appendSlice(allocator, r.value);
+
+                if (r.value.len > 0) {
+                    try self.value.appendSlice(allocator, r.value);
+                }
+
                 self.record = .{
                     .key = self.key.items,
-                    .value = self.value.items,
+                    .value = if (self.value.items.len > 0) self.value.items else EMPTY_VALUE,
+                    .timestamp = r.timestamp,
                 };
             } else {
                 self.record = null;
@@ -89,6 +95,20 @@ pub const MergeIterator = struct {
 
         try self.sources[winner_index].current.storeRecord(self.allocator, try self.sources[winner_index].iterator.next());
         self.replay(@intCast(winner_index));
+
+        if (self.current.record) |current_record| {
+            for (0..self.sources.len) |i| {
+                while (self.sources[i].current.record) |rec| {
+                    if (utils.compareBitwise(rec.key, current_record.key) == 0) {
+                        try self.sources[i].current.storeRecord(self.allocator, try self.sources[i].iterator.next());
+                        self.replay(@intCast(i));
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
         return self.current.record;
     }
 
@@ -148,7 +168,10 @@ pub const MergeIterator = struct {
         if (v2 == null) return idx1;
 
         const result = utils.compareBitwise(v1.?.key, v2.?.key);
-        return if (result <= 0) idx1 else idx2;
+        if (result < 0) return idx1;
+        if (result > 0) return idx2;
+
+        return if (v1.?.timestamp >= v2.?.timestamp) idx1 else idx2;
     }
 };
 
@@ -194,6 +217,7 @@ fn TestIterator(comptime size: usize) type {
             return StorageRecord{
                 .key = key_slice,
                 .value = value_slice,
+                .timestamp = std.time.milliTimestamp(),
             };
         }
 

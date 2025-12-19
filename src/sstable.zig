@@ -24,7 +24,7 @@ pub const MemtableIteratorAdapter = struct {
         if (self.memtable_iterator.next()) |node| {
             return StorageRecord{
                 .key = node.key.?,
-                .value = node.value,
+                .value = node.value.?,
                 .timestamp = node.timestamp,
             };
         }
@@ -105,11 +105,11 @@ pub const SSTable = struct {
             self.offset += @intCast(record.key.len);
             @memcpy(self.buffer[self.offset .. self.offset + 8], &utils.intToBytes(i64, record.timestamp));
             self.offset += 8;
-            if (record.value) |value| {
-                @memcpy(self.buffer[self.offset .. self.offset + 2], &utils.intToBytes(u16, @intCast(value.len)));
+            if (record.value.len > 0) {
+                @memcpy(self.buffer[self.offset .. self.offset + 2], &utils.intToBytes(u16, @intCast(record.value.len)));
                 self.offset += 2;
-                @memcpy(self.buffer[self.offset..(self.offset + @as(u32, @intCast(value.len)))], value);
-                self.offset += @intCast(value.len);
+                @memcpy(self.buffer[self.offset..(self.offset + @as(u32, @intCast(record.value.len)))], record.value);
+                self.offset += @intCast(record.value.len);
             } else {
                 @memcpy(self.buffer[self.offset .. self.offset + 2], &utils.intToBytes(u16, 0));
                 self.offset += 2;
@@ -135,7 +135,7 @@ pub const SSTable = struct {
             var reader = sstable.file.reader(reader_buffer);
 
             try reader.seekTo(0);
-            _ = try reader.read(block_buffer);
+            _ = try reader.interface.readSliceAll(block_buffer);
             const num_elements: u32 = utils.intFromBytes(u32, block_buffer, block_buffer.len - 4);
 
             return Iterator{
@@ -170,7 +170,7 @@ pub const SSTable = struct {
                 }
 
                 try self.reader.seekTo(@as(u64, @intCast(self.current_block_num)) * @as(u64, @intCast(self.sstable.block_size)));
-                _ = try self.reader.read(self.block_buffer);
+                _ = try self.reader.interface.readSliceAll(self.block_buffer);
                 self.num_block_elements = utils.intFromBytes(u32, self.block_buffer, self.block_buffer.len - 4);
 
                 self.current_block_offset = 0;
@@ -302,8 +302,8 @@ pub const SSTable = struct {
 
         for (0..blocks_number) |i| {
             block_offset = self.block_size * i;
-            reader.pos = block_offset;
-            _ = try reader.read(block_buffer);
+            try reader.seekTo(block_offset);
+            _ = try reader.interface.readSliceAll(block_buffer);
 
             const key_size = try utils.readNumber(u16, &reader.interface);
             const key = block_buffer[2 .. 2 + key_size];
@@ -330,7 +330,7 @@ pub const SSTable = struct {
         var reader = self.file.reader(getWorkerContext().?.reader_buffer[0..2]);
 
         try reader.seekTo(0);
-        _ = try reader.read(block_buffer);
+        _ = try reader.interface.readSliceAll(block_buffer);
         const min_key = readKeyFromBuffer(block_buffer, 0);
 
         self.min_key_start_offset = @intCast(writer.pos);
@@ -378,13 +378,13 @@ pub const SSTable = struct {
         const index_records_num: u32 = try utils.readNumber(u32, &reader.interface);
 
         try reader.seekTo(bloom_start_offset);
-        _ = try reader.read(filter);
+        _ = try reader.interface.readSliceAll(filter);
 
         const min_key_buf = try readKeyFromOffset(allocator, &reader, min_key_start_offset);
         const max_key_buf = try readKeyFromOffset(allocator, &reader, max_key_start_offset);
         const index = try allocator.alloc(u8, bloom_start_offset - index_start_offset);
         try reader.seekTo(index_start_offset);
-        _ = try reader.read(index);
+        _ = try reader.interface.readSliceAll(index);
 
         return SSTable{
             .allocator = allocator,
@@ -443,7 +443,7 @@ pub const SSTable = struct {
         const value_size: u16 = utils.intFromBytes(u16, buffer, offset + 10 + key_size);
         return .{
             .key = buffer[offset + 2 .. offset + 2 + key_size],
-            .value = if (value_size > 0) buffer[offset + key_size + 12 .. offset + key_size + 12 + value_size] else null,
+            .value = if (value_size > 0) buffer[offset + key_size + 12 .. offset + key_size + 12 + value_size] else data_types.EMPTY_VALUE,
             .timestamp = timestamp,
         };
     }
@@ -504,7 +504,7 @@ pub const SSTable = struct {
 
         var reader = self.file.reader(reader_buffer);
         try reader.seekTo(block_offset);
-        _ = try reader.read(block_buffer);
+        _ = try reader.interface.readSliceAll(block_buffer);
 
         const num_elements: u32 = utils.intFromBytes(u32, block_buffer, block_buffer.len - 4);
         var low: u32 = 0;
@@ -519,12 +519,12 @@ pub const SSTable = struct {
             const record = readRecordFromOffset(block_buffer, record_offset);
             const compare_result = utils.compareBitwise(key, record.key);
             if (compare_result == 0) {
-                if (record.value) |value| {
-                    const result = try self.allocator.alloc(u8, value.len);
-                    @memcpy(result, value);
+                if (record.value.len > 0) {
+                    const result = try self.allocator.alloc(u8, record.value.len);
+                    @memcpy(result, record.value);
                     return result;
                 } else {
-                    return null;
+                    return data_types.EMPTY_VALUE;
                 }
             } else if (compare_result < 0) {
                 if (mid == 0) break;
@@ -538,13 +538,11 @@ pub const SSTable = struct {
     }
 
     inline fn readKeyFromOffset(allocator: std.mem.Allocator, reader: *std.fs.File.Reader, offset: u64) ![]const u8 {
-        reader.pos = offset;
         try reader.seekTo(offset);
         const key_size: u16 = try utils.readNumber(u16, &reader.interface);
-        reader.pos = offset + 2;
         try reader.seekTo(offset + 2);
         const key: []u8 = try allocator.alloc(u8, key_size);
-        _ = try reader.read(key);
+        _ = try reader.interface.readSliceAll(key);
         return key;
     }
 
@@ -753,7 +751,7 @@ test "SSTable#iterator" {
     var expected_key: usize = 0;
     while (try iterator.next()) |record| {
         try testing.expect(std.mem.eql(u8, record.key, &utils.intToBytes(usize, expected_key)));
-        try testing.expect(std.mem.eql(u8, record.value.?, &utils.intToBytes(u8, 0)));
+        try testing.expect(std.mem.eql(u8, record.value, &utils.intToBytes(u8, 0)));
         expected_key += 1;
     }
 

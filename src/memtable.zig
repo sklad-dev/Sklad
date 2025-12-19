@@ -182,7 +182,7 @@ pub const Memtable = struct {
         return false;
     }
 
-    pub fn add(self: *Memtable, key: BinaryData, value: BinaryData, timestamp: i64, slot: *const ReservedDataSlot) !void {
+    pub fn add(self: *Memtable, key: BinaryData, value: ?BinaryData, timestamp: i64, slot: *const ReservedDataSlot) !void {
         var predecessors: []u64 = try self.allocator.alloc(u64, self.max_level + 1);
         defer self.allocator.free(predecessors);
 
@@ -200,11 +200,14 @@ pub const Memtable = struct {
             const found_index = self.search(key, predecessors, successors);
             if (found_index != 0) {
                 const node_to_update: *Node = @ptrCast(@alignCast(&self.arena.arena[found_index]));
-                const value_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[slot.node_offset .. slot.node_offset + value.len].ptr));
-
-                node_to_update.*.value = value_ptr[0..value.len];
                 node_to_update.*.timestamp = timestamp;
-                @memcpy(node_to_update.*.value.?, value);
+                node_to_update.*.value = null;
+
+                if (value != null and value.?.len > 0) {
+                    const value_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[slot.node_offset .. slot.node_offset + value.?.len].ptr));
+                    node_to_update.*.value = value_ptr[0..value.?.len];
+                    @memcpy(node_to_update.*.value.?, value.?);
+                }
                 return;
             } else {
                 if (!created) {
@@ -214,17 +217,21 @@ pub const Memtable = struct {
                     const new_node_tower_ptr: [*]u64 = @ptrCast(@alignCast(@constCast(self.arena.arena[new_node_tower_start..new_node_tower_end].ptr)));
 
                     const key_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[slot.data_offset .. slot.data_offset + key.len].ptr));
-                    const value_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[slot.data_offset + key.len .. slot.data_offset + key.len + value.len].ptr));
 
                     new_node.?.* = .{
                         .key = key_ptr[0..key.len],
-                        .value = value_ptr[0..value.len],
+                        .value = null,
                         .timestamp = timestamp,
                         .tower = new_node_tower_ptr[0 .. slot.tower_height + 1],
                     };
-
                     @memcpy(new_node.?.*.key.?, key);
-                    @memcpy(new_node.?.*.value.?, value);
+
+                    if (value != null and value.?.len > 0) {
+                        const value_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[slot.data_offset + key.len .. slot.data_offset + key.len + value.?.len].ptr));
+                        new_node.?.*.value = value_ptr[0..value.?.len];
+                        @memcpy(new_node.?.*.value.?, value.?);
+                    }
+
                     created = true;
                     _ = @atomicRmw(u32, &self.size, .Add, 1, .seq_cst);
                 }

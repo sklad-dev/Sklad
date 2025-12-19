@@ -3,6 +3,8 @@ const utils = @import("./utils.zig");
 const File = std.fs.File;
 const Allocator = std.mem.Allocator;
 
+pub const EMPTY_VALUE: []u8 = &[_]u8{};
+
 pub const FileHandle = struct {
     level: u8,
     file_id: u64,
@@ -52,7 +54,7 @@ pub const TypedBinaryData = struct {
 
 pub const StorageRecord = struct {
     key: BinaryData,
-    value: ?BinaryData,
+    value: BinaryData,
     timestamp: i64,
 
     pub const Iterator = struct {
@@ -65,7 +67,7 @@ pub const StorageRecord = struct {
     };
 
     pub inline fn dataSize(self: *const StorageRecord) usize {
-        return self.key.len + if (self.value) |v| v.len else 0;
+        return self.key.len + self.value.len;
     }
 
     pub inline fn sizeOnDisk(self: *const StorageRecord) usize {
@@ -74,41 +76,38 @@ pub const StorageRecord = struct {
 
     pub fn write(self: *const StorageRecord, writer: *std.fs.File.Writer) !void {
         try utils.writeSizedValue(writer, self.key);
-        try utils.writeNumber(i64, writer, self.timestamp);
-        if (self.value) |value| {
-            try utils.writeSizedValue(writer, value);
+        try utils.writeNumber(i64, &writer.interface, self.timestamp);
+        if (self.value.len != 0) {
+            try utils.writeSizedValue(writer, self.value);
         } else {
-            try utils.writeNumber(u16, writer, 0);
+            try utils.writeNumber(u16, &writer.interface, 0);
         }
     }
 
     pub fn destroy(self: *const StorageRecord, allocator: std.mem.Allocator) void {
         allocator.free(self.key);
-        if (self.value) |value| {
-            allocator.free(value);
+        if (self.value.len > 0) {
+            allocator.free(self.value);
         }
     }
 
     pub fn read(allocator: Allocator, reader: *std.fs.File.Reader, offset: u32) !StorageRecord {
         try reader.seekTo(offset);
-        reader.pos = offset;
         const key_size: u16 = try utils.readNumber(u16, &reader.interface);
-        reader.pos = offset + 2;
+        try reader.seekTo(offset + 2);
         const key: []u8 = try allocator.alloc(u8, key_size);
-        _ = try reader.read(key[0..]);
+        _ = try reader.interface.readSliceAll(key[0..]);
 
-        try reader.seekTo(offset);
-        reader.pos = offset + key_size + 2;
+        try reader.seekTo(offset + key_size + 2);
         const timestamp: i64 = try utils.readNumber(i64, &reader.interface);
 
-        try reader.seekTo(offset);
-        reader.pos = offset + key_size + 10;
+        try reader.seekTo(offset + key_size + 10);
         const value_size: u16 = try utils.readNumber(u16, &reader.interface);
-        var value: ?[]u8 = null;
+        var value: []u8 = EMPTY_VALUE;
         if (value_size > 0) {
-            reader.pos = offset + key_size + 12;
+            try reader.seekTo(offset + key_size + 12);
             value = try allocator.alloc(u8, value_size);
-            _ = try reader.read(value[0..]);
+            _ = try reader.interface.readSliceAll(value[0..]);
         }
 
         return .{
