@@ -24,12 +24,12 @@ pub const TypedStorage = struct {
         self.storage.stop();
     }
 
-    pub fn set(self: *TypedStorage, key: TypedBinaryData, value: TypedBinaryData) !void {
+    pub fn set(self: *TypedStorage, key: TypedBinaryData, value: TypedBinaryData, timestamp: i64) !void {
         const key_bytes = try key.toBytes();
         defer key.allocator.free(key_bytes);
         const value_bytes = try value.toBytes();
         defer value.allocator.free(value_bytes);
-        try self.storage.put(key_bytes, value_bytes);
+        try self.storage.put(key_bytes, value_bytes, timestamp);
     }
 
     pub fn get(self: *TypedStorage, key: TypedBinaryData) !?TypedBinaryData {
@@ -37,9 +37,9 @@ pub const TypedStorage = struct {
         defer key.allocator.free(key_bytes);
 
         const result = try self.storage.find(key_bytes);
-        if (result) |r| {
-            defer self.storage.allocator.free(r);
-            return try TypedBinaryData.fromBytes(self.allocator, r);
+        if (result != null and result.?.len > 0) {
+            defer self.storage.allocator.free(result.?);
+            return try TypedBinaryData.fromBytes(self.allocator, result.?);
         }
 
         return null;
@@ -52,6 +52,7 @@ const TestingConfigurator = @import("./configurator.zig").TestingConfigurator;
 const TaskQueue = @import("./task_queue.zig").TaskQueue;
 
 fn cleanup(typed_storage: *TypedStorage) !void {
+    try std.fs.cwd().deleteFile("./MANIFEST");
     if (typed_storage.storage.pending_memtables.load(.acquire)) |list| {
         _ = list.acquire();
         defer _ = list.release();
@@ -134,24 +135,28 @@ test "NodeStorage#set" {
     try test_storage.set(
         try buildTypedData(u8, .smallint, 2),
         try buildTypedData(u8, .smallint, 2),
+        std.time.milliTimestamp(),
     );
     try testing.expect(test_storage.storage.active_memtable.load(.unordered).size == 1);
 
     try test_storage.set(
         try buildTypedData(u64, .bigserial, 2),
         try buildTypedData(u64, .bigserial, 2),
+        std.time.milliTimestamp(),
     );
     try testing.expect(test_storage.storage.active_memtable.load(.unordered).size == 2);
 
     try test_storage.set(
         try buildTypedData(i32, .int, -5),
         try buildTypedData(i32, .int, 5),
+        std.time.milliTimestamp(),
     );
     try testing.expect(test_storage.storage.active_memtable.load(.unordered).size == 3);
 
     try test_storage.set(
         try buildTypedData(f32, .float, -5.5),
         try buildTypedData(f32, .float, 5.5),
+        std.time.milliTimestamp(),
     );
     try testing.expect(test_storage.storage.active_memtable.load(.unordered).size == 4);
 
@@ -160,7 +165,7 @@ test "NodeStorage#set" {
         .data_type = .string,
         .data = "Hello, world!",
     };
-    try test_storage.set(data, data);
+    try test_storage.set(data, data, std.time.milliTimestamp());
     try testing.expect(test_storage.storage.active_memtable.load(.unordered).size == 5);
 
     try cleanup(&test_storage);
@@ -189,7 +194,7 @@ test "NodeStorage#get" {
 
     const key = try buildTypedData(u8, .smallint, 2);
     const value = try buildTypedData(f32, .float, 1.23);
-    try test_storage.set(key, value);
+    try test_storage.set(key, value, std.time.milliTimestamp());
     const result = try test_storage.get(try buildTypedData(u8, .smallint, 2));
     defer testing.allocator.free(result.?.data);
 
