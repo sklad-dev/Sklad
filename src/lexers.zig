@@ -7,6 +7,7 @@ const Token = lex.Token;
 pub const KV_BUILTINS = [_]Builtin{
     .{ .name = "set", .kind = Token.Kind.keyword },
     .{ .name = "get", .kind = Token.Kind.keyword },
+    .{ .name = "delete", .kind = Token.Kind.keyword },
 };
 
 pub inline fn kvLexer(allocator: std.mem.Allocator, source: []const u8, token_sequence: *std.ArrayList(Token)) lex.Lexer {
@@ -38,6 +39,17 @@ test "kvLexer get query" {
 
     const get_query = "get 'test'";
     var l1 = kvLexer(testing.allocator, get_query, &tokens);
+    try testing.expect(l1.lex() == 0);
+    try testing.expect(tokens.items.len == 2);
+    tokens.clearAndFree(testing.allocator);
+}
+
+test "kvLexer delete query" {
+    var tokens = try std.ArrayList(Token).initCapacity(testing.allocator, 16);
+    defer tokens.deinit(testing.allocator);
+
+    const delete_query = "delete 'test'";
+    var l1 = kvLexer(testing.allocator, delete_query, &tokens);
     try testing.expect(l1.lex() == 0);
     try testing.expect(tokens.items.len == 2);
     tokens.clearAndFree(testing.allocator);

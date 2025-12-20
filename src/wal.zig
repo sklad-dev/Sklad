@@ -48,7 +48,7 @@ pub const Wal = struct {
     }
 
     pub fn readRecord(self: *const Wal, allocator: std.mem.Allocator, offset: u32) !StorageRecord {
-        var reader = self.file.reader(getWorkerContext().?.reader_buffer[0..2]);
+        var reader = self.file.reader(getWorkerContext().?.reader_buffer[0..]);
         const record = try StorageRecord.read(allocator, &reader, offset);
         return record;
     }

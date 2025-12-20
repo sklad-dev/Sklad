@@ -428,10 +428,11 @@ pub const BinaryStorage = struct {
         self.sstable_cache.deinit();
     }
 
-    pub fn put(self: *BinaryStorage, key: []const u8, value: []const u8) !void {
+    pub fn put(self: *BinaryStorage, key: []const u8, value: []const u8, timestamp: i64) !void {
         const record = StorageRecord{
             .key = key,
             .value = value,
+            .timestamp = timestamp,
         };
 
         var filled_memtable: ?*Memtable = null;
@@ -471,7 +472,7 @@ pub const BinaryStorage = struct {
         }
 
         try memtable.wal.writeRecord(&record);
-        try memtable.add(key, value, &(data_slot.?));
+        try memtable.add(key, value, timestamp, &(data_slot.?));
 
         if (filled_memtable) |_| {
             const task_queue = global_context.getTaskQueue();
@@ -487,11 +488,17 @@ pub const BinaryStorage = struct {
         }
     }
 
+    pub fn delete(self: *BinaryStorage, key: []const u8, timestamp: i64) !void {
+        return self.put(key, &[_]u8{}, timestamp);
+    }
+
     pub fn find(self: *BinaryStorage, key: []const u8) !?[]const u8 {
         const active = self.active_memtable.load(.acquire);
 
         var value = active.find(key);
         if (value) |v| {
+            if (v.len == 0) return null;
+
             const result = try self.allocator.alloc(u8, v.len);
             @memcpy(result, v);
             return result;
@@ -506,6 +513,8 @@ pub const BinaryStorage = struct {
                 if (node.entry) |entry| {
                     value = entry.memtable.find(key);
                     if (value) |v| {
+                        if (v.len == 0) return null;
+
                         const result = try self.allocator.alloc(u8, v.len);
                         @memcpy(result, v);
                         return result;
@@ -514,7 +523,12 @@ pub const BinaryStorage = struct {
             }
         }
 
-        return try self.findInTables(key);
+        const result = try self.findInTables(key);
+        if (result != null and result.?.len > 0) {
+            return result;
+        }
+
+        return null;
     }
 
     pub fn enqueueCompactionTask(self: *BinaryStorage, level: u8) void {
@@ -599,8 +613,6 @@ pub const BinaryStorage = struct {
     }
 
     fn findInTables(self: *BinaryStorage, key: []const u8) !?[]const u8 {
-        var result: ?[]const u8 = null;
-        var result_id: u64 = 0;
         const max_level = self.configurator.compactionMaxLevel();
         for (0..max_level) |level| {
             var files = self.table_file_manager.acquireFilesAtLevel(@intCast(level)) orelse continue;
@@ -615,17 +627,8 @@ pub const BinaryStorage = struct {
                 defer _ = cached_record.release();
 
                 if (try cached_record.getConst().table.find(key)) |value| {
-                    if (node.entry >= result_id) {
-                        result_id = node.entry;
-                        if (result) |r| self.allocator.free(r);
-                        result = value;
-                    } else {
-                        self.allocator.free(value);
-                    }
+                    return value;
                 }
-            }
-            if (result) |r| {
-                return r;
             }
         }
         return null;
@@ -769,7 +772,7 @@ test "BinaryStorage#put" {
     defer global_context.resetRootFolderForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
-    configurator.* = TestingConfigurator.init(1536, 2, 64);
+    configurator.* = TestingConfigurator.init(2304, 2, 96);
     defer global_context.deinitConfigurationForTests();
 
     var conf = configurator.configurator();
@@ -781,7 +784,7 @@ test "BinaryStorage#put" {
     var test_storage = try BinaryStorage.start(testing.allocator, ".");
     defer test_storage.stop();
 
-    try test_storage.put(&utils.intToBytes(u8, 1), &utils.intToBytes(u8, 42));
+    try test_storage.put(&utils.intToBytes(u8, 1), &utils.intToBytes(u8, 42), std.time.milliTimestamp());
     try testing.expect(test_storage.active_memtable.load(.unordered).size == 1);
     const result = test_storage.active_memtable.load(.unordered).find(&utils.intToBytes(u8, 1));
     try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u8, 42)));
@@ -796,7 +799,7 @@ test "Restore memtable from wal" {
     defer global_context.resetRootFolderForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
-    configurator.* = TestingConfigurator.init(1536, 2, 64);
+    configurator.* = TestingConfigurator.init(2304, 2, 96);
     defer global_context.deinitConfigurationForTests();
 
     var conf = configurator.configurator();
@@ -806,8 +809,8 @@ test "Restore memtable from wal" {
     defer @import("./worker.zig").deinitWorkerContext();
 
     var storage1 = try BinaryStorage.start(testing.allocator, ".");
-    try storage1.put(&utils.intToBytes(u8, 3), &utils.intToBytes(u16, 0xCFCF));
-    try storage1.put(&utils.intToBytes(u8, 4), &utils.intToBytes(u16, 0xFAFA));
+    try storage1.put(&utils.intToBytes(u8, 3), &utils.intToBytes(u16, 0xCFCF), std.time.milliTimestamp());
+    try storage1.put(&utils.intToBytes(u8, 4), &utils.intToBytes(u16, 0xFAFA), std.time.milliTimestamp());
     storage1.stop();
 
     var storage2 = try BinaryStorage.start(testing.allocator, ".");
@@ -830,7 +833,7 @@ test "BinaryStorage#find" {
     defer global_context.resetRootFolderForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
-    configurator.* = TestingConfigurator.init(1536, 2, 64);
+    configurator.* = TestingConfigurator.init(2304, 2, 96);
     defer global_context.deinitConfigurationForTests();
 
     var conf = configurator.configurator();
@@ -847,7 +850,7 @@ test "BinaryStorage#find" {
     defer storage.stop();
 
     const value = utils.intToBytes(u8, 42);
-    try storage.put(&utils.intToBytes(u8, 1), &value);
+    try storage.put(&utils.intToBytes(u8, 1), &value, std.time.milliTimestamp());
 
     var search_result = try storage.find(&utils.intToBytes(u8, 1));
     try testing.expect(std.mem.eql(u8, search_result.?, &value));
@@ -858,7 +861,7 @@ test "BinaryStorage#find" {
 
     for (2..10) |i| {
         const v = @as(u8, @intCast(i));
-        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v));
+        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v), std.time.milliTimestamp());
     }
 
     for (1..10) |i| {
@@ -877,7 +880,7 @@ test "BinaryStorage#find returns the newest value" {
     defer global_context.deinitConfigurationForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
-    configurator.* = TestingConfigurator.init(1536, 2, 64);
+    configurator.* = TestingConfigurator.init(2304, 2, 96);
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 
@@ -893,21 +896,116 @@ test "BinaryStorage#find returns the newest value" {
 
     for (0..8) |i| {
         const v = @as(u8, @intCast(i));
-        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v));
+        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v), std.time.milliTimestamp());
     }
 
     for (0..8) |i| {
         const v = @as(u8, @intCast(i));
-        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v * 2));
+        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v * 2), std.time.milliTimestamp());
     }
 
-    const r1 = try storage.find(&utils.intToBytes(u8, @as(u8, @intCast(1))));
-    defer testing.allocator.free(r1.?);
-    try testing.expect(std.mem.eql(u8, r1.?, &utils.intToBytes(u8, 2)));
+    var search_result: ?[]const u8 = null;
+    for (0..8) |i| {
+        search_result = try storage.find(&utils.intToBytes(u8, @as(u8, @intCast(i))));
+        defer testing.allocator.free(search_result.?);
+        try testing.expect(std.mem.eql(u8, search_result.?, &utils.intToBytes(u8, @intCast(i * 2))));
+    }
 
-    const r2 = try storage.find(&utils.intToBytes(u8, @as(u8, @intCast(5))));
-    defer testing.allocator.free(r2.?);
-    try testing.expect(std.mem.eql(u8, r2.?, &utils.intToBytes(u8, 10)));
+    try cleanup(&storage);
+}
+
+test "BinaryStorage#delete when in memtable" {
+    global_context.setRootFolderForTests("./");
+    defer global_context.resetRootFolderForTests();
+
+    defer global_context.deinitConfigurationForTests();
+
+    var configurator = try testing.allocator.create(TestingConfigurator);
+    configurator.* = TestingConfigurator.init(2304, 2, 96);
+    var conf = configurator.configurator();
+    global_context.loadConfiguration(&conf);
+
+    try @import("./worker.zig").initWorkerContext(testing.allocator, conf.sstableBlockSize());
+    defer @import("./worker.zig").deinitWorkerContext();
+
+    var task_queue = TaskQueue.init(testing.allocator);
+    global_context.initTaskQueueForTests(&task_queue);
+    defer global_context.cleanAndDeinitTaskQueueForTests();
+
+    var storage = try BinaryStorage.start(testing.allocator, ".");
+    defer storage.stop();
+
+    for (0..8) |i| {
+        const v = @as(u8, @intCast(i));
+        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v), std.time.milliTimestamp());
+    }
+
+    try storage.delete(&utils.intToBytes(u8, 3), std.time.milliTimestamp());
+    const search_result = try storage.find(&utils.intToBytes(u8, @as(u8, @intCast(3))));
+    try testing.expect(search_result == null);
+
+    try cleanup(&storage);
+}
+
+test "BinaryStorage#delete when in sstable" {
+    global_context.setRootFolderForTests("./");
+    defer global_context.resetRootFolderForTests();
+
+    const block_size: u32 = 104;
+    try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
+    defer @import("./worker.zig").deinitWorkerContext();
+
+    const MemtableIteratorAdapter = @import("./sstable.zig").MemtableIteratorAdapter;
+
+    const deleted_key = 4;
+    {
+        var test_memtable = try Memtable.init(testing.allocator, std.crypto.random, 4096, 8, "./");
+        defer test_memtable.destroy();
+
+        const test_value = utils.intToBytes(u8, 255);
+        var slot: ?Memtable.ReservedDataSlot = null;
+        for (0..10) |j| {
+            slot = test_memtable.reserve(@sizeOf(usize) + test_value.len);
+            try test_memtable.add(&utils.intToBytes(usize, j), &test_value, std.time.milliTimestamp(), &slot.?);
+        }
+
+        slot = test_memtable.reserve(@sizeOf(usize) + data_types.EMPTY_VALUE.len);
+        try test_memtable.add(&utils.intToBytes(usize, deleted_key), data_types.EMPTY_VALUE, std.time.milliTimestamp(), &slot.?);
+
+        var adapter = MemtableIteratorAdapter.init(&test_memtable);
+        var memtable_iterator = adapter.iterator();
+
+        var test_sstable = try SSTable.create(
+            testing.allocator,
+            &memtable_iterator,
+            test_memtable.size,
+            .{ .level = 0, .file_id = @as(u64, 0) },
+            block_size,
+            20,
+        );
+        test_sstable.close(false);
+        try test_memtable.wal.deleteFile();
+    }
+
+    defer global_context.deinitConfigurationForTests();
+
+    var configurator = try testing.allocator.create(TestingConfigurator);
+    configurator.* = TestingConfigurator.init(4096, 2, block_size);
+    var conf = configurator.configurator();
+    global_context.loadConfiguration(&conf);
+
+    var task_queue = TaskQueue.init(testing.allocator);
+    global_context.initTaskQueueForTests(&task_queue);
+    defer global_context.cleanAndDeinitTaskQueueForTests();
+
+    var storage = try BinaryStorage.start(testing.allocator, ".");
+    defer storage.stop();
+
+    var search_result = try storage.find(&utils.intToBytes(usize, deleted_key));
+    try testing.expect(search_result == null);
+
+    search_result = try storage.find(&utils.intToBytes(usize, 11));
+    try testing.expect(search_result == null);
 
     try cleanup(&storage);
 }
@@ -916,21 +1014,21 @@ test "BinaryStorage compaction and cleanup" {
     global_context.setRootFolderForTests("./");
     defer global_context.resetRootFolderForTests();
 
-    const block_size: u32 = 72;
+    const block_size: u32 = 104;
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
 
     const MemtableIteratorAdapter = @import("./sstable.zig").MemtableIteratorAdapter;
 
     for (0..5) |i| {
-        var test_memtable = try Memtable.init(testing.allocator, std.crypto.random, 2048, 8, "./");
+        var test_memtable = try Memtable.init(testing.allocator, std.crypto.random, 4096, 8, "./");
         defer test_memtable.destroy();
 
         const test_value = utils.intToBytes(u8, 255);
         var slot: ?Memtable.ReservedDataSlot = null;
         for (0..10) |j| {
             slot = test_memtable.reserve(@sizeOf(usize) + test_value.len);
-            try test_memtable.add(&utils.intToBytes(usize, j + i * 10), &test_value, &slot.?);
+            try test_memtable.add(&utils.intToBytes(usize, j + i * 10), &test_value, std.time.milliTimestamp(), &slot.?);
         }
 
         var adapter = MemtableIteratorAdapter.init(&test_memtable);
@@ -951,7 +1049,7 @@ test "BinaryStorage compaction and cleanup" {
     defer global_context.deinitConfigurationForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
-    configurator.* = TestingConfigurator.init(1536, 2, block_size);
+    configurator.* = TestingConfigurator.init(4096, 2, block_size);
     var conf = configurator.configurator();
     global_context.loadConfiguration(&conf);
 

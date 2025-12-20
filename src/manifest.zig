@@ -41,6 +41,7 @@ pub const Manifest = struct {
     allocator: std.mem.Allocator,
     path: []const u8,
     file: std.fs.File,
+    last_synced_pos: std.atomic.Value(u64),
     buffer: std.atomic.Value(*EntryBuffer),
     _padding1: u8 align(std.atomic.cache_line) = 0,
     is_flushing: std.atomic.Value(bool),
@@ -56,7 +57,7 @@ pub const Manifest = struct {
             var iterator = RemovedFileEntriesIterator{
                 .reader = undefined,
                 .current_offset = last_checkpoint_offset,
-                .end_offset = try manifest.file.getEndPos(),
+                .end_offset = manifest.last_synced_pos.load(.acquire),
             };
             iterator.reader = manifest.file.reader(&iterator.reader_buffer);
             return iterator;
@@ -100,6 +101,7 @@ pub const Manifest = struct {
             .read = true,
             .truncate = false,
         });
+        const file_size = try file.getEndPos();
 
         const initial_buffer = try allocator.create(EntryBuffer);
         initial_buffer.* = EntryBuffer.init(
@@ -111,6 +113,7 @@ pub const Manifest = struct {
             .allocator = allocator,
             .path = manifest_path,
             .file = file,
+            .last_synced_pos = std.atomic.Value(u64).init(file_size),
             .buffer = std.atomic.Value(*EntryBuffer).init(initial_buffer),
             .is_flushing = std.atomic.Value(bool).init(false),
         };
@@ -197,7 +200,7 @@ pub const Manifest = struct {
     }
 
     fn findLastCheckpointOffset(self: *Manifest) !u64 {
-        const end_position = try self.file.getEndPos();
+        const end_position = self.last_synced_pos.load(.acquire);
         if (end_position == 0) return 0;
 
         var last_checkpoint_offset: u64 = 0;
@@ -282,6 +285,9 @@ pub const Manifest = struct {
         }
 
         try self.file.sync();
+
+        const new_pos = try self.file.getEndPos();
+        self.last_synced_pos.store(new_pos, .release);
 
         return true;
     }
