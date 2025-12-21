@@ -1,7 +1,10 @@
 const std = @import("std");
 const utils = @import("utils.zig");
+
 const StorageRecord = @import("data_types.zig").StorageRecord;
 const EMPTY_VALUE = @import("data_types.zig").EMPTY_VALUE;
+
+const assert = std.debug.assert;
 
 pub const MergeIterator = struct {
     const Self = @This();
@@ -56,7 +59,9 @@ pub const MergeIterator = struct {
     current: RecordBuffer,
 
     pub fn init(allocator: std.mem.Allocator, iterators: []StorageRecord.Iterator) !Self {
-        // TODO: assert sources.len < 128
+        assert(iterators.len > 0);
+        assert(iterators.len < 128);
+
         const tree = try allocator.alloc(i8, iterators.len);
         @memset(tree, -1);
 

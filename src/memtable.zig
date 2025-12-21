@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 
 const data_types = @import("./data_types.zig");
 const utils = @import("./utils.zig");
@@ -26,6 +27,9 @@ pub const Arena = struct {
     }
 
     pub fn reserve(self: *Arena, data_size: u64) !u64 {
+        assert(data_size > 0);
+        assert(data_size < self.arena.len);
+
         var current_offset: u64 = undefined;
         var new_offset: u64 = undefined;
 
@@ -41,6 +45,8 @@ pub const Arena = struct {
             }
             break;
         }
+
+        assert(current_offset + data_size <= self.arena.len);
         return current_offset;
     }
 
@@ -183,6 +189,8 @@ pub const Memtable = struct {
     }
 
     pub fn add(self: *Memtable, key: BinaryData, value: ?BinaryData, timestamp: i64, slot: *const ReservedDataSlot) !void {
+        assert(key.len > 0);
+
         var predecessors: []u64 = try self.allocator.alloc(u64, self.max_level + 1);
         defer self.allocator.free(predecessors);
 
