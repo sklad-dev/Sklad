@@ -48,38 +48,40 @@ pub const Manifest = struct {
     _padding2: u8 align(std.atomic.cache_line) = 0,
 
     pub const RemovedFileEntriesIterator = struct {
-        reader: std.fs.File.Reader,
+        file: *std.fs.File,
+        reader: ?std.fs.File.Reader = null,
         current_offset: u64,
         end_offset: u64,
         reader_buffer: [8]u8 = undefined,
 
         pub fn init(manifest: *Manifest, last_checkpoint_offset: u64) !RemovedFileEntriesIterator {
-            var iterator = RemovedFileEntriesIterator{
-                .reader = undefined,
+            return .{
+                .file = &manifest.file,
                 .current_offset = last_checkpoint_offset,
                 .end_offset = manifest.last_synced_pos.load(.acquire),
             };
-            iterator.reader = manifest.file.reader(&iterator.reader_buffer);
-            return iterator;
         }
 
         pub fn next(self: *RemovedFileEntriesIterator) !?FileOperationManifestEntry {
             if (self.end_offset == 0) return null;
             if (self.current_offset >= self.end_offset) return null;
+            if (self.reader == null) {
+                self.reader = self.file.reader(&self.reader_buffer);
+            }
 
             while (self.current_offset < self.end_offset) {
                 const offset = self.current_offset;
                 self.current_offset += MANIFEST_ENTRY_SIZE;
 
-                try self.reader.seekTo(offset);
-                const entry_type: ManifestEntryType = @enumFromInt(try utils.readNumber(u8, &self.reader.interface));
+                try self.reader.?.seekTo(offset);
+                const entry_type: ManifestEntryType = @enumFromInt(try utils.readNumber(u8, &self.reader.?.interface));
                 if (entry_type == .fileRemoved) {
-                    try self.reader.seekTo(offset + 1);
-                    const level: u8 = try utils.readNumber(u8, &self.reader.interface);
-                    try self.reader.seekTo(offset + 2);
-                    const file_id: u64 = try utils.readNumber(u64, &self.reader.interface);
-                    try self.reader.seekTo(offset + 10);
-                    const timestamp: i64 = try utils.readNumber(i64, &self.reader.interface);
+                    try self.reader.?.seekTo(offset + 1);
+                    const level: u8 = try utils.readNumber(u8, &self.reader.?.interface);
+                    try self.reader.?.seekTo(offset + 2);
+                    const file_id: u64 = try utils.readNumber(u64, &self.reader.?.interface);
+                    try self.reader.?.seekTo(offset + 10);
+                    const timestamp: i64 = try utils.readNumber(i64, &self.reader.?.interface);
                     return FileOperationManifestEntry{
                         .entry_type = entry_type,
                         .level = level,

@@ -190,7 +190,7 @@ pub const SSTable = struct {
     pub fn create(
         allocator: std.mem.Allocator,
         record_iterator: *StorageRecord.Iterator,
-        records_number: u32,
+        max_records_number: u32,
         handle: FileHandle,
         block_size: u32,
         bits_per_key: u8,
@@ -208,11 +208,11 @@ pub const SSTable = struct {
             .allocator = allocator,
             .handle = handle,
             .file = file,
-            .records_number = records_number,
+            .records_number = 0,
             .block_size = block_size,
             .bloom_filter = try BloomFilter.init(
                 allocator,
-                @intCast(records_number),
+                @intCast(max_records_number),
                 bits_per_key,
             ),
             .index_start_offset = 0,
@@ -246,7 +246,7 @@ pub const SSTable = struct {
         defer block_offsets.deinit(self.allocator);
 
         while (try record_iterator.next()) |record| : (i += 1) {
-            if (i == self.records_number - 1) self.max_key = record.key;
+            self.max_key = record.key;
 
             self.bloom_filter.?.add(record.key);
             const record_size_with_offset: u32 = @as(u32, @intCast(record.sizeOnDisk())) +
@@ -267,6 +267,7 @@ pub const SSTable = struct {
             blocks_number += 1;
             try self.writeDataBlock(writer, &data_block, &block_offsets);
         }
+        self.records_number = i;
 
         return blocks_number;
     }

@@ -63,11 +63,9 @@ fn cleanup(typed_storage: *TypedStorage) !void {
         _ = list.acquire();
         defer _ = list.release();
 
-        var curr = list.get().head.next;
+        var curr = list.get().head;
         while (curr) |node| : (curr = node.next) {
-            if (node.entry) |entry| {
-                try entry.memtable.wal.deleteFile();
-            }
+            try node.entry.memtable.wal.deleteFile();
         }
     }
 
