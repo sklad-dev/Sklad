@@ -137,11 +137,13 @@ pub const BinaryStorage = struct {
         memtable: *Memtable,
         flushed: std.atomic.Value(bool),
     };
-    pub const PendingMemtableList = RefCounted(AddOnlyStack(PendingMemtable, null));
+    pub const PendingMemtableList = RefCounted(AddOnlyStack(PendingMemtable, pendingMemtableCleanup));
 
-    pub fn pendingMemtableCleanup(allocator: std.mem.Allocator, pm: *PendingMemtable) void {
-        pm.memtable.destroy();
-        allocator.destroy(pm.memtable);
+    pub fn pendingMemtableCleanup(allocator: std.mem.Allocator, pm: PendingMemtable) void {
+        if (pm.flushed.load(.acquire)) {
+            pm.memtable.destroy();
+            allocator.destroy(pm.memtable);
+        }
     }
 
     pub const FlushTask = struct {
@@ -599,7 +601,7 @@ pub const BinaryStorage = struct {
 
         if (old_stack == null) {
             const new_stack = try self.allocator.create(PendingMemtableList);
-            new_stack.* = PendingMemtableList.init(self.allocator, AddOnlyStack(PendingMemtable, null).init(self.allocator));
+            new_stack.* = PendingMemtableList.init(self.allocator, AddOnlyStack(PendingMemtable, pendingMemtableCleanup).init(self.allocator));
 
             if (self.pending_memtables.cmpxchgStrong(null, new_stack, .acq_rel, .acquire)) |existing| {
                 new_stack.get().deinit();
@@ -679,7 +681,7 @@ pub const BinaryStorage = struct {
         defer _ = old_stack.release();
 
         const new_stack = try self.allocator.create(PendingMemtableList);
-        new_stack.* = PendingMemtableList.init(self.allocator, AddOnlyStack(PendingMemtable, null).init(self.allocator));
+        new_stack.* = PendingMemtableList.init(self.allocator, AddOnlyStack(PendingMemtable, pendingMemtableCleanup).init(self.allocator));
         errdefer {
             new_stack.get().deinit();
             self.allocator.destroy(new_stack);
@@ -689,8 +691,6 @@ pub const BinaryStorage = struct {
         while (curr) |node| : (curr = node.next) {
             if (!node.entry.flushed.load(.acquire)) {
                 new_stack.get().push(node.entry);
-            } else {
-                pendingMemtableCleanup(self.allocator, @constCast(&node.entry));
             }
         }
 
@@ -705,7 +705,7 @@ pub const BinaryStorage = struct {
         if (self.pending_memtables.load(.acquire)) |list| {
             var curr = list.get().head;
             while (curr) |node| : (curr = node.next) {
-                pendingMemtableCleanup(self.allocator, @constCast(&node.entry));
+                pendingMemtableCleanup(self.allocator, node.entry);
             }
             _ = list.release();
         }
