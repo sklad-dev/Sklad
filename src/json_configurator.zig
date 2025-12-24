@@ -13,6 +13,7 @@ pub const JsonConfigurator = struct {
         compaction: CompactionConfiguration,
         worker_pool: WorkerPoolConfiguration,
         cleanup: CleanupConfiguration,
+        max_connections: u16,
     };
 
     const MemtableConfiguration = struct {
@@ -83,6 +84,7 @@ pub const JsonConfigurator = struct {
             .worker_pool_task_wait_threshold_us_fn = taskWaitThreshold,
             .cleanup_interval_seconds_fn = cleanupIntervalSeconds,
             .cleanup_file_count_threshold_fn = cleanupFileCountThreshold,
+            .max_connections_fn = maxConnections,
         };
     }
 
@@ -154,5 +156,10 @@ pub const JsonConfigurator = struct {
     pub fn cleanupFileCountThreshold(ptr: *anyopaque) u16 {
         const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
         return self.config.cleanup.file_count_threshold;
+    }
+
+    pub fn maxConnections(ptr: *anyopaque) u16 {
+        const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
+        return self.config.max_connections;
     }
 };

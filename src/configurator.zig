@@ -14,6 +14,7 @@ pub const Configurator = struct {
     worker_pool_task_wait_threshold_us_fn: *const fn (ptr: *anyopaque) u64,
     cleanup_interval_seconds_fn: *const fn (ptr: *anyopaque) i64,
     cleanup_file_count_threshold_fn: *const fn (ptr: *anyopaque) u16,
+    max_connections_fn: *const fn (ptr: *anyopaque) u16,
 
     pub fn memtableMaxSize(self: *const Configurator) u64 {
         return self.memtable_max_size_fn(self.ptr);
@@ -70,6 +71,10 @@ pub const Configurator = struct {
     pub fn cleanupFileCountThreshold(self: *const Configurator) u16 {
         return self.cleanup_file_count_threshold_fn(self.ptr);
     }
+
+    pub fn maxConnections(self: *const Configurator) u16 {
+        return self.max_connections_fn(self.ptr);
+    }
 };
 
 pub const TestingConfigurator = struct {
@@ -87,6 +92,7 @@ pub const TestingConfigurator = struct {
     task_wait_threshold_us: u64,
     cleanup_interval_seconds: i64,
     cleanup_file_count_threshold: u16,
+    max_connections: u16,
 
     pub fn init(max_size: u64, max_level: u8, block_size: u32) TestingConfigurator {
         return .{
@@ -104,6 +110,7 @@ pub const TestingConfigurator = struct {
             .task_wait_threshold_us = 5000,
             .cleanup_interval_seconds = 60,
             .cleanup_file_count_threshold = 4,
+            .max_connections = 1,
         };
     }
 
@@ -124,6 +131,7 @@ pub const TestingConfigurator = struct {
             .worker_pool_task_wait_threshold_us_fn = taskWaitThreshold,
             .cleanup_interval_seconds_fn = cleanupIntervalSeconds,
             .cleanup_file_count_threshold_fn = cleanupFileCountThreshold,
+            .max_connections_fn = maxConnections,
         };
     }
 
@@ -195,5 +203,10 @@ pub const TestingConfigurator = struct {
     pub fn cleanupFileCountThreshold(ptr: *anyopaque) u16 {
         const self: *TestingConfigurator = @ptrCast(@alignCast(ptr));
         return self.cleanup_file_count_threshold;
+    }
+
+    pub fn maxConnections(ptr: *anyopaque) u16 {
+        const self: *TestingConfigurator = @ptrCast(@alignCast(ptr));
+        return self.max_connections;
     }
 };

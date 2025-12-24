@@ -322,10 +322,10 @@ pub const MetricRequestError = error{
 
 pub const MetricRequestTask = struct {
     allocator: std.mem.Allocator,
-    io_context: io.IO.IoContext,
+    io_context: *io.IO.IoContext,
     timestamp: i64,
 
-    pub fn init(allocator: std.mem.Allocator, timestamp: i64, io_context: io.IO.IoContext) !MetricRequestTask {
+    pub fn init(allocator: std.mem.Allocator, timestamp: i64, io_context: *io.IO.IoContext) !MetricRequestTask {
         return .{
             .allocator = allocator,
             .io_context = io_context,
@@ -349,27 +349,23 @@ pub const MetricRequestTask = struct {
             global_context.getMetricsAggregator().?.snapshot_buffer.capasity() / 2,
         ) catch |e| {
             std.log.err("Error! Failed to allocate metrics snapshot buffer: {any}", .{e});
-            self.io_context.sendResponse(
+            self.io_context.enqueueResponse(
                 i8,
                 MetricRequestError,
-                self.allocator,
                 -1,
                 MetricRequestError.MetricRequestFailed,
             );
-            std.posix.close(self.io_context.socket);
             return;
         };
         defer self.allocator.free(buffer);
 
         const num_snapshpts = global_context.getMetricsAggregator().?.snapshot_buffer.readUntil(self.timestamp, buffer);
-        self.io_context.sendResponse(
+        self.io_context.enqueueResponse(
             []MetricsSnapshot,
             MetricRequestError,
-            self.allocator,
             buffer[0..num_snapshpts],
             null,
         );
-        std.posix.close(self.io_context.socket);
     }
 
     fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
