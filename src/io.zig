@@ -77,6 +77,7 @@ pub const IO = struct {
         allocator: std.mem.Allocator,
         io: *const IO,
         state: std.atomic.Value(u8) = std.atomic.Value(u8).init(@intFromEnum(IoContextState.idle)),
+        has_written: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         socket: std.posix.socket_t,
         start_time: i64,
         response_buffer: ?[]u8,
@@ -99,25 +100,25 @@ pub const IO = struct {
         }
 
         pub fn closeSocket(self: *IoContext) void {
+            self.state.store(@intFromEnum(IoContextState.closed), .release);
             std.posix.close(self.socket);
             self.cleanBuffer();
-            self.state.store(@intFromEnum(IoContextState.closed), .release);
         }
 
         pub fn toNextState(self: *IoContext) void {
             const current_state: IoContextState = @enumFromInt(self.state.load(.acquire));
             switch (current_state) {
                 .idle => {
-                    self.disableSocketReadEvents();
+                    self.disableSocketReadEvent();
                     self.state.store(@intFromEnum(IoContextState.processing), .release);
                 },
                 .processing => {
-                    self.enableSocketWriteEvents();
+                    self.enableSocketWriteEvent();
                     self.state.store(@intFromEnum(IoContextState.writing), .release);
                 },
                 .writing => {
-                    self.disableSocketWriteEvents();
-                    self.enableSocketReadEvents();
+                    self.disableSocketWriteEvent();
+                    self.enableSocketReadEvent();
                     self.state.store(@intFromEnum(IoContextState.idle), .release);
                 },
                 else => {},
@@ -159,26 +160,33 @@ pub const IO = struct {
             self.toNextState();
         }
 
-        pub inline fn disableSocketReadEvents(self: *const IoContext) void {
-            self.io.disableSocketReadEvents(self.socket) catch |e| {
+        pub inline fn disableSocketReadEvent(self: *const IoContext) void {
+            self.io.disableSocketReadEvent(self.socket) catch |e| {
                 std.log.err("Error! Failed to disable socket read events: {any}", .{e});
             };
         }
 
-        pub inline fn enableSocketReadEvents(self: *const IoContext) void {
-            self.io.enableSocketReadEvents(self.socket) catch |e| {
+        pub inline fn enableSocketReadEvent(self: *const IoContext) void {
+            self.io.enableSocketReadEvent(self.socket) catch |e| {
                 std.log.err("Error! Failed to enable socket read events: {any}", .{e});
             };
         }
 
-        pub inline fn enableSocketWriteEvents(self: *const IoContext) void {
-            self.io.enableSocketWriteEvents(self.socket) catch |e| {
-                std.log.err("Error! Failed to enable socket write events: {any}", .{e});
-            };
+        pub inline fn enableSocketWriteEvent(self: *IoContext) void {
+            if (self.has_written.load(.acquire)) {
+                self.io.enableSocketWriteEvent(self.socket) catch |e| {
+                    std.log.err("Error! Failed to enable socket write events: {any}", .{e});
+                };
+            } else {
+                self.io.addSocketWriteEvent(self.socket) catch |e| {
+                    std.log.err("Error! Failed to add socket write events: {any}", .{e});
+                };
+                self.has_written.store(true, .release);
+            }
         }
 
-        pub inline fn disableSocketWriteEvents(self: *const IoContext) void {
-            self.io.disableSocketWriteEvents(self.socket) catch |e| {
+        pub inline fn disableSocketWriteEvent(self: *const IoContext) void {
+            self.io.disableSocketWriteEvent(self.socket) catch |e| {
                 std.log.err("Error! Failed to disable socket write events: {any}", .{e});
             };
         }
@@ -193,12 +201,12 @@ pub const IO = struct {
         }
     };
 
-    pub const IoTask = struct {
+    pub const ReadRequestTask = struct {
         allocator: std.mem.Allocator,
         io_context: *IoContext,
 
         fn run(ptr: *anyopaque) void {
-            const self: *IoTask = @ptrCast(@alignCast(ptr));
+            const self: *ReadRequestTask = @ptrCast(@alignCast(ptr));
             var buffer: [4096]u8 = [_]u8{0} ** 4096; // TODO: move the buffer to the worker
 
             const bytes_read = posix.read(self.io_context.socket, &buffer) catch |e| {
@@ -212,7 +220,6 @@ pub const IO = struct {
                 return;
             }
 
-            // self.io_context.toNextState();
             if (bytes_read > 0 and bytes_read <= buffer.len) {
                 const request = std.json.parseFromSlice(
                     Request,
@@ -270,11 +277,11 @@ pub const IO = struct {
         }
 
         fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
-            const self: *IoTask = @ptrCast(@alignCast(ptr));
+            const self: *ReadRequestTask = @ptrCast(@alignCast(ptr));
             allocator.destroy(self);
         }
 
-        fn task(self: *IoTask) Task {
+        fn task(self: *ReadRequestTask) Task {
             return .{
                 .context = self,
                 .run_fn = run,
@@ -328,7 +335,14 @@ pub const IO = struct {
             return;
         };
 
-        self.enableSocketReadEvents(self.socket_handle) catch |e| {
+        _ = posix.kevent(self.kqueue_descriptor, &.{.{
+            .ident = @intCast(self.socket_handle),
+            .filter = posix.system.EVFILT.READ,
+            .flags = posix.system.EV.ADD,
+            .fflags = 0,
+            .data = 0,
+            .udata = @intCast(self.socket_handle),
+        }}, &.{}, null) catch |e| {
             std.log.err("Error! Failed to enable socket listening: {any}", .{e});
             return;
         };
@@ -377,7 +391,7 @@ pub const IO = struct {
                         continue;
                     }
 
-                    self.enableSocketReadEvents(client_socket) catch |e| {
+                    self.addSocketReadEvent(client_socket) catch |e| {
                         io_context.closeSocket();
                         std.log.err("Error! Failed to enable socket listening: {any}", .{e});
                         return;
@@ -400,12 +414,12 @@ pub const IO = struct {
                         io_context.start_time = start_time;
 
                         const task_queue = global_context.getTaskQueue();
-                        var io_task = task_queue.?.allocator.create(IoTask) catch |e| {
+                        var io_task = task_queue.?.allocator.create(ReadRequestTask) catch |e| {
                             std.log.err("Error! Failed to allocate an IO task: {any}", .{e});
                             continue;
                         };
 
-                        io_task.* = IoTask{ .allocator = self.allocator, .io_context = io_context };
+                        io_task.* = ReadRequestTask{ .allocator = self.allocator, .io_context = io_context };
 
                         global_context.getTaskQueue().?.enqueue(io_task.task());
                     } else if (event.filter == std.posix.system.EVFILT.WRITE) {
@@ -437,18 +451,29 @@ pub const IO = struct {
         posix.close(self.socket_handle);
     }
 
-    pub fn enableSocketReadEvents(self: *const IO, socket: posix.socket_t) !void {
+    pub fn addSocketReadEvent(self: *const IO, socket: posix.socket_t) !void {
         _ = try posix.kevent(self.kqueue_descriptor, &.{.{
             .ident = @intCast(socket),
             .filter = posix.system.EVFILT.READ,
-            .flags = posix.system.EV.ADD | posix.system.EV.ENABLE,
+            .flags = posix.system.EV.ADD | posix.system.EV.DISPATCH | posix.system.EV.CLEAR,
             .fflags = 0,
             .data = 0,
             .udata = @intCast(socket),
         }}, &.{}, null);
     }
 
-    pub fn disableSocketReadEvents(self: *const IO, socket: posix.socket_t) !void {
+    pub fn enableSocketReadEvent(self: *const IO, socket: posix.socket_t) !void {
+        _ = try posix.kevent(self.kqueue_descriptor, &.{.{
+            .ident = @intCast(socket),
+            .filter = posix.system.EVFILT.READ,
+            .flags = posix.system.EV.ENABLE,
+            .fflags = 0,
+            .data = 0,
+            .udata = @intCast(socket),
+        }}, &.{}, null);
+    }
+
+    pub fn disableSocketReadEvent(self: *const IO, socket: posix.socket_t) !void {
         _ = try posix.kevent(self.kqueue_descriptor, &.{.{
             .ident = @intCast(socket),
             .filter = posix.system.EVFILT.READ,
@@ -459,18 +484,29 @@ pub const IO = struct {
         }}, &.{}, null);
     }
 
-    pub fn enableSocketWriteEvents(self: *const IO, socket: posix.socket_t) !void {
+    pub fn addSocketWriteEvent(self: *const IO, socket: posix.socket_t) !void {
         _ = try posix.kevent(self.kqueue_descriptor, &.{.{
             .ident = @intCast(socket),
             .filter = posix.system.EVFILT.WRITE,
-            .flags = posix.system.EV.ADD | posix.system.EV.ENABLE,
+            .flags = posix.system.EV.ADD | posix.system.EV.DISPATCH | posix.system.EV.CLEAR,
             .fflags = 0,
             .data = 0,
             .udata = @intCast(socket),
         }}, &.{}, null);
     }
 
-    pub fn disableSocketWriteEvents(self: *const IO, socket: posix.socket_t) !void {
+    pub fn enableSocketWriteEvent(self: *const IO, socket: posix.socket_t) !void {
+        _ = try posix.kevent(self.kqueue_descriptor, &.{.{
+            .ident = @intCast(socket),
+            .filter = posix.system.EVFILT.WRITE,
+            .flags = posix.system.EV.ENABLE,
+            .fflags = 0,
+            .data = 0,
+            .udata = @intCast(socket),
+        }}, &.{}, null);
+    }
+
+    pub fn disableSocketWriteEvent(self: *const IO, socket: posix.socket_t) !void {
         _ = try posix.kevent(self.kqueue_descriptor, &.{.{
             .ident = @intCast(socket),
             .filter = posix.system.EVFILT.WRITE,
