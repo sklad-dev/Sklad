@@ -45,11 +45,6 @@ pub const ExecuteTask = struct {
 
     fn run(ptr: *anyopaque) void {
         const self: *ExecuteTask = @ptrCast(@alignCast(ptr));
-        defer {
-            const exec_time = std.time.microTimestamp() - self.io_context.start_time;
-            recordMetric(global_context.getMetricsAggregator(), MetricKind.requestProcessingTime, @intCast(exec_time));
-        }
-
         self.executor.execute(&self.expression) catch |e| {
             std.log.err("Error! Query execution failed: {any}, query: \"{s}\"", .{ e, self.query });
             self.io_context.enqueueResponse(i8, ExecutionError, -1, ExecutionError.ExecutionFailed);

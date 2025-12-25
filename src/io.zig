@@ -291,6 +291,37 @@ pub const IO = struct {
         }
     };
 
+    pub const WriteResponseTask = struct {
+        allocator: std.mem.Allocator,
+        io_context: *IoContext,
+
+        fn run(ptr: *anyopaque) void {
+            const self: *WriteResponseTask = @ptrCast(@alignCast(ptr));
+            defer {
+                const exec_time = std.time.microTimestamp() - self.io_context.start_time;
+                recordMetric(global_context.getMetricsAggregator(), MetricKind.requestProcessingTime, @intCast(exec_time));
+            }
+
+            self.io_context.writeResponse() catch |e| {
+                std.log.err("Error! Failed to write response: {any}", .{e});
+            };
+        }
+
+        fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+            const self: *WriteResponseTask = @ptrCast(@alignCast(ptr));
+            allocator.destroy(self);
+        }
+
+        fn task(self: *WriteResponseTask) Task {
+            return .{
+                .context = self,
+                .run_fn = run,
+                .destroy_fn = destroy,
+                .enqued_at = std.time.microTimestamp(),
+            };
+        }
+    };
+
     pub fn init(allocator: std.mem.Allocator) !IO {
         const address = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, DEFAULT_PORT);
         const socket_handle = try posix.socket(
@@ -414,24 +445,28 @@ pub const IO = struct {
                         io_context.start_time = start_time;
 
                         const task_queue = global_context.getTaskQueue();
-                        var io_task = task_queue.?.allocator.create(ReadRequestTask) catch |e| {
-                            std.log.err("Error! Failed to allocate an IO task: {any}", .{e});
+                        var read_request_task = task_queue.?.allocator.create(ReadRequestTask) catch |e| {
+                            std.log.err("Error! Failed to allocate a request reading task: {any}", .{e});
                             continue;
                         };
 
-                        io_task.* = ReadRequestTask{ .allocator = self.allocator, .io_context = io_context };
+                        read_request_task.* = ReadRequestTask{ .allocator = self.allocator, .io_context = io_context };
 
-                        global_context.getTaskQueue().?.enqueue(io_task.task());
+                        global_context.getTaskQueue().?.enqueue(read_request_task.task());
                     } else if (event.filter == std.posix.system.EVFILT.WRITE) {
-                        var io_context = self.getIoContext(ready_socket) orelse {
+                        const io_context = self.getIoContext(ready_socket) orelse {
                             std.log.err("Error! Failed to find IO context for socket: {d}", .{ready_socket});
                             continue;
                         };
 
-                        io_context.writeResponse() catch |e| {
-                            std.log.err("Error! Failed to write response: {any}", .{e});
+                        const task_queue = global_context.getTaskQueue();
+                        var write_response_task = task_queue.?.allocator.create(WriteResponseTask) catch |e| {
+                            std.log.err("Error! Failed to allocate a response writing task: {any}", .{e});
                             continue;
                         };
+
+                        write_response_task.* = WriteResponseTask{ .allocator = self.allocator, .io_context = io_context };
+                        global_context.getTaskQueue().?.enqueue(write_response_task.task());
                     }
                 }
             }
