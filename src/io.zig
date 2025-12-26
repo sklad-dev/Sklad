@@ -145,6 +145,7 @@ pub const IO = struct {
             var written: usize = 0;
             while (written < message.len) {
                 const n = posix.write(self.socket, message[written..]) catch |e| {
+                    std.log.err("Error! Failed to write response to socket: {any}", .{e});
                     self.closeSocket();
                     return e;
                 };
@@ -366,14 +367,7 @@ pub const IO = struct {
             return;
         };
 
-        _ = posix.kevent(self.kqueue_descriptor, &.{.{
-            .ident = @intCast(self.socket_handle),
-            .filter = posix.system.EVFILT.READ,
-            .flags = posix.system.EV.ADD,
-            .fflags = 0,
-            .data = 0,
-            .udata = @intCast(self.socket_handle),
-        }}, &.{}, null) catch |e| {
+        self.addSocketEvent() catch |e| {
             std.log.err("Error! Failed to enable socket listening: {any}", .{e});
             return;
         };
@@ -392,81 +386,12 @@ pub const IO = struct {
             for (self.event_list[0..ready_count]) |event| {
                 const ready_socket: i32 = @intCast(event.udata);
                 if (ready_socket == self.socket_handle) {
-                    const client_socket = posix.accept(
-                        self.socket_handle,
-                        null,
-                        null,
-                        posix.SOCK.NONBLOCK,
-                    ) catch |e| {
-                        std.log.err("Error! Failed to accept connection: {any}", .{e});
-                        continue;
-                    };
-
-                    const io_context = self.allocator.create(IoContext) catch |e| {
-                        std.log.err("Error! Failed to allocate IO context: {any}", .{e});
-                        posix.close(client_socket);
-                        continue;
-                    };
-
-                    io_context.* = IoContext.init(self, client_socket, 0) catch |e| {
-                        std.log.err("Error! Failed to create IO context: {any}", .{e});
-                        posix.close(client_socket);
-                        continue;
-                    };
-
-                    if (!self.addIoContext(io_context)) {
-                        std.log.info("Connection limit reached, rejecting socket {d}", .{client_socket});
-                        io_context.cleanBuffer();
-                        self.allocator.destroy(io_context);
-                        posix.close(client_socket);
-                        continue;
-                    }
-
-                    self.addSocketReadEvent(client_socket) catch |e| {
-                        io_context.closeSocket();
-                        std.log.err("Error! Failed to enable socket listening: {any}", .{e});
-                        return;
-                    };
+                    if (!self.addClient()) continue;
                 } else {
                     if (event.filter == std.posix.system.EVFILT.READ) {
-                        const start_time = std.time.microTimestamp();
-
-                        var io_context = self.getIoContext(ready_socket) orelse {
-                            std.log.err("Error! Failed to find IO context for socket: {d}", .{ready_socket});
-                            continue;
-                        };
-
-                        const state: IoContextState = @enumFromInt(io_context.state.load(.acquire));
-                        if (state != .idle) continue;
-
-                        io_context.toNextState();
-
-                        recordMetric(global_context.getMetricsAggregator(), MetricKind.requestCounter, 1);
-                        io_context.start_time = start_time;
-
-                        const task_queue = global_context.getTaskQueue();
-                        var read_request_task = task_queue.?.allocator.create(ReadRequestTask) catch |e| {
-                            std.log.err("Error! Failed to allocate a request reading task: {any}", .{e});
-                            continue;
-                        };
-
-                        read_request_task.* = ReadRequestTask{ .allocator = self.allocator, .io_context = io_context };
-
-                        global_context.getTaskQueue().?.enqueue(read_request_task.task());
+                        if (!self.handleRead(ready_socket)) continue;
                     } else if (event.filter == std.posix.system.EVFILT.WRITE) {
-                        const io_context = self.getIoContext(ready_socket) orelse {
-                            std.log.err("Error! Failed to find IO context for socket: {d}", .{ready_socket});
-                            continue;
-                        };
-
-                        const task_queue = global_context.getTaskQueue();
-                        var write_response_task = task_queue.?.allocator.create(WriteResponseTask) catch |e| {
-                            std.log.err("Error! Failed to allocate a response writing task: {any}", .{e});
-                            continue;
-                        };
-
-                        write_response_task.* = WriteResponseTask{ .allocator = self.allocator, .io_context = io_context };
-                        global_context.getTaskQueue().?.enqueue(write_response_task.task());
+                        if (!self.handleWrite(ready_socket)) continue;
                     }
                 }
             }
@@ -550,6 +475,103 @@ pub const IO = struct {
             .data = 0,
             .udata = 0,
         }}, &.{}, null);
+    }
+
+    inline fn addSocketEvent(self: *const IO) !void {
+        _ = try posix.kevent(self.kqueue_descriptor, &.{.{
+            .ident = @intCast(self.socket_handle),
+            .filter = posix.system.EVFILT.READ,
+            .flags = posix.system.EV.ADD,
+            .fflags = 0,
+            .data = 0,
+            .udata = @intCast(self.socket_handle),
+        }}, &.{}, null);
+    }
+
+    fn addClient(self: *IO) bool {
+        const client_socket = posix.accept(
+            self.socket_handle,
+            null,
+            null,
+            posix.SOCK.NONBLOCK,
+        ) catch |e| {
+            std.log.err("Error! Failed to accept connection: {any}", .{e});
+            return false;
+        };
+
+        const io_context = self.allocator.create(IoContext) catch |e| {
+            std.log.err("Error! Failed to allocate IO context: {any}", .{e});
+            posix.close(client_socket);
+            return false;
+        };
+
+        io_context.* = IoContext.init(self, client_socket, 0) catch |e| {
+            std.log.err("Error! Failed to create IO context: {any}", .{e});
+            posix.close(client_socket);
+            return false;
+        };
+
+        if (!self.addIoContext(io_context)) {
+            std.log.info("Connection limit reached, rejecting socket {d}", .{client_socket});
+            io_context.cleanBuffer();
+            self.allocator.destroy(io_context);
+            posix.close(client_socket);
+            return false;
+        }
+
+        self.addSocketReadEvent(client_socket) catch |e| {
+            io_context.closeSocket();
+            std.log.err("Error! Failed to enable socket listening: {any}", .{e});
+            return false;
+        };
+
+        return true;
+    }
+
+    fn handleRead(self: *IO, client_socket: posix.socket_t) bool {
+        const start_time = std.time.microTimestamp();
+
+        var io_context = self.getIoContext(client_socket) orelse {
+            std.log.err("Error! Failed to find IO context for socket: {d}", .{client_socket});
+            return false;
+        };
+
+        const state: IoContextState = @enumFromInt(io_context.state.load(.acquire));
+        if (state != .idle) return false;
+
+        io_context.toNextState();
+
+        recordMetric(global_context.getMetricsAggregator(), MetricKind.requestCounter, 1);
+        io_context.start_time = start_time;
+
+        const task_queue = global_context.getTaskQueue();
+        var read_request_task = task_queue.?.allocator.create(ReadRequestTask) catch |e| {
+            std.log.err("Error! Failed to allocate a request reading task: {any}", .{e});
+            return false;
+        };
+
+        read_request_task.* = ReadRequestTask{ .allocator = self.allocator, .io_context = io_context };
+
+        global_context.getTaskQueue().?.enqueue(read_request_task.task());
+
+        return true;
+    }
+
+    fn handleWrite(self: *IO, client_socket: posix.socket_t) bool {
+        const io_context = self.getIoContext(client_socket) orelse {
+            std.log.err("Error! Failed to find IO context for socket: {d}", .{client_socket});
+            return false;
+        };
+
+        const task_queue = global_context.getTaskQueue();
+        var write_response_task = task_queue.?.allocator.create(WriteResponseTask) catch |e| {
+            std.log.err("Error! Failed to allocate a response writing task: {any}", .{e});
+            return false;
+        };
+
+        write_response_task.* = WriteResponseTask{ .allocator = self.allocator, .io_context = io_context };
+        global_context.getTaskQueue().?.enqueue(write_response_task.task());
+        return true;
     }
 
     fn getIoContext(self: *IO, socket: posix.socket_t) ?*IoContext {

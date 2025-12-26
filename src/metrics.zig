@@ -306,7 +306,7 @@ pub const MetricsAggregator = struct {
     }
 };
 
-pub fn recordMetric(aggregator: ?*MetricsAggregator, kind: MetricKind, value: u64) void {
+pub inline fn recordMetric(aggregator: ?*MetricsAggregator, kind: MetricKind, value: u64) void {
     if (aggregator) |a| {
         _ = a.record(.{
             .timestamp = std.time.microTimestamp(),
