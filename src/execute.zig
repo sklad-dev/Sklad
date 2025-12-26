@@ -19,12 +19,12 @@ pub const ExecutionError = error{
 
 pub const ExecuteTask = struct {
     allocator: std.mem.Allocator,
-    io_context: io.IO.IoContext,
+    io_context: *io.IO.IoContext,
     query: []u8,
     expression: parse.Expression,
     executor: Executor,
 
-    pub fn init(allocator: std.mem.Allocator, io_context: io.IO.IoContext, query: []u8, expression: parse.Expression) !ExecuteTask {
+    pub fn init(allocator: std.mem.Allocator, io_context: *io.IO.IoContext, query: []u8, expression: parse.Expression) !ExecuteTask {
         return .{
             .allocator = allocator,
             .io_context = io_context,
@@ -45,15 +45,9 @@ pub const ExecuteTask = struct {
 
     fn run(ptr: *anyopaque) void {
         const self: *ExecuteTask = @ptrCast(@alignCast(ptr));
-        defer {
-            const exec_time = std.time.microTimestamp() - self.io_context.start_time;
-            recordMetric(global_context.getMetricsAggregator(), MetricKind.requestProcessingTime, @intCast(exec_time));
-            std.posix.close(self.io_context.socket);
-        }
-
         self.executor.execute(&self.expression) catch |e| {
             std.log.err("Error! Query execution failed: {any}, query: \"{s}\"", .{ e, self.query });
-            self.io_context.sendResponse(i8, ExecutionError, self.allocator, -1, ExecutionError.ExecutionFailed);
+            self.io_context.enqueueResponse(i8, ExecutionError, -1, ExecutionError.ExecutionFailed);
         };
     }
 
@@ -72,10 +66,10 @@ pub const ExecuteTask = struct {
 
 const Executor = struct {
     allocator: std.mem.Allocator,
-    io_context: io.IO.IoContext,
+    io_context: *io.IO.IoContext,
     storage: *TypedStorage,
 
-    pub fn init(allocator: std.mem.Allocator, io_context: io.IO.IoContext) Executor {
+    pub fn init(allocator: std.mem.Allocator, io_context: *io.IO.IoContext) Executor {
         return .{
             .allocator = allocator,
             .io_context = io_context,
@@ -99,7 +93,7 @@ const Executor = struct {
         for (expression.pairs.items) |pair| {
             try self.storage.set(pair.key.value, pair.value.value, self.io_context.start_time);
         }
-        self.io_context.sendResponse(i8, ExecutionError, self.allocator, 0, null);
+        self.io_context.enqueueResponse(i8, ExecutionError, 0, null);
     }
 
     fn executeGetExpression(self: *Executor, expression: *parse.GetExpression) !void {
@@ -108,55 +102,55 @@ const Executor = struct {
             defer r.allocator.free(r.data);
             self.sendGetResult(r);
         } else {
-            self.io_context.sendResponse(i8, ExecutionError, self.allocator, -1, null);
+            self.io_context.enqueueResponse(i8, ExecutionError, -1, null);
         }
     }
 
     fn executeDeleteExpression(self: *Executor, expression: *parse.DeleteExpression) !void {
         try self.storage.delete(expression.key.value, self.io_context.start_time);
-        self.io_context.sendResponse(i8, ExecutionError, self.allocator, 0, null);
+        self.io_context.enqueueResponse(i8, ExecutionError, 0, null);
     }
 
     fn sendGetResult(self: *const Executor, result: TypedBinaryData) void {
         switch (result.data_type) {
             .boolean => {
                 const v = utils.intFromBytes(u8, result.data, 0);
-                self.io_context.sendResponse([]const u8, ExecutionError, self.allocator, if (v == 1) "true" else "false", null);
+                self.io_context.enqueueResponse([]const u8, ExecutionError, if (v == 1) "true" else "false", null);
             },
             .smallint => {
                 const v = utils.intFromBytes(i8, result.data, 0);
-                self.io_context.sendResponse(i8, ExecutionError, self.allocator, v, null);
+                self.io_context.enqueueResponse(i8, ExecutionError, v, null);
             },
             .int => {
                 const v = utils.intFromBytes(i32, result.data, 0);
-                self.io_context.sendResponse(i32, ExecutionError, self.allocator, v, null);
+                self.io_context.enqueueResponse(i32, ExecutionError, v, null);
             },
             .bigint => {
                 const v = utils.intFromBytes(i64, result.data, 0);
-                self.io_context.sendResponse(i64, ExecutionError, self.allocator, v, null);
+                self.io_context.enqueueResponse(i64, ExecutionError, v, null);
             },
             .smallserial => {
                 const v = utils.intFromBytes(u8, result.data, 0);
-                self.io_context.sendResponse(u8, ExecutionError, self.allocator, v, null);
+                self.io_context.enqueueResponse(u8, ExecutionError, v, null);
             },
             .serial => {
                 const v = utils.intFromBytes(u32, result.data, 0);
-                self.io_context.sendResponse(u32, ExecutionError, self.allocator, v, null);
+                self.io_context.enqueueResponse(u32, ExecutionError, v, null);
             },
             .bigserial => {
                 const v = utils.intFromBytes(u64, result.data, 0);
-                self.io_context.sendResponse(u64, ExecutionError, self.allocator, v, null);
+                self.io_context.enqueueResponse(u64, ExecutionError, v, null);
             },
             .float => {
                 const v = utils.intFromBytes(u32, result.data, 0);
-                self.io_context.sendResponse(f32, ExecutionError, self.allocator, @as(f32, @bitCast(v)), null);
+                self.io_context.enqueueResponse(f32, ExecutionError, @as(f32, @bitCast(v)), null);
             },
             .bigfloat => {
                 const v = utils.intFromBytes(u64, result.data, 0);
-                self.io_context.sendResponse(f64, ExecutionError, self.allocator, @as(f64, @bitCast(v)), null);
+                self.io_context.enqueueResponse(f64, ExecutionError, @as(f64, @bitCast(v)), null);
             },
             .string => {
-                self.io_context.sendResponse([]const u8, ExecutionError, self.allocator, result.data, null);
+                self.io_context.enqueueResponse([]const u8, ExecutionError, result.data, null);
             },
         }
     }

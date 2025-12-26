@@ -325,10 +325,10 @@ pub const TokenizedQuery = struct {
 
 pub const QueryProcessingTask = struct {
     allocator: std.mem.Allocator,
-    io_context: io.IO.IoContext,
+    io_context: *io.IO.IoContext,
     query: []u8,
 
-    pub fn init(allocator: std.mem.Allocator, query_size: u64, io_context: io.IO.IoContext) !QueryProcessingTask {
+    pub fn init(allocator: std.mem.Allocator, query_size: u64, io_context: *io.IO.IoContext) !QueryProcessingTask {
         return .{
             .allocator = allocator,
             .io_context = io_context,
@@ -350,8 +350,8 @@ pub const QueryProcessingTask = struct {
 
         var tokens = std.ArrayList(Token).initCapacity(self.allocator, 16) catch |e| {
             std.log.err("Error! Failed to allocate a parser task: {any}", .{e});
-            self.io_context.sendResponse(i8, ApplicationError, self.allocator, -1, ApplicationError.InternalError);
-            std.posix.close(self.io_context.socket);
+            self.allocator.free(self.query);
+            self.io_context.enqueueResponse(i8, ApplicationError, -1, ApplicationError.InternalError);
             return;
         };
         defer tokens.deinit(self.allocator);
@@ -359,15 +359,16 @@ pub const QueryProcessingTask = struct {
         var lexer = lexers.kvLexer(self.allocator, self.query, &tokens);
         const lex_result = lexer.lex();
         if (lex_result > 0) {
-            self.io_context.sendResponse(u64, LexingError, self.allocator, lex_result, LexingError.InvalidToken);
-            std.posix.close(self.io_context.socket);
+            self.allocator.free(self.query);
+            self.io_context.enqueueResponse(u64, LexingError, lex_result, LexingError.InvalidToken);
+            return;
         }
 
         var tokenized_query = TokenizedQuery.init(self.allocator, &tokens);
         var expression = Expression.parse(self.allocator, &tokenized_query) catch |e| {
             std.log.err("Error! Query parsing failed: {any}, query: \"{s}\"", .{ e, self.query });
-            self.io_context.sendResponse(i8, ParserError, self.allocator, -1, ParserError.InvalidQuery);
-            std.posix.close(self.io_context.socket);
+            self.allocator.free(self.query);
+            self.io_context.enqueueResponse(i8, ParserError, -1, ParserError.InvalidQuery);
             return;
         };
 
@@ -375,6 +376,7 @@ pub const QueryProcessingTask = struct {
         var execute_task = task_queue.?.allocator.create(ExecuteTask) catch |e| {
             std.log.err("Error! Failed to allocate a parser task: {any}", .{e});
             self.handleParseError(&expression);
+            self.allocator.free(self.query);
             return;
         };
         execute_task.* = ExecuteTask.init(
@@ -385,6 +387,7 @@ pub const QueryProcessingTask = struct {
         ) catch |e| {
             std.log.err("Error! Failed to create a parser task: {any}", .{e});
             self.handleParseError(&expression);
+            self.allocator.free(self.query);
             return;
         };
 
@@ -402,8 +405,7 @@ pub const QueryProcessingTask = struct {
             .get => expression.get.destroy(),
             .delete => expression.delete.destroy(),
         }
-        self.io_context.sendResponse(i8, ApplicationError, self.allocator, -1, ApplicationError.InternalError);
-        std.posix.close(self.io_context.socket);
+        self.io_context.enqueueResponse(i8, ApplicationError, -1, ApplicationError.InternalError);
     }
 };
 
