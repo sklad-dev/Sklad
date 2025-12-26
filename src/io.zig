@@ -116,13 +116,13 @@ pub const IO = struct {
                     self.state.store(@intFromEnum(IoContextState.processing), .release);
                 },
                 .processing => {
-                    self.enableSocketWriteEvent();
                     self.state.store(@intFromEnum(IoContextState.writing), .release);
+                    self.enableSocketWriteEvent();
                 },
                 .writing => {
                     self.disableSocketWriteEvent();
-                    self.enableSocketReadEvent();
                     self.state.store(@intFromEnum(IoContextState.idle), .release);
+                    self.enableSocketReadEvent();
                 },
                 else => {},
             }
@@ -282,6 +282,7 @@ pub const IO = struct {
                     global_context.getTaskQueue().?.enqueue(query_task.task());
                 }
             } else {
+                std.log.err("Error! Request size {d} exceeds the maximum allowed size", .{bytes_read});
                 self.io_context.enqueueResponse(i8, IoError, -1, IoError.RequestTooLarge);
             }
         }
@@ -571,6 +572,9 @@ pub const IO = struct {
             std.log.err("Error! Failed to find IO context for socket: {d}", .{client_socket});
             return false;
         };
+
+        const state: IoContextState = @enumFromInt(io_context.state.load(.acquire));
+        if (state != .writing) return false;
 
         const task_queue = global_context.getTaskQueue();
         var write_response_task = task_queue.?.allocator.create(WriteResponseTask) catch |e| {
