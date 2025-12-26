@@ -350,6 +350,7 @@ pub const QueryProcessingTask = struct {
 
         var tokens = std.ArrayList(Token).initCapacity(self.allocator, 16) catch |e| {
             std.log.err("Error! Failed to allocate a parser task: {any}", .{e});
+            self.allocator.free(self.query);
             self.io_context.enqueueResponse(i8, ApplicationError, -1, ApplicationError.InternalError);
             return;
         };
@@ -358,6 +359,7 @@ pub const QueryProcessingTask = struct {
         var lexer = lexers.kvLexer(self.allocator, self.query, &tokens);
         const lex_result = lexer.lex();
         if (lex_result > 0) {
+            self.allocator.free(self.query);
             self.io_context.enqueueResponse(u64, LexingError, lex_result, LexingError.InvalidToken);
             return;
         }
@@ -365,6 +367,7 @@ pub const QueryProcessingTask = struct {
         var tokenized_query = TokenizedQuery.init(self.allocator, &tokens);
         var expression = Expression.parse(self.allocator, &tokenized_query) catch |e| {
             std.log.err("Error! Query parsing failed: {any}, query: \"{s}\"", .{ e, self.query });
+            self.allocator.free(self.query);
             self.io_context.enqueueResponse(i8, ParserError, -1, ParserError.InvalidQuery);
             return;
         };

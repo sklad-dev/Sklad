@@ -80,7 +80,9 @@ pub const IO = struct {
         has_written: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         socket: std.posix.socket_t,
         start_time: i64,
-        response_buffer: ?[]u8,
+        timer: std.time.Timer,
+        response_buffer: ?[]u8 = null,
+        bytes_written: usize = 0,
 
         pub inline fn init(io: *const IO, socket: std.posix.socket_t, start_time: i64) !IoContext {
             return .{
@@ -88,7 +90,7 @@ pub const IO = struct {
                 .io = io,
                 .socket = socket,
                 .start_time = start_time,
-                .response_buffer = null,
+                .timer = try std.time.Timer.start(),
             };
         }
 
@@ -97,12 +99,13 @@ pub const IO = struct {
                 self.allocator.free(buffer);
                 self.response_buffer = null;
             }
+            self.bytes_written = 0;
         }
 
         pub fn closeSocket(self: *IoContext) void {
-            self.state.store(@intFromEnum(IoContextState.closed), .release);
             std.posix.close(self.socket);
             self.cleanBuffer();
+            self.state.store(@intFromEnum(IoContextState.closed), .release);
         }
 
         pub fn toNextState(self: *IoContext) void {
@@ -141,10 +144,15 @@ pub const IO = struct {
         }
 
         pub fn writeResponse(self: *IoContext) !void {
-            const message = self.response_buffer.?;
-            var written: usize = 0;
-            while (written < message.len) {
-                const n = posix.write(self.socket, message[written..]) catch |e| {
+            const message = self.response_buffer orelse return;
+
+            while (self.bytes_written < message.len) {
+                const n = posix.write(self.socket, message[self.bytes_written..]) catch |e| {
+                    if (e == error.WouldBlock) {
+                        self.enableSocketWriteEvent();
+                        return;
+                    }
+
                     std.log.err("Error! Failed to write response to socket: {any}", .{e});
                     self.closeSocket();
                     return e;
@@ -153,11 +161,10 @@ pub const IO = struct {
                     self.closeSocket();
                     return IoError.ConnectionClosed;
                 }
-                written += n;
+                self.bytes_written += n;
             }
 
-            self.allocator.free(self.response_buffer.?);
-            self.response_buffer = null;
+            self.cleanBuffer();
             self.toNextState();
         }
 
@@ -193,6 +200,8 @@ pub const IO = struct {
         }
 
         inline fn prepareResponse(self: *IoContext, comptime T: type, comptime E: type, response: *const Response(T, E)) !void {
+            self.cleanBuffer();
+
             var writer = std.Io.Writer.Allocating.init(self.allocator);
             defer writer.deinit();
 
@@ -299,8 +308,8 @@ pub const IO = struct {
         fn run(ptr: *anyopaque) void {
             const self: *WriteResponseTask = @ptrCast(@alignCast(ptr));
             defer {
-                const exec_time = std.time.microTimestamp() - self.io_context.start_time;
-                recordMetric(global_context.getMetricsAggregator(), MetricKind.requestProcessingTime, @intCast(exec_time));
+                const exec_time = self.io_context.timer.read() / std.time.ns_per_us;
+                recordMetric(global_context.getMetricsAggregator(), MetricKind.requestProcessingTime, exec_time);
             }
 
             self.io_context.writeResponse() catch |e| {

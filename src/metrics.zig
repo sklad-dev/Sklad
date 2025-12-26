@@ -170,7 +170,8 @@ pub const MetricsSnapshot = struct {
         for (histogram.buckets, 0..) |count, i| {
             cumulative += count;
             while (j < thresholds.len and cumulative >= thresholds[j]) : (j += 1) {
-                percentiles[j] = histogram.bucket_bounds[i];
+                const bound_idx = @min(i, histogram.bucket_bounds.len - 1);
+                percentiles[j] = histogram.bucket_bounds[bound_idx];
             }
             if (j >= thresholds.len) break;
         }
