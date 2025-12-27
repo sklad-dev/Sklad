@@ -105,8 +105,10 @@ For storage, Sklad uses an LSM-tree (Log-Structured Merge Tree) to optimize writ
 
 ### More:
 1) [SSTable file structure](docs/sstable.md)
+2) [MANIFEST file](docs/manifest.md)
 
 ## Todo
+* Port to Linux, use io_uring for I/O
 * Add metrics: SSTable count per level and pending memtable count
 * End SSTables with pre-defined postifx to make sure the creation was completed
 * Add data integrity checks: CRC for SSTable files and per-record xxh3 for WAL
