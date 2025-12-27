@@ -80,21 +80,21 @@ Configuration file example:
 ```
 
 ### Parameters:
-* **worker_pool.min_workers** - (u8) minimum number of worker threads that will be kept alive
-* **worker_pool.max_workers** - (u8) maximum number of worker threads
-* **worker_pool.idle_timeout_seconds** - (i64) a timeout in seconds after which an idle worker thread is terminated
-* **worker_pool.task_wait_threshold_us** - (u64) a p95 (95th percentile) wait-time threshold for tasks in the queue; once exceeded, a new worker thread is spawned
-* **memtable.max_size** - (u64) maximum size of a memtable. After reaching the maximum size, the memtable is flushed to a SSTable file on disk
-* **max_level** - (u8) the memtable is implemented as a skip-list; this parameter sets the maximum height of a skip-list node's tower
-* **sstable.block_size** - (u32) the size of SSTable data block in bytes
-* **sstable.bloom_bits_per_key** - (u8) how many bits to use for each stored key
-* **sstable_cache.size** - (u8) SSTable cache capacity
-* **compaction.tiered.max_level** - (u8) maximum compaction level
-* **compaction.tiered.level_multiplier** - (u8) number of files compacted per compaction run
-* **compaction.tiered.level_threshold** - (u8) file-count threshold at a level that triggers compaction
-* **cleanup.interval_seconds** - (i64) minimum time between cleanup runs (seconds)
-* **cleanup.file_count_threshold** - (u16) minimum number of deleted files required to run cleanup
-* **max_connections** - (u16) maximum concurrent client connections
+* `worker_pool.min_workers` - (u8) minimum number of worker threads that will be kept alive
+* `worker_pool.max_workers` - (u8) maximum number of worker threads
+* `worker_pool.idle_timeout_seconds` - (i64) a timeout in seconds after which an idle worker thread is terminated
+* `worker_pool.task_wait_threshold_us` - (u64) a p95 (95th percentile) wait-time threshold for tasks in the queue; once exceeded, a new worker thread is spawned
+* `memtable.max_size` - (u64) maximum size of a memtable. After reaching the maximum size, the memtable is flushed to a SSTable file on disk
+* `max_level` - (u8) the memtable is implemented as a skip-list; this parameter sets the maximum height of a skip-list node's tower
+* `sstable.block_size` - (u32) the size of SSTable data block in bytes
+* `sstable.bloom_bits_per_key` - (u8) how many bits to use for each stored key
+* `sstable_cache.size` - (u8) SSTable cache capacity
+* `compaction.tiered.max_level` - (u8) maximum compaction level
+* `compaction.tiered.level_multiplier` - (u8) number of files compacted per compaction run
+* `compaction.tiered.level_threshold` - (u8) file-count threshold at a level that triggers compaction
+* `cleanup.interval_seconds` - (i64) minimum time between cleanup runs (seconds)
+* `cleanup.file_count_threshold` - (u16) minimum number of deleted files required to run cleanup
+* `max_connections` - (u16) maximum concurrent client connections
 
 ## 🏗️ Architecture
 Sklad is built around an asynchronous task queue with a small pool of worker threads. This design allows the system to efficiently handle a large number of concurrent requests without overloading resources.
