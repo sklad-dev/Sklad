@@ -695,6 +695,7 @@ pub const BinaryStorage = struct {
         }
 
         _ = self.pending_memtables.swap(new_stack, .acq_rel);
+        _ = old_stack.release();
     }
 
     fn deinitMemtables(self: *BinaryStorage) void {
