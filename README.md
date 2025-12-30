@@ -1,12 +1,5 @@
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Ubuntu+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
+# Sklad.
 
-<p align="center" style="font-weight: 700; font-size: 5rem; font-family: 'Ubuntu Mono', sans-serif">
-  Sklad.
-</p>
-
----
 **Sklad** is a high-performance key-value store that uses an asynchronous, non-blocking design and lock-free data structures to efficiently handle concurrent workloads.
 
 ## 👷‍♀️ Building Sklad
