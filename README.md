@@ -1,18 +1,22 @@
-<p align="center">
-  <img src='docs/img/sklad_logo.png?raw=true' width='25%'>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Ubuntu+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
+
+<p align="center" style="font-weight: 700; font-size: 5rem; font-family: 'Ubuntu Mono', sans-serif">
+  Sklad.
 </p>
 
-# Sklad
-Sklad is a high-performance key-value store that uses an asynchronous, non-blocking design and lock-free data structures to efficiently handle concurrent workloads.
+---
+**Sklad** is a high-performance key-value store that uses an asynchronous, non-blocking design and lock-free data structures to efficiently handle concurrent workloads.
 
 ## 👷‍♀️ Building Sklad
-Building Sklad is very straightforward. Install Zig toolchain and run
+Building Sklad is very straightforward. Install the Zig toolchain and run
 ```
 zig build --release=safe
 ```
 
 ## 🧑‍💻 Using Sklad
-There is a simple Python client: [sklient](https://github.com/sklad-db/sklient). Currently, the data store implements three operations
+There is a simple Python client: [sklient](https://github.com/sklad-db/sklient). Currently, the storage implements three operations:
 
 ### 1. Adding a new key-value pair:
 ```
@@ -24,14 +28,14 @@ set <key> <value>
 get <key>
 ```
 
-### 3. Deleting a data by key:
+### 3. Deleting data by key:
 ```
 delete <key>
 ```
 
-**Note**: The strings have to be surrounded with single quotes, e.g., this will work `get 'test'` while this will fail `get test`. It is worth removing the requirement to surround single-word strings with the quotes in the future.
+**Note**: Strings currently have to be surrounded with single quotes (e.g., `get 'test'`). Unquoted single-word strings like `get test` will fail to parse.
 
-Sklad is listening on TCP port 7733, awaiting incoming messages formatted as JSON strings with the following structure:
+Sklad listens on TCP port 7733, awaiting incoming messages formatted as JSON strings with the following structure:
 ```
 {
     "kind": 1,
@@ -41,7 +45,7 @@ Sklad is listening on TCP port 7733, awaiting incoming messages formatted as JSO
 ```
 
 ## 🔧 Configuration
-Currently, Sklad expects `config/configuration.json` file in the same folder as the executable.
+Currently, Sklad expects a `config/configuration.json` file next to the executable (i.e., `./config/configuration.json`).
 
 Configuration file example:
 
@@ -84,9 +88,9 @@ Configuration file example:
 * `worker_pool.max_workers` - (u8) maximum number of worker threads
 * `worker_pool.idle_timeout_seconds` - (i64) a timeout in seconds after which an idle worker thread is terminated
 * `worker_pool.task_wait_threshold_us` - (u64) a p95 (95th percentile) wait-time threshold for tasks in the queue; once exceeded, a new worker thread is spawned
-* `memtable.max_size` - (u64) maximum size of a memtable. After reaching the maximum size, the memtable is flushed to a SSTable file on disk
-* `max_level` - (u8) the memtable is implemented as a skip-list; this parameter sets the maximum height of a skip-list node's tower
-* `sstable.block_size` - (u32) the size of SSTable data block in bytes
+* `memtable.max_size` - (u64) maximum size of a memtable. After reaching the maximum size, the memtable is flushed to an SSTable file on disk
+* `memtable.max_level` - (u8) the memtable is implemented as a skip-list; this parameter sets the maximum height of a skip-list node's tower
+* `sstable.block_size` - (u32) the size of an SSTable data block in bytes
 * `sstable.bloom_bits_per_key` - (u8) how many bits to use for each stored key
 * `sstable_cache.size` - (u8) SSTable cache capacity
 * `compaction.tiered.max_level` - (u8) maximum compaction level
@@ -105,12 +109,13 @@ For storage, Sklad uses an LSM-tree (Log-Structured Merge Tree) to optimize writ
 
 ### More:
 1) [SSTable file structure](docs/sstable.md)
-2) [MANIFEST file](docs/manifest.md)
+2) [SSTable file management](docs/sstable_file_management.md)
+3) [MANIFEST file](docs/manifest.md)
 
 ## Todo
 * Port to Linux, use io_uring for I/O
 * Add metrics: SSTable count per level and pending memtable count
-* End SSTables with pre-defined postifx to make sure the creation was completed
+* End SSTables with a predefined postfix to ensure creation completed
 * Add data integrity checks: CRC for SSTable files and per-record xxh3 for WAL
 * TTL
 * Implement more advanced compaction strategies

@@ -59,14 +59,6 @@ pub const SSTableCache = struct {
             }
             defer _ = record.release();
 
-            if (record.getConst().is_deleted.load(.acquire)) {
-                if (self.entries[i].cmpxchgStrong(record, null, .acq_rel, .acquire) == null) {
-                    _ = self.size.fetchSub(1, .acq_rel);
-                    _ = record.release();
-                }
-                continue;
-            }
-
             const record_handle = record.getConst().table.handle;
             if (record_handle.level == handle.level and record_handle.file_id == handle.file_id) {
                 if (record.getConst().is_deleted.load(.acquire)) {
@@ -75,6 +67,14 @@ pub const SSTableCache = struct {
 
                 _ = record.acquire();
                 return record;
+            } else {
+                if (record.getConst().is_deleted.load(.acquire)) {
+                    if (self.entries[i].cmpxchgStrong(record, null, .acq_rel, .acquire) == null) {
+                        _ = self.size.fetchSub(1, .acq_rel);
+                        _ = record.release();
+                    }
+                    continue;
+                }
             }
         }
 

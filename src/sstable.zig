@@ -306,7 +306,7 @@ pub const SSTable = struct {
             try reader.seekTo(block_offset);
             _ = try reader.interface.readSliceAll(block_buffer);
 
-            const key_size = try utils.readNumber(u16, &reader.interface);
+            const key_size = utils.intFromBytes(u16, block_buffer, 0);
             const key = block_buffer[2 .. 2 + key_size];
 
             try utils.writeSizedValue(writer, key);
