@@ -153,6 +153,7 @@ pub const SSTableCache = struct {
         const table_ptr = try self.allocator.create(SSTable);
         errdefer self.allocator.destroy(table_ptr);
         table_ptr.* = try SSTable.open(self.allocator, handle);
+        errdefer table_ptr.close(true);
 
         const record = try self.allocator.create(CacheRecord);
         errdefer self.allocator.destroy(record);

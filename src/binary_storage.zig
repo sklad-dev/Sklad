@@ -676,9 +676,7 @@ pub const BinaryStorage = struct {
     }
 
     fn cleanupFlushedMemtables(self: *BinaryStorage) !void {
-        const old_stack = self.pending_memtables.load(.acquire) orelse return;
-        _ = old_stack.acquire();
-        defer _ = old_stack.release();
+        _ = self.pending_memtables.load(.acquire) orelse return;
 
         const new_stack = try self.allocator.create(PendingMemtableList);
         new_stack.* = PendingMemtableList.init(self.allocator, AddOnlyStack(PendingMemtable, pendingMemtableCleanup).init(self.allocator));
@@ -687,15 +685,20 @@ pub const BinaryStorage = struct {
             self.allocator.destroy(new_stack);
         }
 
-        var curr = old_stack.get().head;
+        const old_stack = self.pending_memtables.swap(new_stack, .acq_rel);
+        if (old_stack == null) return;
+
+        _ = old_stack.?.acquire();
+        defer _ = old_stack.?.release();
+
+        var curr = old_stack.?.get().head;
         while (curr) |node| : (curr = node.next) {
             if (!node.entry.flushed.load(.acquire)) {
                 new_stack.get().push(node.entry);
             }
         }
 
-        _ = self.pending_memtables.swap(new_stack, .acq_rel);
-        _ = old_stack.release();
+        _ = old_stack.?.release();
     }
 
     fn deinitMemtables(self: *BinaryStorage) void {
