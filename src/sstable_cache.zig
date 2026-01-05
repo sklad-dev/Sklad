@@ -1,15 +1,58 @@
 const std = @import("std");
+const global_context = @import("./global_context.zig");
 
+const AppendOnlyQueue = @import("./lock_free.zig").AppendOnlyQueue;
 const FileHandle = @import("./data_types.zig").FileHandle;
 const RefCounted = @import("./lock_free.zig").RefCounted;
 const SSTable = @import("./sstable.zig").SSTable;
 const TableFileManager = @import("./table_file_manager.zig").TableFileManager;
+
+pub const CacheCleanupTask = struct {
+    const Task = @import("./task_queue.zig").Task;
+
+    allocator: std.mem.Allocator,
+    cache: *SSTableCache,
+
+    pub fn init(allocator: std.mem.Allocator, cache: *SSTableCache) CacheCleanupTask {
+        return .{
+            .allocator = allocator,
+            .cache = cache,
+        };
+    }
+
+    pub fn task(self: *CacheCleanupTask) Task {
+        return .{
+            .context = self,
+            .run_fn = run,
+            .destroy_fn = destroy,
+            .enqued_at = std.time.microTimestamp(),
+        };
+    }
+
+    fn run(ptr: *anyopaque) void {
+        const self: *CacheCleanupTask = @ptrCast(@alignCast(ptr));
+        defer self.cache.cleanup_scheduled.store(false, .release);
+        self.cache.cleanupPendingDeletions() catch |e| {
+            self.cache.cleanup_scheduled.store(false, .release);
+            std.log.err("Error! Failed to cleanup SSTable cache: {any}\n", .{e});
+        };
+    }
+
+    fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+        const self: *CacheCleanupTask = @ptrCast(@alignCast(ptr));
+        allocator.destroy(self);
+    }
+};
+
+pub const PENDING_DELETION_THRESHOLD = 4;
 
 pub const SSTableCache = struct {
     allocator: std.mem.Allocator,
     capacity: u64,
     size: std.atomic.Value(u64),
     entries: []std.atomic.Value(?*CacheRecord),
+    pending_deletions: std.atomic.Value(*PendingDeletionQueue),
+    cleanup_scheduled: std.atomic.Value(bool),
     eviction_cursor: std.atomic.Value(u64),
 
     pub const Handle = struct {
@@ -22,6 +65,7 @@ pub const SSTableCache = struct {
         }
     };
     pub const CacheRecord = RefCounted(Handle);
+    pub const PendingDeletionQueue = AppendOnlyQueue(*CacheRecord, null);
 
     pub fn init(allocator: std.mem.Allocator, capacity: usize) !SSTableCache {
         var entries = try allocator.alloc(std.atomic.Value(?*CacheRecord), capacity);
@@ -29,11 +73,16 @@ pub const SSTableCache = struct {
             entries[i] = std.atomic.Value(?*CacheRecord).init(null);
         }
 
+        const pending_queue = try allocator.create(PendingDeletionQueue);
+        pending_queue.* = PendingDeletionQueue.init(allocator);
+
         return .{
             .allocator = allocator,
             .capacity = capacity,
             .size = std.atomic.Value(u64).init(0),
             .entries = entries,
+            .pending_deletions = std.atomic.Value(*PendingDeletionQueue).init(pending_queue),
+            .cleanup_scheduled = std.atomic.Value(bool).init(false),
             .eviction_cursor = std.atomic.Value(u64).init(0),
         };
     }
@@ -46,36 +95,42 @@ pub const SSTableCache = struct {
             }
         }
         self.allocator.free(self.entries);
+
+        const pending_queue = self.pending_deletions.load(.acquire);
+        var curr = pending_queue.head.next;
+        while (curr) |node| : (curr = node.next) {
+            if (node.entry) |record| {
+                record.value.deinit();
+                self.allocator.destroy(record);
+            }
+        }
+        pending_queue.deinit();
+        self.allocator.destroy(pending_queue);
     }
 
     pub fn get(self: *SSTableCache, handle: FileHandle, file_manager: *TableFileManager) !?*CacheRecord {
         for (0..self.capacity) |i| {
             const record = self.entries[i].load(.acquire) orelse continue;
 
-            const old_count = record.acquire() - 1;
-            if (old_count == 0) {
+            _ = record.tryAcquire() orelse continue;
+            if (self.entries[i].load(.acquire) != record) {
                 _ = record.release();
                 continue;
             }
-            defer _ = record.release();
 
             const record_handle = record.getConst().table.handle;
             if (record_handle.level == handle.level and record_handle.file_id == handle.file_id) {
                 if (record.getConst().is_deleted.load(.acquire)) {
+                    _ = record.release();
                     return null;
                 }
-
-                _ = record.acquire();
                 return record;
-            } else {
-                if (record.getConst().is_deleted.load(.acquire)) {
-                    if (self.entries[i].cmpxchgStrong(record, null, .acq_rel, .acquire) == null) {
-                        _ = self.size.fetchSub(1, .acq_rel);
-                        _ = record.release();
-                    }
-                    continue;
-                }
+            } else if (record.getConst().is_deleted.load(.acquire)) {
+                _ = record.release();
+                continue;
             }
+
+            _ = record.release();
         }
 
         const file_list = file_manager.acquireFilesAtLevel(handle.level) orelse return null;
@@ -89,73 +144,163 @@ pub const SSTableCache = struct {
                 break;
             }
         }
-
-        if (!found) {
-            return null;
-        }
+        if (!found) return null;
 
         if (self.size.load(.acquire) >= self.capacity) {
             self.tryEvictOne();
         }
 
-        const table_value = try SSTable.open(self.allocator, handle);
-
         const table_ptr = try self.allocator.create(SSTable);
         errdefer self.allocator.destroy(table_ptr);
-        table_ptr.* = table_value;
+        table_ptr.* = try SSTable.open(self.allocator, handle);
 
         const record = try self.allocator.create(CacheRecord);
         errdefer self.allocator.destroy(record);
+
         record.* = CacheRecord.init(self.allocator, .{
             .allocator = self.allocator,
             .table = table_ptr,
             .is_deleted = std.atomic.Value(bool).init(false),
         });
+        _ = record.acquire();
 
         const start = self.eviction_cursor.load(.acquire);
-        var inserted = false;
+        var cached = false;
         for (0..self.capacity) |offset| {
             const i = (start + self.capacity - offset) % self.capacity;
-            if (self.entries[i].cmpxchgStrong(
-                null,
-                record,
-                .acq_rel,
-                .acquire,
-            )) |_| {
+            if (self.entries[i].cmpxchgStrong(null, record, .acq_rel, .acquire)) |_| {
                 continue;
             } else {
                 _ = self.size.fetchAdd(1, .acq_rel);
-                self.eviction_cursor.store((i + 1) % self.capacity, .release);
-                inserted = true;
+                cached = true;
                 break;
             }
         }
 
-        _ = record.acquire();
+        if (!cached) {
+            _ = record.release();
+        }
         return record;
     }
 
-    fn tryEvictOne(self: *SSTableCache) void {
-        const start = self.eviction_cursor.load(.acquire);
+    pub fn cleanupPendingDeletions(self: *SSTableCache) !void {
+        const new_queue = try self.allocator.create(PendingDeletionQueue);
+        errdefer self.allocator.destroy(new_queue);
+        new_queue.* = PendingDeletionQueue.init(self.allocator);
 
-        for (0..self.capacity) |offset| {
-            const idx = (start + offset) % self.capacity;
+        const old_queue = self.pending_deletions.swap(new_queue, .acq_rel);
 
-            if (self.entries[idx].load(.acquire)) |record| {
-                const current_refs = record.ref_count.load(.acquire);
-                if (current_refs == 1) {
-                    if (self.entries[idx].cmpxchgStrong(record, null, .acq_rel, .acquire) == null) {
-                        _ = self.size.fetchSub(1, .acq_rel);
-                        self.eviction_cursor.store((idx + 1) % self.capacity, .release);
-
-                        _ = record.release();
-                        return;
-                    }
+        var curr = old_queue.head.next;
+        while (curr) |node| : (curr = node.next) {
+            if (node.entry) |record| {
+                if (record.ref_count.load(.acquire) == 1) {
+                    _ = record.release();
+                } else {
+                    self.pending_deletions.load(.acquire).enqueue(record);
                 }
             }
         }
 
-        self.eviction_cursor.store((start + 1) % self.capacity, .release);
+        old_queue.deinit();
+        self.allocator.destroy(old_queue);
+    }
+
+    fn tryEvictOne(self: *SSTableCache) void {
+        const start = self.eviction_cursor.load(.acquire);
+        if (!self.tryEvictDeleted(start)) _ = self.tryEvictUnused(start);
+
+        if (self.shouldRunCleanup()) {
+            const task_queue = global_context.getTaskQueue();
+            var cleanup_task = task_queue.?.allocator.create(CacheCleanupTask) catch |e| {
+                std.log.err("Error! Failed to create cleanup task: {any}", .{e});
+                return;
+            };
+            cleanup_task.* = CacheCleanupTask.init(task_queue.?.allocator, self);
+            task_queue.?.enqueue(cleanup_task.task());
+        }
+    }
+
+    fn tryEvictDeleted(self: *SSTableCache, start: u64) bool {
+        for (0..self.capacity) |offset| {
+            const idx = (start + offset) % self.capacity;
+
+            if (self.entries[idx].load(.acquire)) |record| {
+                _ = record.tryAcquire() orelse continue;
+                if (self.entries[idx].load(.acquire) != record) {
+                    _ = record.release();
+                    continue;
+                }
+
+                if (record.getConst().is_deleted.load(.acquire)) {
+                    if (self.entries[idx].cmpxchgStrong(record, null, .acq_rel, .acquire) == null) {
+                        _ = self.size.fetchSub(1, .acq_rel);
+                        self.eviction_cursor.store((idx + 1) % self.capacity, .release);
+                        if (record.ref_count.load(.acquire) == 2) {
+                            _ = record.release();
+                            _ = record.release();
+                            return true;
+                        } else {
+                            self.pending_deletions.load(.acquire).enqueue(record);
+                            _ = record.release();
+                            return true;
+                        }
+                    }
+                }
+
+                _ = record.release();
+            }
+        }
+
+        return false;
+    }
+
+    fn tryEvictUnused(self: *SSTableCache, start: u64) bool {
+        for (0..self.capacity) |offset| {
+            const idx = (start + offset) % self.capacity;
+
+            if (self.entries[idx].load(.acquire)) |record| {
+                _ = record.tryAcquire() orelse continue;
+                if (self.entries[idx].load(.acquire) != record) {
+                    _ = record.release();
+                    continue;
+                }
+
+                if (record.ref_count.load(.acquire) == 2) {
+                    if (self.entries[idx].cmpxchgStrong(record, null, .acq_rel, .acquire) == null) {
+                        _ = self.size.fetchSub(1, .acq_rel);
+                        self.eviction_cursor.store((idx + 1) % self.capacity, .release);
+                        if (record.ref_count.load(.acquire) == 2) {
+                            _ = record.release();
+                            _ = record.release();
+                            return true;
+                        } else {
+                            self.pending_deletions.load(.acquire).enqueue(record);
+                            _ = record.release();
+                            return true;
+                        }
+                    }
+                }
+
+                _ = record.release();
+            }
+        }
+
+        return false;
+    }
+
+    fn shouldRunCleanup(self: *SSTableCache) bool {
+        if (self.cleanup_scheduled.load(.acquire)) return false;
+
+        const pending_queue = self.pending_deletions.load(.acquire);
+        var count: u64 = 0;
+        var curr = pending_queue.head.next;
+        while (curr) |node| : (curr = node.next) {
+            count += 1;
+            if (count >= PENDING_DELETION_THRESHOLD) {
+                return !self.cleanup_scheduled.swap(true, .acq_rel);
+            }
+        }
+        return false;
     }
 
     fn handleCleanup(allocator: std.mem.Allocator, handle: *Handle) void {

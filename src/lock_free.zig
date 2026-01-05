@@ -40,6 +40,19 @@ pub fn RefCounted(comptime T: type) type {
             return self.ref_count.fetchAdd(1, .acq_rel) + 1;
         }
 
+        pub inline fn tryAcquire(self: *Self) ?u64 {
+            var attempts: u64 = 0;
+            var current = self.ref_count.load(.acquire);
+            while (current > 0) : (attempts += 1) {
+                if (self.ref_count.cmpxchgStrong(current, current + 1, .acq_rel, .acquire)) |updated| {
+                    current = updated;
+                } else {
+                    return current + 1;
+                }
+            }
+            return null;
+        }
+
         pub inline fn get(self: *Self) *T {
             return &self.value;
         }
