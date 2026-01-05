@@ -253,7 +253,7 @@ pub const SSTable = struct {
                 4 +
                 (@as(u32, @intCast(block_offsets.items.len)) + 1) * 4;
             if (data_block.offset + record_size_with_offset > block_size) {
-                try self.writeDataBlock(writer, &data_block, &block_offsets);
+                try writeDataBlock(writer, &data_block, &block_offsets);
                 blocks_number += 1;
             }
 
@@ -265,14 +265,14 @@ pub const SSTable = struct {
         }
         if (block_offsets.items.len > 0) {
             blocks_number += 1;
-            try self.writeDataBlock(writer, &data_block, &block_offsets);
+            try writeDataBlock(writer, &data_block, &block_offsets);
         }
         self.records_number = i;
 
         return blocks_number;
     }
 
-    fn writeDataBlock(self: *SSTable, writer: *FileWriter, data_block: *DataBlock, block_offsets: *std.ArrayList(u32)) !void {
+    fn writeDataBlock(writer: *FileWriter, data_block: *DataBlock, block_offsets: *std.ArrayList(u32)) !void {
         const num_offsets = block_offsets.items.len;
         const buffer_len = data_block.buffer.len;
         @memcpy(data_block.buffer[buffer_len - 4 ..], &utils.intToBytes(u32, @intCast(block_offsets.items.len)));
@@ -287,7 +287,7 @@ pub const SSTable = struct {
         try writer.interface.writeAll(data_block.buffer);
         @memset(data_block.buffer, 0);
         data_block.offset = 0;
-        block_offsets.clearAndFree(self.allocator);
+        block_offsets.clearRetainingCapacity();
     }
 
     inline fn writeIndexBlock(self: *SSTable, writer: *FileWriter, blocks_number: u32) !void {
