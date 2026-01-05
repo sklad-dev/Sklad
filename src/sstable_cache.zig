@@ -207,7 +207,9 @@ pub const SSTableCache = struct {
 
     fn tryEvictOne(self: *SSTableCache) void {
         const start = self.eviction_cursor.load(.acquire);
-        if (!self.tryEvictDeleted(start)) _ = self.tryEvictUnused(start);
+        if (!self.tryEvict(start, EvictIfDeleted.condition())) {
+            _ = self.tryEvict(start, EvictIfUnused.condition());
+        }
 
         if (self.shouldRunCleanup()) {
             const task_queue = global_context.getTaskQueue();
@@ -220,41 +222,39 @@ pub const SSTableCache = struct {
         }
     }
 
-    fn tryEvictDeleted(self: *SSTableCache, start: u64) bool {
-        for (0..self.capacity) |offset| {
-            const idx = (start + offset) % self.capacity;
+    const EvictionCondition = struct {
+        check_fn: *const fn (cache_record: *const CacheRecord) bool,
 
-            if (self.entries[idx].load(.acquire)) |record| {
-                _ = record.tryAcquire() orelse continue;
-                if (self.entries[idx].load(.acquire) != record) {
-                    _ = record.release();
-                    continue;
-                }
+        pub inline fn check(self: *const EvictionCondition, cache_record: *const CacheRecord) bool {
+            return self.check_fn(cache_record);
+        }
+    };
 
-                if (record.getConst().is_deleted.load(.acquire)) {
-                    if (self.entries[idx].cmpxchgStrong(record, null, .acq_rel, .acquire) == null) {
-                        _ = self.size.fetchSub(1, .acq_rel);
-                        self.eviction_cursor.store((idx + 1) % self.capacity, .release);
-                        if (record.ref_count.load(.acquire) == 2) {
-                            _ = record.release();
-                            _ = record.release();
-                            return true;
-                        } else {
-                            self.pending_deletions.load(.acquire).enqueue(record);
-                            _ = record.release();
-                            return true;
-                        }
-                    }
-                }
-
-                _ = record.release();
-            }
+    const EvictIfDeleted = struct {
+        pub inline fn condition() EvictionCondition {
+            return .{
+                .check_fn = check,
+            };
         }
 
-        return false;
-    }
+        fn check(cache_record: *const CacheRecord) bool {
+            return cache_record.getConst().is_deleted.load(.acquire);
+        }
+    };
 
-    fn tryEvictUnused(self: *SSTableCache, start: u64) bool {
+    const EvictIfUnused = struct {
+        pub inline fn condition() EvictionCondition {
+            return .{
+                .check_fn = check,
+            };
+        }
+
+        fn check(cache_record: *const CacheRecord) bool {
+            return cache_record.ref_count.load(.acquire) == 2;
+        }
+    };
+
+    fn tryEvict(self: *SSTableCache, start: u64, condition: EvictionCondition) bool {
         for (0..self.capacity) |offset| {
             const idx = (start + offset) % self.capacity;
 
@@ -265,7 +265,7 @@ pub const SSTableCache = struct {
                     continue;
                 }
 
-                if (record.ref_count.load(.acquire) == 2) {
+                if (condition.check(record)) {
                     if (self.entries[idx].cmpxchgStrong(record, null, .acq_rel, .acquire) == null) {
                         _ = self.size.fetchSub(1, .acq_rel);
                         self.eviction_cursor.store((idx + 1) % self.capacity, .release);
