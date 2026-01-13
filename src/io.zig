@@ -80,7 +80,6 @@ pub const IO = struct {
         has_written: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         socket: std.posix.socket_t,
         start_time: i64,
-        timer: std.time.Timer,
         response_buffer: ?[]u8 = null,
         bytes_written: usize = 0,
 
@@ -90,7 +89,6 @@ pub const IO = struct {
                 .io = io,
                 .socket = socket,
                 .start_time = start_time,
-                .timer = try std.time.Timer.start(),
             };
         }
 
@@ -163,6 +161,9 @@ pub const IO = struct {
                 }
                 self.bytes_written += n;
             }
+
+            const exec_time = @as(u64, @intCast(std.time.microTimestamp() - self.start_time));
+            recordMetric(global_context.getMetricsAggregator(), MetricKind.requestProcessingTime, exec_time);
 
             self.cleanBuffer();
             self.toNextState();
@@ -308,11 +309,6 @@ pub const IO = struct {
 
         fn run(ptr: *anyopaque) void {
             const self: *WriteResponseTask = @ptrCast(@alignCast(ptr));
-            defer {
-                const exec_time = self.io_context.timer.read() / std.time.ns_per_us;
-                recordMetric(global_context.getMetricsAggregator(), MetricKind.requestProcessingTime, exec_time);
-            }
-
             self.io_context.writeResponse() catch |e| {
                 std.log.err("Error! Failed to write response: {any}", .{e});
             };

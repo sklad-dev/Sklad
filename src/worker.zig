@@ -54,9 +54,11 @@ pub fn runTask() void {
     defer recordMetric(metrics, MetricKind.workerCounter, 0);
 
     var last_activity = std.time.microTimestamp();
+    var idle_iterations: u64 = 0;
     while (true) {
         var task = task_queue.dequeue();
         if (task != null) {
+            idle_iterations = 0;
             last_activity = std.time.microTimestamp();
             defer task.?.destroy(task_queue.allocator);
             task.?.run();
@@ -65,15 +67,28 @@ pub fn runTask() void {
                 _ = worker_manager.trySpawnExtraWorker();
             }
         } else {
-            std.Thread.sleep(std.time.ns_per_ms);
-
             const now = std.time.microTimestamp();
+            idle_iterations += 1;
+
             if (now - last_activity >= worker_manager.idle_timeout_us) {
                 if (worker_manager.tryMarkIdleExit()) {
                     break;
                 } else {
                     last_activity = now;
                 }
+            } else {
+                if (idle_iterations < 5) {
+                    std.atomic.spinLoopHint();
+                    continue;
+                } else if (idle_iterations < 25) {
+                    std.Thread.yield() catch {};
+                    continue;
+                } else if (idle_iterations < 100) {
+                    std.Thread.sleep(100 * std.time.ns_per_us);
+                    continue;
+                }
+
+                std.Thread.sleep(std.time.ns_per_ms);
             }
         }
     }

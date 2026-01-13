@@ -6,7 +6,6 @@ const parse = @import("./parse.zig");
 const utils = @import("./utils.zig");
 
 const MetricKind = @import("./metrics.zig").MetricKind;
-const recordMetric = @import("./metrics.zig").recordMetric;
 const Task = @import("./task_queue.zig").Task;
 const TypedBinaryData = @import("./data_types.zig").TypedBinaryData;
 const TypedStorage = @import("./typed_storage.zig").TypedStorage;

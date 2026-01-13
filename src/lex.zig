@@ -3,7 +3,6 @@ const std = @import("std");
 const global_context = @import("./global_context.zig");
 const io = @import("./io.zig");
 const ApplicationError = @import("./constants.zig").ApplicationError;
-const Task = @import("./task_queue.zig").Task;
 
 pub const LexingError = error{
     InvalidToken,

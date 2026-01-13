@@ -21,7 +21,6 @@ pub const MetricKind = enum(u8) {
 };
 
 pub const MetricRecord = packed struct {
-    timestamp: i64,
     value: u64,
     kind: u32,
 };
@@ -66,10 +65,10 @@ const Histogram = struct {
 };
 
 // bucket sizes in microseconds
-const DEFAULT_LATENCY_BOUNDS: [14]u64 = [_]u64{
-    1,       5,       10,    50,    100,    500,
-    1000,    5000,    10000, 50000, 100000, 500000,
-    1000000, 5000000,
+const DEFAULT_LATENCY_BOUNDS: [22]u64 = [_]u64{
+    10,     50,     100,     150,     200,  250,  300,  400,   500,
+    1000,   1500,   2000,    2500,    3000, 4000, 5000, 10000, 50000,
+    100000, 500000, 1000000, 5000000,
 };
 
 const Metrics = struct {
@@ -254,9 +253,11 @@ pub const MetricsAggregator = struct {
         self.metrics.timestamp = std.time.microTimestamp();
 
         var metric: ?MetricRecord = undefined;
+        var idle_iterations: u64 = 0;
         while (true) {
             metric = self.channel.dequeue();
             if (metric) |m| {
+                idle_iterations = 0;
                 switch (m.kind) {
                     MetricKind.asInt(u32, .requestProcessingTime) => self.metrics.request_latency.record(m.value),
                     MetricKind.asInt(u32, .taskProcessingTime) => self.metrics.task_latency.record(m.value),
@@ -278,6 +279,16 @@ pub const MetricsAggregator = struct {
                     },
                     else => {},
                 }
+            } else {
+                idle_iterations += 1;
+                if (idle_iterations < 20) {
+                    std.atomic.spinLoopHint();
+                    continue;
+                } else if (idle_iterations < 100) {
+                    std.Thread.yield() catch {};
+                    continue;
+                }
+                std.Thread.sleep(50 * std.time.ns_per_us);
             }
 
             if (self.tickPassed()) {
@@ -310,7 +321,6 @@ pub const MetricsAggregator = struct {
 pub inline fn recordMetric(aggregator: ?*MetricsAggregator, kind: MetricKind, value: u64) void {
     if (aggregator) |a| {
         _ = a.record(.{
-            .timestamp = std.time.microTimestamp(),
             .value = value,
             .kind = @intFromEnum(kind),
         });
