@@ -1,0 +1,10 @@
+services:
+  sklad:
+    stdin_open: true
+    tty: true
+    build:
+      dockerfile: Dockerfile
+    ports:
+      - "7733:7733/tcp"
+    volumes:
+      - .:/app
