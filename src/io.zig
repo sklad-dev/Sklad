@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 
 const global_context = @import("./global_context.zig");
@@ -31,12 +32,17 @@ pub const IO = struct {
     allocator: std.mem.Allocator,
     address: std.net.Address,
     socket_handle: posix.socket_t,
-    kqueue_descriptor: i32 = -1,
-    event_list: [MAX_EVENTS]posix.system.Kevent = undefined,
+    queue: Queue = Queue{},
     client_contexts: []?*IoContext,
 
     const BACKLOG_SIZE: i32 = 128;
     const MAX_EVENTS: usize = 128;
+
+    const Queue = switch (builtin.target.os.tag) {
+        .linux => @import("./io/epoll.zig").Queue(MAX_EVENTS),
+        .macos, .tvos, .watchos, .ios, .freebsd, .netbsd, .openbsd => @import("./io/kqueue.zig").Queue(MAX_EVENTS),
+        else => @compileError("IO is not supported for platform"),
+    };
 
     pub const IoError = error{
         RequestReadingError,
@@ -83,7 +89,7 @@ pub const IO = struct {
         response_buffer: ?[]u8 = null,
         bytes_written: usize = 0,
 
-        pub inline fn init(io: *const IO, socket: std.posix.socket_t, start_time: i64) !IoContext {
+        pub inline fn init(io: *IO, socket: std.posix.socket_t, start_time: i64) !IoContext {
             return .{
                 .allocator = io.allocator,
                 .io = io,
@@ -170,32 +176,26 @@ pub const IO = struct {
         }
 
         pub inline fn disableSocketReadEvent(self: *const IoContext) void {
-            self.io.disableSocketReadEvent(self.socket) catch |e| {
+            self.io.queue.disableSocketReadEvent(self.socket) catch |e| {
                 std.log.err("Error! Failed to disable socket read events: {any}", .{e});
             };
         }
 
         pub inline fn enableSocketReadEvent(self: *const IoContext) void {
-            self.io.enableSocketReadEvent(self.socket) catch |e| {
+            self.io.queue.enableSocketReadEvent(self.socket) catch |e| {
                 std.log.err("Error! Failed to enable socket read events: {any}", .{e});
             };
         }
 
         pub inline fn enableSocketWriteEvent(self: *IoContext) void {
-            if (self.has_written.load(.acquire)) {
-                self.io.enableSocketWriteEvent(self.socket) catch |e| {
-                    std.log.err("Error! Failed to enable socket write events: {any}", .{e});
-                };
-            } else {
-                self.io.addSocketWriteEvent(self.socket) catch |e| {
-                    std.log.err("Error! Failed to add socket write events: {any}", .{e});
-                };
-                self.has_written.store(true, .release);
-            }
+            self.io.queue.enableSocketWriteEvent(self.socket, self.has_written.load(.acquire)) catch |e| {
+                std.log.err("Error! Failed to enable socket write events: {any}", .{e});
+            };
+            self.has_written.store(true, .release);
         }
 
         pub inline fn disableSocketWriteEvent(self: *const IoContext) void {
-            self.io.disableSocketWriteEvent(self.socket) catch |e| {
+            self.io.queue.disableSocketWriteEvent(self.socket) catch |e| {
                 std.log.err("Error! Failed to disable socket write events: {any}", .{e});
             };
         }
@@ -330,7 +330,7 @@ pub const IO = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator) !IO {
-        const address = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, DEFAULT_PORT);
+        const address = std.net.Address.initIp4(.{ 0, 0, 0, 0 }, DEFAULT_PORT);
         const socket_handle = try posix.socket(
             address.any.family,
             posix.SOCK.STREAM | posix.SOCK.NONBLOCK,
@@ -368,35 +368,28 @@ pub const IO = struct {
             return;
         };
 
-        self.kqueue_descriptor = posix.kqueue() catch |e| {
-            std.log.err("Error! Failed to create kqueue descriptor: {any}", .{e});
+        self.queue.initialize() catch |e| {
+            std.log.err("Error! Failed to create I/O queue descriptor: {any}", .{e});
             return;
         };
 
-        self.addSocketEvent() catch |e| {
+        self.queue.addSocketEvent(self.socket_handle) catch |e| {
             std.log.err("Error! Failed to enable socket listening: {any}", .{e});
             return;
         };
 
         while (true) {
-            const ready_count = posix.kevent(
-                self.kqueue_descriptor,
-                &.{},
-                &self.event_list,
-                null,
-            ) catch |e| {
-                std.log.err("Error! Failed to wait for events: {any}", .{e});
-                continue;
-            };
+            const ready_count = self.queue.wait();
+            if (ready_count == 0) continue;
 
-            for (self.event_list[0..ready_count]) |event| {
-                const ready_socket: i32 = @intCast(event.udata);
+            for (self.queue.event_list[0..ready_count]) |event| {
+                const ready_socket: i32 = Queue.readySocket(event);
                 if (ready_socket == self.socket_handle) {
                     if (!self.addClient()) continue;
                 } else {
-                    if (event.filter == std.posix.system.EVFILT.READ) {
+                    if (Queue.isReadEvent(event)) {
                         if (!self.handleRead(ready_socket)) continue;
-                    } else if (event.filter == std.posix.system.EVFILT.WRITE) {
+                    } else if (Queue.isWriteEvent(event)) {
                         if (!self.handleWrite(ready_socket)) continue;
                     }
                 }
@@ -413,85 +406,8 @@ pub const IO = struct {
             }
         }
         self.allocator.free(self.client_contexts);
-        posix.close(self.kqueue_descriptor);
+        self.queue.deinit();
         posix.close(self.socket_handle);
-    }
-
-    pub fn addSocketReadEvent(self: *const IO, socket: posix.socket_t) !void {
-        _ = try posix.kevent(self.kqueue_descriptor, &.{.{
-            .ident = @intCast(socket),
-            .filter = posix.system.EVFILT.READ,
-            .flags = posix.system.EV.ADD | posix.system.EV.DISPATCH | posix.system.EV.CLEAR,
-            .fflags = 0,
-            .data = 0,
-            .udata = @intCast(socket),
-        }}, &.{}, null);
-    }
-
-    pub fn enableSocketReadEvent(self: *const IO, socket: posix.socket_t) !void {
-        _ = try posix.kevent(self.kqueue_descriptor, &.{.{
-            .ident = @intCast(socket),
-            .filter = posix.system.EVFILT.READ,
-            .flags = posix.system.EV.ENABLE,
-            .fflags = 0,
-            .data = 0,
-            .udata = @intCast(socket),
-        }}, &.{}, null);
-    }
-
-    pub fn disableSocketReadEvent(self: *const IO, socket: posix.socket_t) !void {
-        _ = try posix.kevent(self.kqueue_descriptor, &.{.{
-            .ident = @intCast(socket),
-            .filter = posix.system.EVFILT.READ,
-            .flags = posix.system.EV.DISABLE,
-            .fflags = 0,
-            .data = 0,
-            .udata = 0,
-        }}, &.{}, null);
-    }
-
-    pub fn addSocketWriteEvent(self: *const IO, socket: posix.socket_t) !void {
-        _ = try posix.kevent(self.kqueue_descriptor, &.{.{
-            .ident = @intCast(socket),
-            .filter = posix.system.EVFILT.WRITE,
-            .flags = posix.system.EV.ADD | posix.system.EV.DISPATCH | posix.system.EV.CLEAR,
-            .fflags = 0,
-            .data = 0,
-            .udata = @intCast(socket),
-        }}, &.{}, null);
-    }
-
-    pub fn enableSocketWriteEvent(self: *const IO, socket: posix.socket_t) !void {
-        _ = try posix.kevent(self.kqueue_descriptor, &.{.{
-            .ident = @intCast(socket),
-            .filter = posix.system.EVFILT.WRITE,
-            .flags = posix.system.EV.ENABLE,
-            .fflags = 0,
-            .data = 0,
-            .udata = @intCast(socket),
-        }}, &.{}, null);
-    }
-
-    pub fn disableSocketWriteEvent(self: *const IO, socket: posix.socket_t) !void {
-        _ = try posix.kevent(self.kqueue_descriptor, &.{.{
-            .ident = @intCast(socket),
-            .filter = posix.system.EVFILT.WRITE,
-            .flags = posix.system.EV.DISABLE,
-            .fflags = 0,
-            .data = 0,
-            .udata = 0,
-        }}, &.{}, null);
-    }
-
-    inline fn addSocketEvent(self: *const IO) !void {
-        _ = try posix.kevent(self.kqueue_descriptor, &.{.{
-            .ident = @intCast(self.socket_handle),
-            .filter = posix.system.EVFILT.READ,
-            .flags = posix.system.EV.ADD,
-            .fflags = 0,
-            .data = 0,
-            .udata = @intCast(self.socket_handle),
-        }}, &.{}, null);
     }
 
     fn addClient(self: *IO) bool {
@@ -518,14 +434,14 @@ pub const IO = struct {
         };
 
         if (!self.addIoContext(io_context)) {
-            std.log.info("Connection limit reached, rejecting socket {d}", .{client_socket});
+            std.log.err("Connection limit reached, rejecting socket {d}", .{client_socket});
             io_context.cleanBuffer();
             self.allocator.destroy(io_context);
             posix.close(client_socket);
             return false;
         }
 
-        self.addSocketReadEvent(client_socket) catch |e| {
+        self.queue.addSocketReadEvent(client_socket) catch |e| {
             io_context.closeSocket();
             std.log.err("Error! Failed to enable socket listening: {any}", .{e});
             return false;

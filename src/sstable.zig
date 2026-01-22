@@ -120,8 +120,6 @@ pub const SSTable = struct {
     pub const Iterator = struct {
         allocator: std.mem.Allocator,
         sstable: *const SSTable,
-        reader: std.fs.File.Reader,
-        reader_buffer: []u8,
         block_buffer: []u8,
         num_blocks: u32,
         current_block_num: u32,
@@ -131,18 +129,12 @@ pub const SSTable = struct {
 
         pub fn init(allocator: std.mem.Allocator, sstable: *const SSTable) !Iterator {
             const block_buffer = try allocator.alloc(u8, sstable.block_size);
-            const reader_buffer = getWorkerContext().?.reader_buffer[0..2];
-            var reader = sstable.file.reader(reader_buffer);
-
-            try reader.seekTo(0);
-            _ = try reader.interface.readSliceAll(block_buffer);
+            _ = try sstable.file.pread(block_buffer, 0);
             const num_elements: u32 = utils.intFromBytes(u32, block_buffer, block_buffer.len - 4);
 
             return Iterator{
                 .allocator = allocator,
                 .sstable = sstable,
-                .reader = reader,
-                .reader_buffer = reader_buffer,
                 .block_buffer = block_buffer,
                 .num_blocks = sstable.index_records_num,
                 .current_block_num = 0,
@@ -169,8 +161,10 @@ pub const SSTable = struct {
                     return null;
                 }
 
-                try self.reader.seekTo(@as(u64, @intCast(self.current_block_num)) * @as(u64, @intCast(self.sstable.block_size)));
-                _ = try self.reader.interface.readSliceAll(self.block_buffer);
+                _ = try self.sstable.file.pread(
+                    self.block_buffer,
+                    @as(u64, @intCast(self.current_block_num)) * @as(u64, @intCast(self.sstable.block_size)),
+                );
                 self.num_block_elements = utils.intFromBytes(u32, self.block_buffer, self.block_buffer.len - 4);
 
                 self.current_block_offset = 0;
@@ -501,11 +495,7 @@ pub const SSTable = struct {
 
     fn findInBlock(self: *const SSTable, key: data_types.BinaryData, block_offset: u64) !?data_types.BinaryData {
         const block_buffer: []u8 = getWorkerContext().?.block_buffer;
-        const reader_buffer: []u8 = getWorkerContext().?.reader_buffer[0..2];
-
-        var reader = self.file.reader(reader_buffer);
-        try reader.seekTo(block_offset);
-        _ = try reader.interface.readSliceAll(block_buffer);
+        _ = try self.file.pread(block_buffer, block_offset);
 
         const num_elements: u32 = utils.intFromBytes(u32, block_buffer, block_buffer.len - 4);
         var low: u32 = 0;
