@@ -89,7 +89,7 @@ const Executor = struct {
     }
 
     fn executeSetExpression(self: *Executor, expression: *parse.SetExpression) !void {
-        for (expression.pairs.items) |pair| {
+        for (expression.pairs.items) |*pair| {
             try self.storage.set(pair.key.value, pair.value.value, self.io_context.start_time);
         }
         self.io_context.enqueueResponse(i8, ExecutionError, 0, null);
