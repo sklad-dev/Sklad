@@ -433,19 +433,15 @@ pub const BinaryStorage = struct {
         self.sstable_cache.deinit();
     }
 
-    pub fn put(self: *BinaryStorage, key: []const u8, value: []const u8, timestamp: i64) !void {
-        const record = StorageRecord{
-            .key = key,
-            .value = value,
-            .timestamp = timestamp,
-        };
+    pub fn put(self: *BinaryStorage, key: []const u8, value: []const u8, timestamp: i64, ttl: ?i64) !void {
+        const record = StorageRecord.init(key, value, timestamp, ttl);
 
         var filled_memtable: ?*Memtable = null;
         var filled_memtable_key: u64 = undefined;
         var memtable: *Memtable = undefined;
         var data_slot: ?Memtable.ReservedDataSlot = null;
 
-        const payload_size: u64 = @intCast(key.len + value.len);
+        const payload_size: u64 = @intCast(record.sizeInMemory());
 
         while (true) {
             memtable = self.active_memtable.load(.acquire);
@@ -494,7 +490,7 @@ pub const BinaryStorage = struct {
     }
 
     pub fn delete(self: *BinaryStorage, key: []const u8, timestamp: i64) !void {
-        return self.put(key, &[_]u8{}, timestamp);
+        return self.put(key, &[_]u8{}, timestamp, null);
     }
 
     pub fn find(self: *BinaryStorage, key: []const u8) !?[]const u8 {

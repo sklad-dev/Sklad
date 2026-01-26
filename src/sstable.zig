@@ -11,6 +11,8 @@ const getWorkerContext = @import("./worker.zig").getWorkerContext;
 
 const FileHandle = data_types.FileHandle;
 const StorageRecord = data_types.StorageRecord;
+const RecordKey = data_types.RecordKey;
+const RecordValue = data_types.RecordValue;
 
 pub const MemtableIteratorAdapter = struct {
     memtable_iterator: Memtable.Iterator,
@@ -22,11 +24,7 @@ pub const MemtableIteratorAdapter = struct {
     fn nextFn(ctx: *anyopaque) !?StorageRecord {
         const self: *MemtableIteratorAdapter = @ptrCast(@alignCast(ctx));
         if (self.memtable_iterator.next()) |node| {
-            return StorageRecord{
-                .key = node.key.?,
-                .value = node.value.?,
-                .timestamp = node.timestamp,
-            };
+            return node.toStorageRecord();
         }
         return null;
     }
@@ -48,14 +46,7 @@ pub const SSTableIteratorAdapter = struct {
 
     fn nextFn(ctx: *anyopaque) !?StorageRecord {
         const self: *SSTableIteratorAdapter = @ptrCast(@alignCast(ctx));
-        if (try self.sstable_iterator.next()) |node| {
-            return StorageRecord{
-                .key = node.key,
-                .value = node.value,
-                .timestamp = node.timestamp,
-            };
-        }
-        return null;
+        return try self.sstable_iterator.next();
     }
 
     pub fn iterator(self: *SSTableIteratorAdapter) StorageRecord.Iterator {
@@ -108,8 +99,14 @@ pub const SSTable = struct {
             if (record.value.len > 0) {
                 @memcpy(self.buffer[self.offset .. self.offset + 2], &utils.intToBytes(u16, @intCast(record.value.len)));
                 self.offset += 2;
+                @memcpy(self.buffer[self.offset .. self.offset + 1], &utils.intToBytes(u8, record.value.flags orelse 0));
+                self.offset += 1;
                 @memcpy(self.buffer[self.offset..(self.offset + @as(u32, @intCast(record.value.len)))], record.value);
                 self.offset += @intCast(record.value.len);
+                if (record.value.ttl) |ttl| {
+                    @memcpy(self.buffer[self.offset .. self.offset + 8], &utils.intToBytes(i64, ttl));
+                    self.offset += 8;
+                }
             } else {
                 @memcpy(self.buffer[self.offset .. self.offset + 2], &utils.intToBytes(u16, 0));
                 self.offset += 2;
@@ -175,7 +172,7 @@ pub const SSTable = struct {
 
         inline fn readRecordAndAdvance(self: *Iterator) StorageRecord {
             const record = SSTable.readRecordFromOffset(self.block_buffer, self.current_block_offset);
-            self.current_block_offset += @as(u32, @intCast(record.sizeOnDisk()));
+            self.current_block_offset += @as(u32, @intCast(record.sizeInMemory()));
             self.current_block_element_num += 1;
             return record;
         }
@@ -240,10 +237,10 @@ pub const SSTable = struct {
         defer block_offsets.deinit(self.allocator);
 
         while (try record_iterator.next()) |record| : (i += 1) {
-            self.max_key = record.key;
+            self.max_key = record.key.data;
 
-            self.bloom_filter.?.add(record.key);
-            const record_size_with_offset: u32 = @as(u32, @intCast(record.sizeOnDisk())) +
+            self.bloom_filter.?.add(record.key.data);
+            const record_size_with_offset: u32 = @as(u32, @intCast(record.sizeInMemory())) +
                 4 +
                 (@as(u32, @intCast(block_offsets.items.len)) + 1) * 4;
             if (data_block.offset + record_size_with_offset > block_size) {

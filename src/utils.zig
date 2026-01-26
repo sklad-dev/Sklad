@@ -1,5 +1,7 @@
 const std = @import("std");
 const FileWriter = std.fs.File.Writer;
+const RecordKey = @import("./data_types.zig").RecordKey;
+const RecordValue = @import("./data_types.zig").RecordValue;
 
 pub const SupportingError = error{
     NotImplemented,
@@ -20,9 +22,20 @@ pub inline fn readNumber(comptime T: type, reader: *std.Io.Reader) !T {
     return value;
 }
 
-pub inline fn writeSizedValue(writer: *FileWriter, value: []const u8) !void {
-    try writeNumber(u16, &writer.interface, @as(u16, @intCast(value.len)));
-    try writer.interface.writeAll(value);
+pub inline fn writeStorageKey(writer: *FileWriter, key: *const RecordKey) !void {
+    try writeNumber(u16, &writer.interface, @as(u16, @intCast(key.data.len)));
+    try writer.interface.writeAll(key.data);
+}
+
+pub inline fn writeStorageValue(writer: *FileWriter, value: *const RecordValue) !void {
+    try writeNumber(u16, &writer.interface, @as(u16, @intCast(value.data.len)));
+    if (value.data.len > 0) {
+        try writeNumber(u8, &writer.interface, value.flags.?);
+        try writer.interface.writeAll(value.data);
+        if (value.ttl) |t| {
+            try writeNumber(i64, &writer.interface, t);
+        }
+    }
 }
 
 pub inline fn intFromBytes(comptime T: type, buffer: []const u8, offset: usize) T {

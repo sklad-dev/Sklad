@@ -7,6 +7,10 @@ const utils = @import("./utils.zig");
 const getConfigurator = @import("./global_context.zig").getConfigurator;
 const Wal = @import("./wal.zig").Wal;
 const BinaryData = data_types.BinaryData;
+const StorageRecord = data_types.StorageRecord;
+const RecordKey = data_types.RecordKey;
+const RecordValue = data_types.RecordValue;
+const FLAG_TTL = data_types.FLAG_TTL;
 
 pub const Arena = struct {
     allocator: std.mem.Allocator,
@@ -69,11 +73,29 @@ pub const Memtable = struct {
     size: u32 = 0,
     compare_fn: *const fn (BinaryData, BinaryData) isize = utils.compareBitwise,
 
-    const Node = struct {
-        key: ?[]u8,
-        value: ?[]u8,
-        timestamp: i64,
+    const NULL_OFFSET: u64 = std.math.maxInt(u64);
+
+    pub const Node = struct {
+        data_offset: u64,
         tower: []u64,
+
+        pub inline fn toStorageRecord(self: *Node, arena: *const Arena) StorageRecord {
+            return StorageRecord.fromBytes(arena.arena[self.data_offset..], 0);
+        }
+
+        pub inline fn keyData(self: *const Node, arena: *const Arena) BinaryData {
+            const key_size = utils.intFromBytes(u16, arena.arena, self.data_offset);
+            return arena.arena[self.data_offset + 2 .. self.data_offset + 2 + key_size];
+        }
+
+        pub inline fn valueData(self: *const Node, arena: *const Arena) BinaryData {
+            const key_size = utils.intFromBytes(u16, arena.arena, self.data_offset);
+            const value_size = utils.intFromBytes(u16, arena.arena, self.data_offset + 10 + key_size);
+            if (value_size == 0) return data_types.EMPTY_VALUE;
+
+            const value_offset = self.data_offset + StorageRecord.HEADER_FLAGS_BYTES + key_size;
+            return arena.arena[value_offset .. value_offset + value_size];
+        }
     };
 
     pub const Iterator = struct {
@@ -83,7 +105,7 @@ pub const Memtable = struct {
         pub inline fn next(self: *Iterator) ?*Node {
             if (self.current) |c| {
                 self.current = @ptrCast(@alignCast(&self.arena.arena[c.tower[0]]));
-                if (c.key != null) {
+                if (c.data_offset != Memtable.NULL_OFFSET) {
                     return c;
                 }
             } else {
@@ -120,9 +142,7 @@ pub const Memtable = struct {
         const head_tower_ptr: [*]u64 = @ptrCast(@alignCast(arena.arena[@sizeOf(Node)..node_and_tower_size].ptr));
         var head: *Node = @ptrCast(@alignCast(&arena.arena[0]));
         head.* = .{
-            .key = null,
-            .value = null,
-            .timestamp = 0,
+            .data_offset = NULL_OFFSET,
             .tower = head_tower_ptr[0 .. max_level + 1],
         };
 
@@ -131,9 +151,7 @@ pub const Memtable = struct {
         const tail_tower_ptr: [*]u64 = @ptrCast(@alignCast(arena.arena[tail_offset_start + @sizeOf(Node) .. tail_offset_end].ptr));
         var tail: *Node = @ptrCast(@alignCast(&arena.arena[tail_offset_start]));
         tail.* = .{
-            .key = null,
-            .value = null,
-            .timestamp = 0,
+            .data_offset = NULL_OFFSET,
             .tower = tail_tower_ptr[0 .. max_level + 1],
         };
 
@@ -175,11 +193,11 @@ pub const Memtable = struct {
         var slot: ?ReservedDataSlot = null;
         while (wal.readRecord(memtable.allocator, offset)) |record| {
             defer record.destroy(memtable.allocator);
-            offset += @as(u32, @intCast(record.sizeOnDisk()));
-            slot = memtable.reserve(record.dataSize());
+            offset += @as(u32, @intCast(record.sizeInMemory()));
+            slot = memtable.reserve(record.sizeInMemory());
             if (slot) |s| {
                 try memtable.wal.writeRecord(&record);
-                try memtable.add(record.key, record.value, record.timestamp, &s);
+                try memtable.add(&record.key, &record.value, &s);
             } else {
                 return true;
             }
@@ -188,8 +206,8 @@ pub const Memtable = struct {
         return false;
     }
 
-    pub fn add(self: *Memtable, key: BinaryData, value: ?BinaryData, timestamp: i64, slot: *const ReservedDataSlot) !void {
-        assert(key.len > 0);
+    pub fn add(self: *Memtable, key: *const RecordKey, value: *const RecordValue, slot: *const ReservedDataSlot) !void {
+        assert(key.data.len > 0);
 
         var predecessors: []u64 = try self.allocator.alloc(u64, self.max_level + 1);
         defer self.allocator.free(predecessors);
@@ -205,19 +223,28 @@ pub const Memtable = struct {
         var created: bool = false;
         var new_node: ?*Node = null;
         while (true) {
-            const found_index = self.search(key, predecessors, successors);
+            const found_index = self.search(key.data, predecessors, successors);
             if (found_index != 0) {
                 const node_to_update: *Node = @ptrCast(@alignCast(&self.arena.arena[found_index]));
-                node_to_update.*.timestamp = timestamp;
-                node_to_update.*.value = null;
 
-                if (value) |v| {
-                    if (v.len > 0) {
-                        const value_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[slot.node_offset .. slot.node_offset + v.len].ptr));
-                        node_to_update.*.value = value_ptr[0..v.len];
-                        @memcpy(node_to_update.*.value.?, v);
-                    } else {
-                        node_to_update.*.value = data_types.EMPTY_VALUE;
+                StorageRecord.init(
+                    key.data,
+                    value.data,
+                    key.timestamp,
+                    value.ttl,
+                ).writeToBuffer(self.arena.arena, slot.data_offset);
+
+                while (true) {
+                    const current_data_offset: u64 = @atomicLoad(u64, &node_to_update.*.data_offset, .acquire);
+                    if (@cmpxchgStrong(
+                        u64,
+                        &node_to_update.*.data_offset,
+                        current_data_offset,
+                        slot.data_offset,
+                        .seq_cst,
+                        .seq_cst,
+                    ) == null) {
+                        break;
                     }
                 }
 
@@ -229,25 +256,17 @@ pub const Memtable = struct {
                     const new_node_tower_end: u64 = new_node_tower_start + @sizeOf(u64) * (slot.tower_height + 1);
                     const new_node_tower_ptr: [*]u64 = @ptrCast(@alignCast(@constCast(self.arena.arena[new_node_tower_start..new_node_tower_end].ptr)));
 
-                    const key_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[slot.data_offset .. slot.data_offset + key.len].ptr));
-
                     new_node.?.* = .{
-                        .key = key_ptr[0..key.len],
-                        .value = null,
-                        .timestamp = timestamp,
+                        .data_offset = slot.data_offset,
                         .tower = new_node_tower_ptr[0 .. slot.tower_height + 1],
                     };
-                    @memcpy(new_node.?.*.key.?, key);
 
-                    if (value) |v| {
-                        if (v.len > 0) {
-                            const value_ptr: [*]u8 = @ptrCast(@alignCast(self.arena.arena[slot.data_offset + key.len .. slot.data_offset + key.len + v.len].ptr));
-                            new_node.?.*.value = value_ptr[0..v.len];
-                            @memcpy(new_node.?.*.value.?, v);
-                        } else {
-                            new_node.?.*.value = data_types.EMPTY_VALUE;
-                        }
-                    }
+                    StorageRecord.init(
+                        key.data,
+                        value.data,
+                        key.timestamp,
+                        value.ttl,
+                    ).writeToBuffer(self.arena.arena, slot.data_offset);
 
                     created = true;
                     _ = @atomicRmw(u32, &self.size, .Add, 1, .seq_cst);
@@ -269,7 +288,7 @@ pub const Memtable = struct {
                             if (@cmpxchgWeak(u64, &pred.tower[i], successors[i], slot.*.node_offset, .seq_cst, .seq_cst) == null) {
                                 break;
                             }
-                            _ = self.search(key, predecessors, successors);
+                            _ = self.search(key.data, predecessors, successors);
                         }
                     }
                 }
@@ -285,7 +304,7 @@ pub const Memtable = struct {
             return null;
         }
         const node: *Node = @ptrCast(@alignCast(&self.arena.arena[result]));
-        return node.value;
+        return node.valueData(&self.arena);
     }
 
     pub inline fn reserve(self: *Memtable, data_size: u64) ?ReservedDataSlot {
@@ -330,7 +349,7 @@ pub const Memtable = struct {
             curr = @ptrCast(@alignCast(&self.arena.arena[curr_offset]));
             while (true) {
                 succ_offset = @atomicLoad(u64, &curr.?.tower[l], .seq_cst);
-                if (succ_offset != 0 and self.compare_fn(curr.?.key.?, key) < 0) {
+                if (succ_offset != 0 and self.compare_fn(curr.?.keyData(&self.arena), key) < 0) {
                     pred = curr;
                     pred_offset = curr_offset;
                     curr_offset = succ_offset;
@@ -346,7 +365,7 @@ pub const Memtable = struct {
             }
         }
 
-        if (curr != null and curr.?.key != null and self.compare_fn(curr.?.key.?, key) == 0) {
+        if (curr != null and curr.?.data_offset != NULL_OFFSET and self.compare_fn(curr.?.keyData(&self.arena), key) == 0) {
             return curr_offset;
         }
 
@@ -362,7 +381,8 @@ fn visualizeMemtable(memtable: *Memtable) void {
     var node_offset: u64 = 0;
     while (node_offset < memtable.max_size) {
         const curr: *Memtable.Node = @ptrCast(@alignCast(&memtable.arena.arena[node_offset]));
-        if (curr.key) |key| {
+        if (curr.data_offset != std.math.maxInt(u64)) {
+            const key = curr.keyData(&memtable.arena);
             std.debug.print("{any} (size: {d}):\t", .{ key, key.len });
         } else {
             std.debug.print("{any} (size: 0):\t", .{null});
@@ -387,25 +407,43 @@ test "Memtable#add" {
         "./",
     );
 
-    const k1: [1]u8 = utils.intToBytes(u8, @as(u8, @intCast(0)));
-    const v1: [1]u8 = utils.intToBytes(u8, @as(u8, @intCast(0)));
-    const v2: [1]u8 = utils.intToBytes(u8, @as(u8, @intCast(11)));
+    const k1: RecordKey = .{
+        .data = &utils.intToBytes(u8, @as(u8, @intCast(0))),
+        .timestamp = std.time.milliTimestamp(),
+    };
+    const v1: RecordValue = .{
+        .data = &utils.intToBytes(u8, @as(u8, @intCast(0))),
+        .flags = 0,
+        .ttl = null,
+    };
+    const v2: RecordValue = .{
+        .data = &utils.intToBytes(u8, @as(u8, @intCast(11))),
+        .flags = 0,
+        .ttl = null,
+    };
 
-    var slot = memtable.reserve(k1.len + v1.len);
-    try memtable.add(&k1, &v1, std.time.milliTimestamp(), &(slot.?));
+    var slot = memtable.reserve(k1.data.len + v1.data.len + 13);
+    try memtable.add(&k1, &v1, &(slot.?));
     try testing.expect(memtable.size == 1);
 
-    slot = memtable.reserve(k1.len + v2.len);
-    try memtable.add(&k1, &v2, std.time.milliTimestamp(), &(slot.?));
+    slot = memtable.reserve(k1.data.len + v2.data.len + 13);
+    try memtable.add(&k1, &v2, &(slot.?));
     try testing.expect(memtable.size == 1);
 
-    var test_value: [1]u8 = undefined;
-    var test_key: [1]u8 = undefined;
+    var test_value: RecordValue = undefined;
+    var test_key: RecordKey = undefined;
     for (1..10) |i| {
-        test_key = utils.intToBytes(u8, @as(u8, @intCast(i)));
-        test_value = utils.intToBytes(u8, @as(u8, @intCast(i)));
-        slot = memtable.reserve(test_key.len + test_value.len);
-        try memtable.add(&test_key, &test_value, std.time.milliTimestamp(), &(slot.?));
+        test_key = .{
+            .data = &utils.intToBytes(u8, @as(u8, @intCast(i))),
+            .timestamp = std.time.milliTimestamp(),
+        };
+        test_value = .{
+            .data = &utils.intToBytes(u8, @as(u8, @intCast(i))),
+            .flags = 0,
+            .ttl = null,
+        };
+        slot = memtable.reserve(test_key.data.len + test_value.data.len + 13);
+        try memtable.add(&test_key, &test_value, &(slot.?));
         // visualizeMemtable(&memtable);
         // std.debug.print("\n", .{});
     }
@@ -413,22 +451,29 @@ test "Memtable#add" {
     // visualizeMemtable(&memtable);
 
     for (1..10) |i| {
-        test_key = utils.intToBytes(u8, @as(u8, @intCast(10 - i)));
-        const value = memtable.find(&test_key);
-        try testing.expect(std.mem.eql(u8, value.?, test_key[0..]));
+        test_key = .{
+            .data = &utils.intToBytes(u8, @as(u8, @intCast(10 - i))),
+            .timestamp = std.time.milliTimestamp(),
+        };
+        const value = memtable.find(test_key.data);
+        try testing.expect(std.mem.eql(u8, value.?, test_key.data[0..]));
     }
 
     var iterator = memtable.iterator();
     var i: u64 = 0;
+    var value: [1]u8 = undefined;
     while (iterator.next()) |node| : (i += 1) {
-        test_key = utils.intToBytes(u8, @as(u8, @intCast(i)));
+        test_key = .{
+            .data = &utils.intToBytes(u8, @as(u8, @intCast(i))),
+            .timestamp = std.time.milliTimestamp(),
+        };
         if (i == 0) {
-            test_value = utils.intToBytes(u8, @as(u8, @intCast(11)));
+            value = utils.intToBytes(u8, @as(u8, @intCast(11)));
         } else {
-            test_value = utils.intToBytes(u8, @as(u8, @intCast(i)));
+            value = utils.intToBytes(u8, @as(u8, @intCast(i)));
         }
-        try testing.expect(std.mem.eql(u8, node.key.?, test_key[0..]));
-        try testing.expect(std.mem.eql(u8, node.value.?, test_value[0..]));
+        try testing.expect(std.mem.eql(u8, node.keyData(&memtable.arena), test_key.data[0..]));
+        try testing.expect(std.mem.eql(u8, node.valueData(&memtable.arena), value[0..]));
     }
 
     try memtable.wal.deleteFile();
@@ -444,17 +489,24 @@ test "Memtable#add tombstone" {
         "./",
     );
 
-    const k1: [1]u8 = utils.intToBytes(u8, @as(u8, @intCast(0)));
-    const v1: [1]u8 = utils.intToBytes(u8, @as(u8, @intCast(255)));
-    const v2 = [_]u8{};
+    const k1: RecordKey = .{
+        .data = &utils.intToBytes(u8, @as(u8, @intCast(0))),
+        .timestamp = std.time.milliTimestamp(),
+    };
+    const v1: RecordValue = .{
+        .data = &utils.intToBytes(u8, @as(u8, @intCast(255))),
+        .flags = 0,
+        .ttl = null,
+    };
+    const v2: RecordValue = RecordValue.tombstone();
 
-    var slot = memtable.reserve(k1.len + v1.len);
-    try memtable.add(&k1, &v1, std.time.milliTimestamp(), &(slot.?));
+    var slot = memtable.reserve(k1.data.len + v1.data.len + 13);
+    try memtable.add(&k1, &v1, &(slot.?));
 
-    slot = memtable.reserve(k1.len + v2.len);
-    try memtable.add(&k1, &v2, std.time.milliTimestamp(), &(slot.?));
+    slot = memtable.reserve(k1.data.len + v2.data.len + 13);
+    try memtable.add(&k1, &v2, &(slot.?));
 
-    const result = memtable.find(&k1);
+    const result = memtable.find(k1.data);
     try testing.expect(result != null);
     try testing.expect(result.?.len == 0);
 
