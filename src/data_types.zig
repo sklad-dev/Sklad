@@ -59,7 +59,7 @@ pub const RecordKey = struct {
 };
 
 pub const RecordValueFlags = ?u8;
-pub inline fn isTtlFlagSet(flags: RecordValueFlags) bool {
+inline fn isTtlFlagSet(flags: RecordValueFlags) bool {
     return (flags orelse 0) & FLAG_TTL != 0;
 }
 
@@ -168,21 +168,28 @@ pub const StorageRecord = struct {
 
     pub fn writeToBuffer(self: *const StorageRecord, buffer: []u8, offset: usize) void {
         var pos: usize = offset;
-        @memcpy(buffer[pos .. pos + DATA_SIZE_BYTES], &utils.intToBytes(u16, @intCast(self.key.data.len)));
+
+        buffer[pos..][0..DATA_SIZE_BYTES].* = utils.intToBytes(u16, @intCast(self.key.data.len));
         pos += DATA_SIZE_BYTES;
-        @memcpy(buffer[pos .. pos + self.key.data.len], self.key.data);
+
+        @memcpy(buffer[pos..][0..self.key.data.len], self.key.data);
         pos += self.key.data.len;
-        @memcpy(buffer[pos .. pos + TIMESTAMP_BYTES], &utils.intToBytes(i64, self.key.timestamp));
+
+        buffer[pos..][0..TIMESTAMP_BYTES].* = utils.intToBytes(i64, self.key.timestamp);
         pos += TIMESTAMP_BYTES;
-        @memcpy(buffer[pos .. pos + DATA_SIZE_BYTES], &utils.intToBytes(u16, @intCast(self.value.data.len)));
+
+        buffer[pos..][0..DATA_SIZE_BYTES].* = utils.intToBytes(u16, @intCast(self.value.data.len));
         pos += DATA_SIZE_BYTES;
+
         if (!self.isTombstone()) {
-            @memcpy(buffer[pos .. pos + FLAGS_BYTES], &utils.intToBytes(u8, self.value.flags.?));
+            buffer[pos] = self.value.flags.?;
             pos += FLAGS_BYTES;
-            @memcpy(buffer[pos .. pos + self.value.data.len], self.value.data);
+
+            @memcpy(buffer[pos..][0..self.value.data.len], self.value.data);
             pos += self.value.data.len;
+
             if (self.value.hasTtl()) {
-                @memcpy(buffer[pos .. pos + TTL_BYTES], &utils.intToBytes(i64, self.value.ttl.?));
+                buffer[pos..][0..TTL_BYTES].* = utils.intToBytes(i64, self.value.ttl.?);
                 pos += TTL_BYTES;
             }
         }

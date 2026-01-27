@@ -473,7 +473,7 @@ pub const BinaryStorage = struct {
         }
 
         try memtable.wal.writeRecord(&record);
-        try memtable.add(key, value, timestamp, &(data_slot.?));
+        try memtable.add(&record.key, &record.value, &(data_slot.?));
 
         if (filled_memtable) |_| {
             const task_queue = global_context.getTaskQueue();
@@ -778,7 +778,7 @@ test "BinaryStorage#put" {
     var test_storage = try BinaryStorage.start(testing.allocator, ".");
     defer test_storage.stop();
 
-    try test_storage.put(&utils.intToBytes(u8, 1), &utils.intToBytes(u8, 42), std.time.milliTimestamp());
+    try test_storage.put(&utils.intToBytes(u8, 1), &utils.intToBytes(u8, 42), std.time.milliTimestamp(), null);
     try testing.expect(test_storage.active_memtable.load(.unordered).size == 1);
     const result = test_storage.active_memtable.load(.unordered).find(&utils.intToBytes(u8, 1));
     try testing.expect(std.mem.eql(u8, result.?, &utils.intToBytes(u8, 42)));
@@ -803,8 +803,8 @@ test "Restore memtable from wal" {
     defer @import("./worker.zig").deinitWorkerContext();
 
     var storage1 = try BinaryStorage.start(testing.allocator, ".");
-    try storage1.put(&utils.intToBytes(u8, 3), &utils.intToBytes(u16, 0xCFCF), std.time.milliTimestamp());
-    try storage1.put(&utils.intToBytes(u8, 4), &utils.intToBytes(u16, 0xFAFA), std.time.milliTimestamp());
+    try storage1.put(&utils.intToBytes(u8, 3), &utils.intToBytes(u16, 0xCFCF), std.time.milliTimestamp(), null);
+    try storage1.put(&utils.intToBytes(u8, 4), &utils.intToBytes(u16, 0xFAFA), std.time.milliTimestamp(), null);
     storage1.stop();
 
     var storage2 = try BinaryStorage.start(testing.allocator, ".");
@@ -844,7 +844,7 @@ test "BinaryStorage#find" {
     defer storage.stop();
 
     const value = utils.intToBytes(u8, 42);
-    try storage.put(&utils.intToBytes(u8, 1), &value, std.time.milliTimestamp());
+    try storage.put(&utils.intToBytes(u8, 1), &value, std.time.milliTimestamp(), null);
 
     var search_result = try storage.find(&utils.intToBytes(u8, 1));
     try testing.expect(std.mem.eql(u8, search_result.?, &value));
@@ -855,7 +855,7 @@ test "BinaryStorage#find" {
 
     for (2..10) |i| {
         const v = @as(u8, @intCast(i));
-        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v), std.time.milliTimestamp());
+        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v), std.time.milliTimestamp(), null);
     }
 
     for (1..10) |i| {
@@ -890,12 +890,12 @@ test "BinaryStorage#find returns the newest value" {
 
     for (0..8) |i| {
         const v = @as(u8, @intCast(i));
-        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v), std.time.milliTimestamp());
+        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v), std.time.milliTimestamp(), null);
     }
 
     for (0..8) |i| {
         const v = @as(u8, @intCast(i));
-        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v * 2), std.time.milliTimestamp());
+        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v * 2), std.time.milliTimestamp(), null);
     }
 
     var search_result: ?[]const u8 = null;
@@ -931,7 +931,7 @@ test "BinaryStorage#delete when in memtable" {
 
     for (0..8) |i| {
         const v = @as(u8, @intCast(i));
-        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v), std.time.milliTimestamp());
+        try storage.put(&utils.intToBytes(u8, v), &utils.intToBytes(u8, v), std.time.milliTimestamp(), null);
     }
 
     try storage.delete(&utils.intToBytes(u8, 3), std.time.milliTimestamp());
@@ -959,12 +959,26 @@ test "BinaryStorage#delete when in sstable" {
         const test_value = utils.intToBytes(u8, 255);
         var slot: ?Memtable.ReservedDataSlot = null;
         for (0..10) |j| {
-            slot = test_memtable.reserve(@sizeOf(usize) + test_value.len);
-            try test_memtable.add(&utils.intToBytes(usize, j), &test_value, std.time.milliTimestamp(), &slot.?);
+            slot = test_memtable.reserve(22);
+            try test_memtable.add(
+                &.{
+                    .data = &utils.intToBytes(usize, j),
+                    .timestamp = std.time.milliTimestamp(),
+                },
+                &.{ .data = &test_value, .flags = 0, .ttl = null },
+                &slot.?,
+            );
         }
 
-        slot = test_memtable.reserve(@sizeOf(usize) + data_types.EMPTY_VALUE.len);
-        try test_memtable.add(&utils.intToBytes(usize, deleted_key), data_types.EMPTY_VALUE, std.time.milliTimestamp(), &slot.?);
+        slot = test_memtable.reserve(20);
+        try test_memtable.add(
+            &.{
+                .data = &utils.intToBytes(usize, deleted_key),
+                .timestamp = std.time.milliTimestamp(),
+            },
+            &.{ .data = data_types.EMPTY_VALUE, .flags = null, .ttl = null },
+            &slot.?,
+        );
 
         var adapter = MemtableIteratorAdapter.init(&test_memtable);
         var memtable_iterator = adapter.iterator();
@@ -1008,7 +1022,7 @@ test "BinaryStorage compaction and cleanup" {
     global_context.setRootFolderForTests("./");
     defer global_context.resetRootFolderForTests();
 
-    const block_size: u32 = 104;
+    const block_size: u32 = 108;
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
 
@@ -1021,8 +1035,14 @@ test "BinaryStorage compaction and cleanup" {
         const test_value = utils.intToBytes(u8, 255);
         var slot: ?Memtable.ReservedDataSlot = null;
         for (0..10) |j| {
-            slot = test_memtable.reserve(@sizeOf(usize) + test_value.len);
-            try test_memtable.add(&utils.intToBytes(usize, j + i * 10), &test_value, std.time.milliTimestamp(), &slot.?);
+            const record = StorageRecord.init(
+                &utils.intToBytes(usize, j + i * 10),
+                &test_value,
+                std.time.milliTimestamp(),
+                null,
+            );
+            slot = test_memtable.reserve(record.sizeInMemory());
+            try test_memtable.add(&record.key, &record.value, &slot.?);
         }
 
         var adapter = MemtableIteratorAdapter.init(&test_memtable);

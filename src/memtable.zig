@@ -85,12 +85,12 @@ pub const Memtable = struct {
 
         pub inline fn keyData(self: *const Node, arena: *const Arena) BinaryData {
             const key_size = utils.intFromBytes(u16, arena.arena, self.data_offset);
-            return arena.arena[self.data_offset + 2 .. self.data_offset + 2 + key_size];
+            return arena.arena[self.data_offset + StorageRecord.DATA_SIZE_BYTES .. self.data_offset + StorageRecord.DATA_SIZE_BYTES + key_size];
         }
 
         pub inline fn valueData(self: *const Node, arena: *const Arena) BinaryData {
             const key_size = utils.intFromBytes(u16, arena.arena, self.data_offset);
-            const value_size = utils.intFromBytes(u16, arena.arena, self.data_offset + 10 + key_size);
+            const value_size = utils.intFromBytes(u16, arena.arena, self.data_offset + StorageRecord.KEY_HEADER_BYTES + key_size);
             if (value_size == 0) return data_types.EMPTY_VALUE;
 
             const value_offset = self.data_offset + StorageRecord.HEADER_FLAGS_BYTES + key_size;
@@ -194,6 +194,9 @@ pub const Memtable = struct {
         while (wal.readRecord(memtable.allocator, offset)) |record| {
             defer record.destroy(memtable.allocator);
             offset += @as(u32, @intCast(record.sizeInMemory()));
+
+            if (record.isExpired()) continue;
+
             slot = memtable.reserve(record.sizeInMemory());
             if (slot) |s| {
                 try memtable.wal.writeRecord(&record);
@@ -304,7 +307,10 @@ pub const Memtable = struct {
             return null;
         }
         const node: *Node = @ptrCast(@alignCast(&self.arena.arena[result]));
-        return node.valueData(&self.arena);
+        const record = node.toStorageRecord(&self.arena);
+
+        if (record.isExpired()) return null;
+        return record.value.data;
     }
 
     pub inline fn reserve(self: *Memtable, data_size: u64) ?ReservedDataSlot {

@@ -140,6 +140,7 @@ pub const KeyValuePairNode = struct {
     allocator: std.mem.Allocator,
     key: ValueNode,
     value: ValueNode,
+    ttl: ?i64,
 
     pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !KeyValuePairNode {
         const key = try ValueNode.parse(allocator, query);
