@@ -366,19 +366,19 @@ test "MergeIterator#next skips expired records" {
         }
     };
 
-    const now = std.time.milliTimestamp();
+    const now = std.time.microTimestamp();
 
     // Iterator 1: key 1 (not expired), key 5 (expired - TTL in the past)
     var iter1 = TtlTestIterator.init(
         [2]i8{ 1, 5 },
-        [2]i64{ now, now - 10000 }, // key 5 was created 10 seconds ago
+        [2]i64{ now, now - 10000 * std.time.us_per_ms }, // key 5 was created 10 seconds ago
         [2]?i64{ null, 5000 }, // key 5 has 5 second TTL (expired)
     );
 
     // Iterator 2: key 2 (expired), key 6 (not expired)
     var iter2 = TtlTestIterator.init(
         [2]i8{ 2, 6 },
-        [2]i64{ now - 20000, now }, // key 2 was created 20 seconds ago
+        [2]i64{ now - 20000 * std.time.us_per_ms, now }, // key 2 was created 20 seconds ago
         [2]?i64{ 1000, null }, // key 2 has 1 second TTL (expired)
     );
 
@@ -392,7 +392,7 @@ test "MergeIterator#next skips expired records" {
     // Iterator 4: key 4 (expired), key 8 (not expired)
     var iter4 = TtlTestIterator.init(
         [2]i8{ 4, 8 },
-        [2]i64{ now - 5000, now },
+        [2]i64{ now - 5000 * std.time.us_per_ms, now },
         [2]?i64{ 1, null }, // key 4 has 1ms TTL (expired)
     );
 

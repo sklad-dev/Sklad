@@ -147,7 +147,7 @@ pub const StorageRecord = struct {
 
     pub inline fn isExpired(self: *const StorageRecord) bool {
         if (self.value.ttl) |ttl| {
-            return std.time.milliTimestamp() > self.key.timestamp + ttl;
+            return std.time.milliTimestamp() > @divTrunc(self.key.timestamp, std.time.us_per_ms) + ttl;
         }
         return false;
     }
