@@ -11,31 +11,39 @@ pub const MergeIterator = struct {
 
     const RecordBuffer = struct {
         record: ?StorageRecord,
-        key: std.ArrayList(u8),
-        value: std.ArrayList(u8),
+        key_value_data: std.ArrayList(u8),
 
         pub fn init(allocator: std.mem.Allocator) !RecordBuffer {
             return RecordBuffer{
                 .record = null,
-                .key = try std.ArrayList(u8).initCapacity(allocator, 16),
-                .value = try std.ArrayList(u8).initCapacity(allocator, 16),
+                .key_value_data = try std.ArrayList(u8).initCapacity(allocator, 48),
             };
         }
 
         pub inline fn storeRecord(self: *RecordBuffer, allocator: std.mem.Allocator, record: ?StorageRecord) !void {
             if (record) |r| {
-                self.key.clearRetainingCapacity();
-                self.value.clearRetainingCapacity();
-                try self.key.appendSlice(allocator, r.key);
+                self.key_value_data.clearRetainingCapacity();
 
-                if (r.value.len > 0) {
-                    try self.value.appendSlice(allocator, r.value);
+                const key_start: usize = 0;
+                try self.key_value_data.appendSlice(allocator, r.key.data);
+                const key_end = self.key_value_data.items.len;
+
+                const value_start = key_end;
+                if (r.value.data.len > 0) {
+                    try self.key_value_data.appendSlice(allocator, r.value.data);
                 }
+                const value_end = self.key_value_data.items.len;
 
                 self.record = .{
-                    .key = self.key.items,
-                    .value = if (self.value.items.len > 0) self.value.items else EMPTY_VALUE,
-                    .timestamp = r.timestamp,
+                    .key = .{
+                        .data = self.key_value_data.items[key_start..key_end],
+                        .timestamp = r.key.timestamp,
+                    },
+                    .value = .{
+                        .data = if (value_end > value_start) self.key_value_data.items[value_start..value_end] else EMPTY_VALUE,
+                        .flags = r.value.flags,
+                        .ttl = r.value.ttl,
+                    },
                 };
             } else {
                 self.record = null;
@@ -43,8 +51,7 @@ pub const MergeIterator = struct {
         }
 
         pub inline fn deinit(self: *RecordBuffer, allocator: std.mem.Allocator) void {
-            self.key.deinit(allocator);
-            self.value.deinit(allocator);
+            self.key_value_data.deinit(allocator);
         }
     };
 
@@ -93,28 +100,36 @@ pub const MergeIterator = struct {
     }
 
     pub fn next(self: *Self) !?StorageRecord {
-        if (self.tree[self.tree.len - 1] < 0) return null;
+        while (true) {
+            if (self.tree[self.tree.len - 1] < 0) return null;
 
-        const winner_index: usize = @intCast(self.tree[self.tree.len - 1]);
-        try self.current.storeRecord(self.allocator, self.sources[winner_index].current.record);
+            const winner_index: usize = @intCast(self.tree[self.tree.len - 1]);
+            try self.current.storeRecord(self.allocator, self.sources[winner_index].current.record);
 
-        try self.sources[winner_index].current.storeRecord(self.allocator, try self.sources[winner_index].iterator.next());
-        self.replay(@intCast(winner_index));
+            try self.sources[winner_index].current.storeRecord(self.allocator, try self.sources[winner_index].iterator.next());
+            self.replay(@intCast(winner_index));
 
-        if (self.current.record) |current_record| {
-            for (0..self.sources.len) |i| {
-                while (self.sources[i].current.record) |rec| {
-                    if (utils.compareBitwise(rec.key, current_record.key) == 0) {
-                        try self.sources[i].current.storeRecord(self.allocator, try self.sources[i].iterator.next());
-                        self.replay(@intCast(i));
-                    } else {
-                        break;
+            if (self.current.record) |current_record| {
+                for (0..self.sources.len) |i| {
+                    while (self.sources[i].current.record) |rec| {
+                        if (utils.compareBitwise(rec.key.data, current_record.key.data) == 0) {
+                            try self.sources[i].current.storeRecord(self.allocator, try self.sources[i].iterator.next());
+                            self.replay(@intCast(i));
+                        } else {
+                            break;
+                        }
                     }
                 }
+
+                if (current_record.isExpired()) {
+                    continue;
+                }
             }
+
+            return self.current.record;
         }
 
-        return self.current.record;
+        return null;
     }
 
     fn buildInitialTree(self: *Self) !void {
@@ -172,11 +187,11 @@ pub const MergeIterator = struct {
         if (v1 == null) return idx2;
         if (v2 == null) return idx1;
 
-        const result = utils.compareBitwise(v1.?.key, v2.?.key);
+        const result = utils.compareBitwise(v1.?.key.data, v2.?.key.data);
         if (result < 0) return idx1;
         if (result > 0) return idx2;
 
-        return if (v1.?.timestamp >= v2.?.timestamp) idx1 else idx2;
+        return if (v1.?.key.timestamp >= v2.?.key.timestamp) idx1 else idx2;
     }
 };
 
@@ -198,8 +213,8 @@ fn TestIterator(comptime size: usize) type {
             while (i < size) : (i += 1) {
                 const v = data[i];
 
-                const key_bytes = utils.intToBytes(i8, v);
-                const value_bytes = utils.intToBytes(i8, v);
+                const key_bytes = &utils.intToBytes(i8, v);
+                const value_bytes = &utils.intToBytes(i8, v);
 
                 const offset = i * record_size;
                 self.buf[offset + 0] = key_bytes[0];
@@ -220,9 +235,15 @@ fn TestIterator(comptime size: usize) type {
             const value_slice = self.buf[offset + 1 .. offset + 2];
 
             return StorageRecord{
-                .key = key_slice,
-                .value = value_slice,
-                .timestamp = std.time.milliTimestamp(),
+                .key = .{
+                    .data = key_slice,
+                    .timestamp = std.time.milliTimestamp(),
+                },
+                .value = .{
+                    .data = value_slice,
+                    .flags = 0,
+                    .ttl = null,
+                },
             };
         }
 
@@ -282,7 +303,119 @@ test "MergeIterator#next" {
     for (0..16) |i| {
         const rec = try loser_tree_iter.next();
         try testing.expect(rec != null);
-        try testing.expect(utils.intFromBytes(i8, rec.?.key, 0) == @as(i8, @intCast(i + 1)));
+        try testing.expect(utils.intFromBytes(i8, rec.?.key.data, 0) == @as(i8, @intCast(i + 1)));
     }
     try testing.expect(try loser_tree_iter.next() == null);
+}
+
+test "MergeIterator#next skips expired records" {
+    const allocator = std.testing.allocator;
+
+    const TtlTestIterator = struct {
+        const Self = @This();
+
+        buf: [4]u8,
+        timestamps: [2]i64,
+        ttls: [2]?i64,
+        index: usize = 0,
+
+        pub fn init(keys: [2]i8, timestamps: [2]i64, ttls: [2]?i64) Self {
+            var self: Self = .{
+                .buf = undefined,
+                .timestamps = timestamps,
+                .ttls = ttls,
+                .index = 0,
+            };
+            self.buf[0] = @bitCast(keys[0]);
+            self.buf[1] = 0xAA;
+            self.buf[2] = @bitCast(keys[1]);
+            self.buf[3] = 0xBB;
+            return self;
+        }
+
+        pub fn next(ptr: *anyopaque) !?StorageRecord {
+            const self: *Self = @ptrCast(@alignCast(ptr));
+            if (self.index >= 2) return null;
+
+            const offset = self.index * 2;
+            const idx = self.index;
+            self.index += 1;
+
+            const key_slice = self.buf[offset .. offset + 1];
+            const value_slice = self.buf[offset + 1 .. offset + 2];
+            const ttl = self.ttls[idx];
+
+            return StorageRecord{
+                .key = .{
+                    .data = key_slice,
+                    .timestamp = self.timestamps[idx],
+                },
+                .value = .{
+                    .data = value_slice,
+                    .flags = if (ttl != null) @import("data_types.zig").FLAG_TTL else 0,
+                    .ttl = ttl,
+                },
+            };
+        }
+
+        pub fn iterator(self: *Self) StorageRecord.Iterator {
+            return .{
+                .context = self,
+                .next_fn = next,
+            };
+        }
+    };
+
+    const now = std.time.microTimestamp();
+
+    // Iterator 1: key 1 (not expired), key 5 (expired - TTL in the past)
+    var iter1 = TtlTestIterator.init(
+        [2]i8{ 1, 5 },
+        [2]i64{ now, now - 10000 * std.time.us_per_ms }, // key 5 was created 10 seconds ago
+        [2]?i64{ null, 5000 }, // key 5 has 5 second TTL (expired)
+    );
+
+    // Iterator 2: key 2 (expired), key 6 (not expired)
+    var iter2 = TtlTestIterator.init(
+        [2]i8{ 2, 6 },
+        [2]i64{ now - 20000 * std.time.us_per_ms, now }, // key 2 was created 20 seconds ago
+        [2]?i64{ 1000, null }, // key 2 has 1 second TTL (expired)
+    );
+
+    // Iterator 3: key 3 (not expired, has TTL), key 7 (not expired)
+    var iter3 = TtlTestIterator.init(
+        [2]i8{ 3, 7 },
+        [2]i64{ now, now },
+        [2]?i64{ 60000, null }, // key 3 has 60 second TTL (not expired)
+    );
+
+    // Iterator 4: key 4 (expired), key 8 (not expired)
+    var iter4 = TtlTestIterator.init(
+        [2]i8{ 4, 8 },
+        [2]i64{ now - 5000 * std.time.us_per_ms, now },
+        [2]?i64{ 1, null }, // key 4 has 1ms TTL (expired)
+    );
+
+    var source_iters: [4]StorageRecord.Iterator = .{
+        iter1.iterator(),
+        iter2.iterator(),
+        iter3.iterator(),
+        iter4.iterator(),
+    };
+
+    var loser_tree_iter = try MergeIterator.init(allocator, &source_iters);
+    defer loser_tree_iter.deinit();
+
+    // Expected keys in order: 1, 3, 6, 7, 8 (keys 2, 4, 5 are expired)
+    const expected_keys = [_]i8{ 1, 3, 6, 7, 8 };
+    var result_count: usize = 0;
+
+    while (try loser_tree_iter.next()) |rec| {
+        try testing.expect(result_count < expected_keys.len);
+        const key_value = utils.intFromBytes(i8, rec.key.data, 0);
+        try testing.expectEqual(expected_keys[result_count], key_value);
+        result_count += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 5), result_count);
 }

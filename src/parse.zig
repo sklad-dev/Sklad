@@ -140,20 +140,52 @@ pub const KeyValuePairNode = struct {
     allocator: std.mem.Allocator,
     key: ValueNode,
     value: ValueNode,
+    ttl: ?i64,
 
     pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !KeyValuePairNode {
         const key = try ValueNode.parse(allocator, query);
         const value = try ValueNode.parse(allocator, query);
+        var ttl: ?i64 = null;
+        if (query.peakNextToken()) |token| {
+            if (token.kind == .keyword and std.mem.eql(u8, token.string(), "expire")) {
+                _ = query.nextToken();
+                ttl = try parseTtl(query);
+            }
+        }
+
         return .{
             .allocator = allocator,
             .key = key,
             .value = value,
+            .ttl = ttl,
         };
     }
 
     pub fn deinit(self: *const KeyValuePairNode) void {
         self.key.deinit();
         self.value.deinit();
+    }
+
+    fn parseTtl(query: *TokenizedQuery) !i64 {
+        const token = try query.expectToken(&[_]Token.Kind{.string_value});
+        const time_str = token.string();
+
+        if (time_str.len == 0) {
+            return ParserError.InvalidValue;
+        }
+
+        if (time_str.len > 2 and std.mem.endsWith(u8, time_str, "ms")) {
+            const num_str = time_str[0 .. time_str.len - 2];
+            return std.fmt.parseInt(i64, num_str, 10) catch return ParserError.InvalidValue;
+        }
+
+        if (std.mem.endsWith(u8, time_str, "s")) {
+            const num_str = time_str[0 .. time_str.len - 1];
+            const seconds = std.fmt.parseInt(i64, num_str, 10) catch return ParserError.InvalidValue;
+            return seconds * std.time.ms_per_s;
+        }
+
+        return std.fmt.parseInt(i64, time_str, 10) catch return ParserError.InvalidValue;
     }
 };
 
@@ -442,6 +474,52 @@ test "Parse set query" {
     var expression = try Expression.parse(testing.allocator, &query);
     defer expression.set.destroy();
     try testing.expect(expression.set.pairs.items.len == 3);
+}
+
+test "Parse set query with TTL in seconds" {
+    var tokens = try std.ArrayList(Token).initCapacity(testing.allocator, 16);
+    defer tokens.deinit(testing.allocator);
+
+    const set_query_seconds = "set 'test' 1 expire '10s'";
+    var lexer = lexers.kvLexer(testing.allocator, set_query_seconds, &tokens);
+    try testing.expect(lexer.lex() == 0);
+
+    var query = TokenizedQuery.init(testing.allocator, &tokens);
+    var expression = try Expression.parse(testing.allocator, &query);
+    defer expression.set.destroy();
+    try testing.expect(expression.set.pairs.items.len == 1);
+    try testing.expect(expression.set.pairs.items[0].ttl.? == 10 * std.time.ms_per_s);
+    tokens.clearAndFree(testing.allocator);
+}
+
+test "Parse set query with TTL explicitly in milliseconds" {
+    var tokens = try std.ArrayList(Token).initCapacity(testing.allocator, 16);
+    defer tokens.deinit(testing.allocator);
+
+    const set_query_ms = "set 'test' 4 expire '500ms'";
+    var lexer = lexers.kvLexer(testing.allocator, set_query_ms, &tokens);
+    try testing.expect(lexer.lex() == 0);
+
+    var query = TokenizedQuery.init(testing.allocator, &tokens);
+    var expression = try Expression.parse(testing.allocator, &query);
+    defer expression.set.destroy();
+    try testing.expect(expression.set.pairs.items[0].ttl.? == 500);
+    tokens.clearAndFree(testing.allocator);
+}
+
+test "Parse set query with TTL implicitly in milliseconds" {
+    var tokens = try std.ArrayList(Token).initCapacity(testing.allocator, 16);
+    defer tokens.deinit(testing.allocator);
+
+    const set_query_ms = "set 'test' 4 expire '987'";
+    var lexer = lexers.kvLexer(testing.allocator, set_query_ms, &tokens);
+    try testing.expect(lexer.lex() == 0);
+
+    var query = TokenizedQuery.init(testing.allocator, &tokens);
+    var expression = try Expression.parse(testing.allocator, &query);
+    defer expression.set.destroy();
+    try testing.expect(expression.set.pairs.items[0].ttl.? == 987);
+    tokens.clearAndFree(testing.allocator);
 }
 
 test "Parse get query" {

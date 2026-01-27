@@ -3,9 +3,26 @@
 ## SSTable record
 
 ```
-+---------------+---------------+---------------+-----------------+---------------+
-| key size (2B) |      key      |   timestamp   | value size (2B) |     value     |
-+---------------+---------------+---------------+-----------------+---------------+
++---------------+- -----+-----------+-----------------+-------+-------+----------------+
+| key size (2B) |  key  | timestamp | value size (2B) | flags | value | (optional TTL) |
++---------------+-- ----+-----------+-----------------+-------+-------+----------------+
+```
+
+### Record flags
+
+| Bit | Name     | Description                                   |
+|-----|----------|-----------------------------------------------|
+| 0   | FLAG_TTL | If set, an 8-byte TTL value follows the value |
+| 1-7 | Reserved | Reserved for future use                       |
+
+### Tombstone
+
+A tombstone (deleted record) is represented by `value size = 0`. In this case, the flags, value, and TTL fields are omitted:
+
+```
++---------------+- -----+-----------+----------------+
+| key size (2B) |  key  | timestamp | value size = 0 |
++---------------+-- ----+-----------+----------------+
 ```
 
 ## Data block

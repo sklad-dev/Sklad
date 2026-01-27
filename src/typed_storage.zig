@@ -24,12 +24,12 @@ pub const TypedStorage = struct {
         self.storage.stop();
     }
 
-    pub fn set(self: *TypedStorage, key: TypedBinaryData, value: TypedBinaryData, timestamp: i64) !void {
+    pub fn set(self: *TypedStorage, key: TypedBinaryData, value: TypedBinaryData, timestamp: i64, ttl: ?i64) !void {
         const key_bytes = try key.toBytes();
         defer key.allocator.free(key_bytes);
         const value_bytes = try value.toBytes();
         defer value.allocator.free(value_bytes);
-        try self.storage.put(key_bytes, value_bytes, timestamp);
+        try self.storage.put(key_bytes, value_bytes, timestamp, ttl);
     }
 
     pub fn get(self: *TypedStorage, key: TypedBinaryData) !?TypedBinaryData {
@@ -120,7 +120,7 @@ test "NodeStorage#set" {
     defer global_context.resetRootFolderForTests();
 
     var configurator = try testing.allocator.create(TestingConfigurator);
-    configurator.* = TestingConfigurator.init(2304, 2, 96);
+    configurator.* = TestingConfigurator.init(2304, 2, 104);
     defer global_context.deinitConfigurationForTests();
 
     var conf = configurator.configurator();
@@ -140,6 +140,7 @@ test "NodeStorage#set" {
         try buildTypedData(u8, .smallint, 2),
         try buildTypedData(u8, .smallint, 2),
         std.time.milliTimestamp(),
+        null,
     );
     try testing.expect(test_storage.storage.active_memtable.load(.unordered).size == 1);
 
@@ -147,6 +148,7 @@ test "NodeStorage#set" {
         try buildTypedData(u64, .bigserial, 2),
         try buildTypedData(u64, .bigserial, 2),
         std.time.milliTimestamp(),
+        null,
     );
     try testing.expect(test_storage.storage.active_memtable.load(.unordered).size == 2);
 
@@ -154,6 +156,7 @@ test "NodeStorage#set" {
         try buildTypedData(i32, .int, -5),
         try buildTypedData(i32, .int, 5),
         std.time.milliTimestamp(),
+        null,
     );
     try testing.expect(test_storage.storage.active_memtable.load(.unordered).size == 3);
 
@@ -161,6 +164,7 @@ test "NodeStorage#set" {
         try buildTypedData(f32, .float, -5.5),
         try buildTypedData(f32, .float, 5.5),
         std.time.milliTimestamp(),
+        null,
     );
     try testing.expect(test_storage.storage.active_memtable.load(.unordered).size == 4);
 
@@ -169,7 +173,7 @@ test "NodeStorage#set" {
         .data_type = .string,
         .data = "Hello, world!",
     };
-    try test_storage.set(data, data, std.time.milliTimestamp());
+    try test_storage.set(data, data, std.time.milliTimestamp(), null);
     try testing.expect(test_storage.storage.active_memtable.load(.unordered).size == 5);
 
     try cleanup(&test_storage);
@@ -198,7 +202,7 @@ test "NodeStorage#get" {
 
     const key = try buildTypedData(u8, .smallint, 2);
     const value = try buildTypedData(f32, .float, 1.23);
-    try test_storage.set(key, value, std.time.milliTimestamp());
+    try test_storage.set(key, value, std.time.milliTimestamp(), null);
     const result = try test_storage.get(try buildTypedData(u8, .smallint, 2));
     defer testing.allocator.free(result.?.data);
 
@@ -230,7 +234,7 @@ test "BinaryStorage#delete" {
 
     const key = try buildTypedData(u8, .smallint, 2);
     const value = try buildTypedData(f32, .float, 1.23);
-    try test_storage.set(key, value, std.time.milliTimestamp());
+    try test_storage.set(key, value, std.time.milliTimestamp(), null);
 
     var result = try test_storage.get(try buildTypedData(u8, .smallint, 2));
     try testing.expect(std.mem.eql(u8, result.?.data, value.data));
