@@ -16,6 +16,19 @@ There is a simple Python client: [sklient](https://github.com/sklad-db/sklient).
 set <key> <value>
 ```
 
+### 1a. Adding a key-value pair with TTL:
+
+```
+set <key> <value> expire '<time>'
+```
+
+Where `<time>` can be:
+- A number in milliseconds: `'1000'`
+- Seconds with 's' suffix: `'10s'`
+- Milliseconds with 'ms' suffix: `'500ms'`
+
+Example: `set 'mykey' 'myvalue' expire '30s'`
+
 ### 2. Retrieving a value by key:
 ```
 get <key>
@@ -106,7 +119,6 @@ For storage, Sklad uses an LSM-tree (Log-Structured Merge Tree) to optimize writ
 3) [MANIFEST file](docs/manifest.md)
 
 ## Todo
-* TTL
 * Range queries
 * Add io_uring option for Linux I/O
 * Add metrics: SSTable count per level
