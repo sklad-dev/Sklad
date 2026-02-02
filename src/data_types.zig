@@ -30,6 +30,11 @@ pub const ValueType = enum(u8) {
 
 pub const BinaryData = []const u8;
 
+pub const BinaryDataRange = struct {
+    start: BinaryData,
+    end: BinaryData,
+};
+
 pub const TypedBinaryData = struct {
     allocator: std.mem.Allocator,
     data_type: ValueType,

@@ -38,15 +38,15 @@ pub const Expression = union(ExpressionType) {
         if (query.nextToken()) |token| {
             switch (token.kind) {
                 .keyword => {
-                    if (std.mem.eql(u8, token.string(), "set")) {
+                    if (std.mem.eql(u8, token.string(), lexers.KV_BUILTINS[0].name)) {
                         return Expression{
                             .set = try SetExpression.parse(allocator, query),
                         };
-                    } else if (std.mem.eql(u8, token.string(), "get")) {
+                    } else if (std.mem.eql(u8, token.string(), lexers.KV_BUILTINS[1].name)) {
                         return Expression{
                             .get = try GetExpression.parse(allocator, query),
                         };
-                    } else if (std.mem.eql(u8, token.string(), "delete")) {
+                    } else if (std.mem.eql(u8, token.string(), lexers.KV_BUILTINS[2].name)) {
                         return Expression{
                             .delete = try DeleteExpression.parse(allocator, query),
                         };
@@ -94,23 +94,59 @@ pub const SetExpression = struct {
 
 pub const GetExpression = struct {
     allocator: std.mem.Allocator,
-    key: ValueNode,
+    parameter: GetParameterNode,
+    batch_size: ?u64,
 
     pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !GetExpression {
+        var parameter: GetParameterNode = undefined;
+
         if (query.peakNextToken()) |token| {
             switch (token.kind) {
-                .string_value, .numeric_value, .bool_value => return .{
-                    .allocator = allocator,
-                    .key = try ValueNode.parse(allocator, query),
+                .keyword => {
+                    if (std.mem.eql(u8, token.string(), lexers.KV_BUILTINS[4].name)) {
+                        _ = query.nextToken();
+                        parameter = .{ .range = try RangeNode.parse(allocator, query) };
+                    } else {
+                        return ParserError.UnexpectedToken;
+                    }
+                },
+                .string_value, .numeric_value, .bool_value => {
+                    parameter = .{ .value = try ValueNode.parse(allocator, query) };
                 },
                 else => return ParserError.UnexpectedToken,
             }
+        } else {
+            return ParserError.InvalidQuery;
         }
-        return ParserError.InvalidQuery;
+
+        errdefer switch (parameter) {
+            .range => |*r| r.deinit(),
+            .value => |*v| v.deinit(),
+        };
+
+        var batch_size: ?u64 = null;
+        if (query.peakNextToken()) |token| {
+            if (token.kind == .keyword and std.mem.eql(u8, token.string(), lexers.KV_BUILTINS[5].name)) {
+                _ = query.nextToken();
+                const batch_token = try query.expectToken(&[_]Token.Kind{.numeric_value});
+                batch_size = std.fmt.parseInt(u64, batch_token.string(), 10) catch {
+                    return ParserError.InvalidValue;
+                };
+            }
+        }
+
+        return .{
+            .allocator = allocator,
+            .parameter = parameter,
+            .batch_size = batch_size,
+        };
     }
 
     pub fn destroy(self: *GetExpression) void {
-        self.key.deinit();
+        switch (self.parameter) {
+            .range => |*r| r.deinit(),
+            .value => |*v| v.deinit(),
+        }
     }
 };
 
@@ -147,7 +183,7 @@ pub const KeyValuePairNode = struct {
         const value = try ValueNode.parse(allocator, query);
         var ttl: ?i64 = null;
         if (query.peakNextToken()) |token| {
-            if (token.kind == .keyword and std.mem.eql(u8, token.string(), "expire")) {
+            if (token.kind == .keyword and std.mem.eql(u8, token.string(), lexers.KV_BUILTINS[3].name)) {
                 _ = query.nextToken();
                 ttl = try parseTtl(query);
             }
@@ -186,6 +222,44 @@ pub const KeyValuePairNode = struct {
         }
 
         return std.fmt.parseInt(i64, time_str, 10) catch return ParserError.InvalidValue;
+    }
+};
+
+pub const GetParameterType = enum {
+    range,
+    value,
+};
+
+pub const GetParameterNode = union(enum) {
+    range: RangeNode,
+    value: ValueNode,
+};
+
+pub const RangeNode = struct {
+    allocator: std.mem.Allocator,
+    start: ValueNode,
+    end: ValueNode,
+
+    pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !RangeNode {
+        const start = try ValueNode.parse(allocator, query);
+        const end = try ValueNode.parse(allocator, query);
+
+        if (start.value.data_type != end.value.data_type) {
+            start.deinit();
+            end.deinit();
+            return ParserError.InvalidValue;
+        }
+
+        return .{
+            .allocator = allocator,
+            .start = start,
+            .end = end,
+        };
+    }
+
+    pub fn deinit(self: *const RangeNode) void {
+        self.start.deinit();
+        self.end.deinit();
     }
 };
 
@@ -533,7 +607,64 @@ test "Parse get query" {
     var query = TokenizedQuery.init(testing.allocator, &tokens);
     var expression = try Expression.parse(testing.allocator, &query);
     defer expression.get.destroy();
-    try testing.expect(std.mem.eql(u8, expression.get.key.value.data, "test"));
+    try testing.expect(std.mem.eql(u8, expression.get.parameter.value.value.data, "test"));
+}
+
+test "Parse get range query" {
+    var tokens = try std.ArrayList(Token).initCapacity(testing.allocator, 16);
+    defer tokens.deinit(testing.allocator);
+
+    const insert_node_query = "get range 'a' 'z'";
+    var lexer = lexers.kvLexer(testing.allocator, insert_node_query, &tokens);
+    try testing.expect(lexer.lex() == 0);
+
+    var query = TokenizedQuery.init(testing.allocator, &tokens);
+    var expression = try Expression.parse(testing.allocator, &query);
+    defer expression.get.destroy();
+    try testing.expect(std.mem.eql(u8, expression.get.parameter.range.start.value.data, "a"));
+    try testing.expect(std.mem.eql(u8, expression.get.parameter.range.end.value.data, "z"));
+}
+
+test "Parse get range query with mismatching value types" {
+    var tokens = try std.ArrayList(Token).initCapacity(testing.allocator, 16);
+    defer tokens.deinit(testing.allocator);
+
+    const insert_node_query = "get range 'a' 123";
+    var lexer = lexers.kvLexer(testing.allocator, insert_node_query, &tokens);
+    try testing.expect(lexer.lex() == 0);
+
+    var query = TokenizedQuery.init(testing.allocator, &tokens);
+    const parse_result = Expression.parse(testing.allocator, &query);
+    try testing.expect(parse_result == ParserError.InvalidValue);
+}
+
+test "Parse get range query with batch size" {
+    var tokens = try std.ArrayList(Token).initCapacity(testing.allocator, 16);
+    defer tokens.deinit(testing.allocator);
+
+    const insert_node_query = "get range 'a' 'z' batch 100";
+    var lexer = lexers.kvLexer(testing.allocator, insert_node_query, &tokens);
+    try testing.expect(lexer.lex() == 0);
+
+    var query = TokenizedQuery.init(testing.allocator, &tokens);
+    var expression = try Expression.parse(testing.allocator, &query);
+    defer expression.get.destroy();
+    try testing.expect(std.mem.eql(u8, expression.get.parameter.range.start.value.data, "a"));
+    try testing.expect(std.mem.eql(u8, expression.get.parameter.range.end.value.data, "z"));
+    try testing.expect(expression.get.batch_size.? == 100);
+}
+
+test "Parse get range query with incorrect batch size type" {
+    var tokens = try std.ArrayList(Token).initCapacity(testing.allocator, 16);
+    defer tokens.deinit(testing.allocator);
+
+    const insert_node_query = "get range 'a' 'z' batch 'invalid_size'";
+    var lexer = lexers.kvLexer(testing.allocator, insert_node_query, &tokens);
+    try testing.expect(lexer.lex() == 0);
+
+    var query = TokenizedQuery.init(testing.allocator, &tokens);
+    const parse_result = Expression.parse(testing.allocator, &query);
+    try testing.expect(parse_result == ParserError.UnexpectedToken);
 }
 
 test "Parse delete query" {

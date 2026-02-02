@@ -7,6 +7,7 @@ const utils = @import("./utils.zig");
 const getConfigurator = @import("./global_context.zig").getConfigurator;
 const Wal = @import("./wal.zig").Wal;
 const BinaryData = data_types.BinaryData;
+const BinaryDataRange = data_types.BinaryDataRange;
 const StorageRecord = data_types.StorageRecord;
 const RecordKey = data_types.RecordKey;
 const RecordValue = data_types.RecordValue;
@@ -101,18 +102,62 @@ pub const Memtable = struct {
     pub const Iterator = struct {
         arena: *const Arena,
         current: ?*Node,
+        key_range: ?BinaryDataRange = null,
 
         pub inline fn next(self: *Iterator) ?*Node {
             if (self.current) |c| {
-                self.current = @ptrCast(@alignCast(&self.arena.arena[c.tower[0]]));
                 if (c.data_offset != Memtable.NULL_OFFSET) {
+                    if (self.key_range) |range| {
+                        if (utils.compareBitwise(c.keyData(self.arena), range.end) > 0) {
+                            return null;
+                        }
+                    }
+                    self.current = @ptrCast(@alignCast(&self.arena.arena[c.tower[0]]));
                     return c;
                 }
-            } else {
-                return null;
+            }
+            return null;
+        }
+
+        pub fn setRange(self: *Iterator, range: BinaryDataRange) void {
+            self.key_range = range;
+            _ = self.seekTo(range.start);
+        }
+
+        fn seekTo(self: *Iterator, key: BinaryData) bool {
+            var current: *Node = @ptrCast(@alignCast(&self.arena.arena[0]));
+            const max_level = current.tower.len - 1;
+
+            var level: i64 = @intCast(max_level);
+            while (level >= 0) : (level -= 1) {
+                const l: usize = @intCast(level);
+                var next_offset = current.tower[l];
+                while (next_offset != 0) {
+                    const next_node: *Node = @ptrCast(@alignCast(&self.arena.arena[next_offset]));
+                    if (next_node.data_offset == Memtable.NULL_OFFSET) break;
+                    if (utils.compareBitwise(next_node.keyData(self.arena), key) < 0) {
+                        current = next_node;
+                        next_offset = next_node.tower[l];
+                    } else {
+                        break;
+                    }
+                }
             }
 
-            return null;
+            const next_offset = current.tower[0];
+            if (next_offset == 0) {
+                self.current = null;
+                return false;
+            }
+
+            const next_node: *Node = @ptrCast(@alignCast(&self.arena.arena[next_offset]));
+            if (next_node.data_offset == Memtable.NULL_OFFSET) {
+                self.current = null;
+                return false;
+            }
+
+            self.current = next_node;
+            return true;
         }
     };
 
@@ -515,6 +560,93 @@ test "Memtable#add tombstone" {
     const result = memtable.find(k1.data);
     try testing.expect(result != null);
     try testing.expect(result.?.len == 0);
+
+    try memtable.wal.deleteFile();
+    memtable.destroy();
+}
+
+test "Memtable.Iterator" {
+    var memtable = try Memtable.init(
+        testing.allocator,
+        std.crypto.random,
+        8192,
+        8,
+        "./",
+    );
+
+    const test_value = utils.intToBytes(u8, 0);
+    var slot: ?Memtable.ReservedDataSlot = null;
+    for (0..18) |i| {
+        slot = memtable.reserve(22);
+        try memtable.add(
+            &.{
+                .data = &utils.intToBytes(usize, 17 - i),
+                .timestamp = std.time.milliTimestamp(),
+            },
+            &.{
+                .data = &test_value,
+                .flags = 0,
+                .ttl = null,
+            },
+            &slot.?,
+        );
+    }
+
+    var iterator = memtable.iterator();
+    var i: u64 = 0;
+    while (iterator.next()) |node| : (i += 1) {
+        const expected_key = utils.intToBytes(usize, i);
+        try testing.expect(std.mem.eql(u8, node.keyData(&memtable.arena), expected_key[0..]));
+    }
+
+    try memtable.wal.deleteFile();
+    memtable.destroy();
+}
+
+test "Memtable.Iterator with range" {
+    var memtable = try Memtable.init(
+        testing.allocator,
+        std.crypto.random,
+        8192,
+        8,
+        "./",
+    );
+
+    const test_value = utils.intToBytes(u8, 0);
+    var slot: ?Memtable.ReservedDataSlot = null;
+    for (0..18) |i| {
+        slot = memtable.reserve(22);
+        try memtable.add(
+            &.{
+                .data = &utils.intToBytes(usize, 17 - i),
+                .timestamp = std.time.milliTimestamp(),
+            },
+            &.{
+                .data = &test_value,
+                .flags = 0,
+                .ttl = null,
+            },
+            &slot.?,
+        );
+    }
+
+    var iterator = memtable.iterator();
+
+    const start: usize = 5;
+    const end: usize = 15;
+
+    iterator.setRange(.{
+        .start = &utils.intToBytes(usize, start),
+        .end = &utils.intToBytes(usize, end),
+    });
+
+    var i: u64 = start;
+    while (iterator.next()) |node| : (i += 1) {
+        const expected_key = utils.intToBytes(usize, i);
+        try testing.expect(std.mem.eql(u8, node.keyData(&memtable.arena), expected_key[0..]));
+        try testing.expect(utils.intFromBytes(usize, node.keyData(&memtable.arena), 0) >= start);
+        try testing.expect(utils.intFromBytes(usize, node.keyData(&memtable.arena), 0) <= end);
+    }
 
     try memtable.wal.deleteFile();
     memtable.destroy();
