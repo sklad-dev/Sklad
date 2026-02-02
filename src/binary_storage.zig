@@ -949,7 +949,7 @@ test "BinaryStorage#delete when in sstable" {
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
 
-    const MemtableIteratorAdapter = @import("./sstable.zig").MemtableIteratorAdapter;
+    const MemtableIteratorAdapter = @import("./memtable.zig").MemtableIteratorAdapter;
 
     const deleted_key = 4;
     {
@@ -1026,7 +1026,7 @@ test "BinaryStorage compaction and cleanup" {
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
 
-    const MemtableIteratorAdapter = @import("./sstable.zig").MemtableIteratorAdapter;
+    const MemtableIteratorAdapter = @import("./memtable.zig").MemtableIteratorAdapter;
 
     for (0..5) |i| {
         var test_memtable = try Memtable.init(testing.allocator, std.crypto.random, 4096, 8, "./");

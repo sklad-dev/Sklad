@@ -64,6 +64,33 @@ pub const Arena = struct {
     }
 };
 
+pub const MemtableIteratorAdapter = struct {
+    memtable_iterator: Memtable.Iterator,
+    memtable: *const Memtable,
+
+    pub fn init(memtable: *Memtable) MemtableIteratorAdapter {
+        return .{
+            .memtable_iterator = memtable.iterator(),
+            .memtable = memtable,
+        };
+    }
+
+    fn nextFn(ctx: *anyopaque) !?StorageRecord {
+        const self: *MemtableIteratorAdapter = @ptrCast(@alignCast(ctx));
+        if (self.memtable_iterator.next()) |node| {
+            return node.toStorageRecord(&self.memtable.arena);
+        }
+        return null;
+    }
+
+    pub fn iterator(self: *MemtableIteratorAdapter) StorageRecord.Iterator {
+        return .{
+            .context = self,
+            .next_fn = nextFn,
+        };
+    }
+};
+
 pub const Memtable = struct {
     allocator: std.mem.Allocator,
     arena: Arena,

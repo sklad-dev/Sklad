@@ -16,33 +16,6 @@ const StorageRecord = data_types.StorageRecord;
 const RecordKey = data_types.RecordKey;
 const RecordValue = data_types.RecordValue;
 
-pub const MemtableIteratorAdapter = struct {
-    memtable_iterator: Memtable.Iterator,
-    memtable: *const Memtable,
-
-    pub fn init(memtable: *Memtable) MemtableIteratorAdapter {
-        return .{
-            .memtable_iterator = memtable.iterator(),
-            .memtable = memtable,
-        };
-    }
-
-    fn nextFn(ctx: *anyopaque) !?StorageRecord {
-        const self: *MemtableIteratorAdapter = @ptrCast(@alignCast(ctx));
-        if (self.memtable_iterator.next()) |node| {
-            return node.toStorageRecord(&self.memtable.arena);
-        }
-        return null;
-    }
-
-    pub fn iterator(self: *MemtableIteratorAdapter) StorageRecord.Iterator {
-        return .{
-            .context = self,
-            .next_fn = nextFn,
-        };
-    }
-};
-
 pub const SSTableIteratorAdapter = struct {
     sstable_iterator: SSTable.Iterator,
 
@@ -639,7 +612,7 @@ test "SSTable#create" {
         );
     }
 
-    var adapter = MemtableIteratorAdapter.init(&test_memtable);
+    var adapter = @import("./memtable.zig").MemtableIteratorAdapter.init(&test_memtable);
     var memtable_iterator = adapter.iterator();
 
     var test_sstable = try SSTable.create(
@@ -687,7 +660,7 @@ test "SSTable#open" {
         }, &slot.?);
     }
 
-    var adapter = MemtableIteratorAdapter.init(&test_memtable);
+    var adapter = @import("./memtable.zig").MemtableIteratorAdapter.init(&test_memtable);
     var memtable_iterator = adapter.iterator();
 
     var test_sstable = try SSTable.create(
@@ -745,7 +718,7 @@ test "SSTable#find" {
         );
     }
 
-    var adapter = MemtableIteratorAdapter.init(&test_memtable);
+    var adapter = @import("./memtable.zig").MemtableIteratorAdapter.init(&test_memtable);
     var memtable_iterator = adapter.iterator();
 
     var test_sstable = try SSTable.create(
@@ -811,7 +784,7 @@ test "SSTable#iterator" {
         );
     }
 
-    var adapter = MemtableIteratorAdapter.init(&test_memtable);
+    var adapter = @import("./memtable.zig").MemtableIteratorAdapter.init(&test_memtable);
     var memtable_iterator = adapter.iterator();
 
     var test_sstable = try SSTable.create(
@@ -869,7 +842,7 @@ test "SSTable#iterator with range" {
         );
     }
 
-    var adapter = MemtableIteratorAdapter.init(&test_memtable);
+    var adapter = @import("./memtable.zig").MemtableIteratorAdapter.init(&test_memtable);
     var memtable_iterator = adapter.iterator();
 
     var test_sstable = try SSTable.create(
