@@ -679,6 +679,56 @@ test "Memtable.Iterator with range" {
     memtable.destroy();
 }
 
+test "Memtable.Iterator with range wider than data" {
+    var memtable = try Memtable.init(
+        testing.allocator,
+        std.crypto.random,
+        8192,
+        8,
+        "./",
+    );
+
+    const test_value = utils.intToBytes(u8, 0);
+    var slot: ?Memtable.ReservedDataSlot = null;
+    for (0..18) |i| {
+        slot = memtable.reserve(22);
+        try memtable.add(
+            &.{
+                .data = &utils.intToBytes(usize, 10 + i),
+                .timestamp = std.time.milliTimestamp(),
+            },
+            &.{
+                .data = &test_value,
+                .flags = 0,
+                .ttl = null,
+            },
+            &slot.?,
+        );
+    }
+
+    var iterator = memtable.iterator();
+
+    const start: usize = 0;
+    const end: usize = 30;
+
+    iterator.setRange(.{
+        .start = &utils.intToBytes(usize, start),
+        .end = &utils.intToBytes(usize, end),
+    });
+
+    var i: u64 = 0;
+    while (iterator.next()) |node| : (i += 1) {
+        const expected_key = utils.intToBytes(usize, 10 + i);
+        try testing.expect(std.mem.eql(u8, node.keyData(&memtable.arena), expected_key[0..]));
+        try testing.expect(utils.intFromBytes(usize, node.keyData(&memtable.arena), 0) >= start);
+        try testing.expect(utils.intFromBytes(usize, node.keyData(&memtable.arena), 0) <= end);
+    }
+    try testing.expect(i == 18);
+
+    try memtable.wal.deleteFile();
+    memtable.destroy();
+}
+
 test "Arena" {
     var arena = try Arena.init(testing.allocator, 104);
     defer arena.deinit();

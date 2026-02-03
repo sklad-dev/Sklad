@@ -12,6 +12,7 @@ const CompactionState = @import("./table_file_manager.zig").CompactionState;
 const Configurator = @import("./configurator.zig").Configurator;
 const FileHandle = @import("./data_types.zig").FileHandle;
 const Memtable = @import("./memtable.zig").Memtable;
+const MemtableIteratorAdapter = @import("./memtable.zig").MemtableIteratorAdapter;
 const MergeIterator = @import("./merge_iterator.zig").MergeIterator;
 const MetricKind = @import("./metrics.zig").MetricKind;
 const RefCounted = @import("./lock_free.zig").RefCounted;
@@ -26,6 +27,7 @@ const fileNameFromHandle = @import("./sstable.zig").fileNameFromHandle;
 const recordMetric = @import("./metrics.zig").recordMetric;
 const MANIFEST_ENTRY_SIZE = @import("./manifest.zig").MANIFEST_ENTRY_SIZE;
 
+const BinaryDataRange = data_types.BinaryDataRange;
 const StorageRecord = data_types.StorageRecord;
 const FileList = TableFileManager.FileList;
 
@@ -406,6 +408,164 @@ pub const BinaryStorage = struct {
         }
     };
 
+    pub const RangeQueryContext = struct {
+        allocator: std.mem.Allocator,
+        memtable_adapters: []MemtableIteratorAdapter,
+        sstable_adapters: []SSTableIteratorAdapter,
+        cache_records: []*SSTableCache.CacheRecord,
+        pending_list_ref: ?*PendingMemtableList,
+        merge_iterator: ?MergeIterator,
+
+        pub fn init(allocator: std.mem.Allocator, storage: *BinaryStorage, range: BinaryDataRange) !RangeQueryContext {
+            var memtable_list = try std.ArrayList(MemtableIteratorAdapter).initCapacity(allocator, 2);
+            defer memtable_list.deinit(allocator);
+
+            const max_level = storage.configurator.compactionMaxLevel();
+            var sstable_list = try std.ArrayList(SSTableIteratorAdapter).initCapacity(allocator, max_level * 2);
+            errdefer {
+                for (sstable_list.items) |*adapter| {
+                    adapter.sstable_iterator.deinit();
+                }
+                sstable_list.deinit(allocator);
+            }
+
+            var cache_list = try std.ArrayList(*SSTableCache.CacheRecord).initCapacity(allocator, max_level * 2);
+            errdefer {
+                for (cache_list.items) |record| {
+                    _ = record.release();
+                }
+                cache_list.deinit(allocator);
+            }
+
+            var pending_ref: ?*PendingMemtableList = null;
+            errdefer if (pending_ref) |ref| {
+                _ = ref.release();
+            };
+
+            try collectMemtableIterators(allocator, storage, range, &memtable_list, &pending_ref);
+            try collectSSTableIterators(allocator, storage, range, &sstable_list, &cache_list);
+
+            var ctx = RangeQueryContext{
+                .allocator = allocator,
+                .memtable_adapters = try memtable_list.toOwnedSlice(allocator),
+                .sstable_adapters = try sstable_list.toOwnedSlice(allocator),
+                .cache_records = try cache_list.toOwnedSlice(allocator),
+                .pending_list_ref = pending_ref,
+                .merge_iterator = null,
+            };
+            errdefer ctx.deinit();
+
+            try ctx.initMergeIterator();
+            return ctx;
+        }
+
+        pub fn deinit(self: *RangeQueryContext) void {
+            if (self.merge_iterator) |*it| it.deinit();
+
+            for (self.sstable_adapters) |*adapter| {
+                adapter.sstable_iterator.deinit();
+            }
+            for (self.cache_records) |record| {
+                _ = record.release();
+            }
+            if (self.pending_list_ref) |ref| {
+                _ = ref.release();
+            }
+
+            if (self.cache_records.len > 0) self.allocator.free(self.cache_records);
+            if (self.sstable_adapters.len > 0) self.allocator.free(self.sstable_adapters);
+            if (self.memtable_adapters.len > 0) self.allocator.free(self.memtable_adapters);
+        }
+
+        pub fn next(self: *RangeQueryContext) !?StorageRecord {
+            if (self.merge_iterator) |*it| {
+                return it.next();
+            }
+            return null;
+        }
+
+        fn collectMemtableIterators(
+            allocator: std.mem.Allocator,
+            storage: *BinaryStorage,
+            range: BinaryDataRange,
+            list: *std.ArrayList(MemtableIteratorAdapter),
+            pending_ref: *?*PendingMemtableList,
+        ) !void {
+            const active = storage.active_memtable.load(.acquire);
+            var active_adapter = MemtableIteratorAdapter.init(active);
+            active_adapter.memtable_iterator.setRange(range);
+            if (active_adapter.memtable_iterator.current != null) {
+                try list.append(allocator, active_adapter);
+            }
+
+            if (storage.pending_memtables.load(.acquire)) |pending_list| {
+                _ = pending_list.acquire();
+                pending_ref.* = pending_list;
+
+                var curr = pending_list.get().head;
+                while (curr) |node| : (curr = node.next) {
+                    var adapter = MemtableIteratorAdapter.init(node.entry.memtable);
+                    adapter.memtable_iterator.setRange(range);
+                    if (adapter.memtable_iterator.current != null) {
+                        try list.append(allocator, adapter);
+                    }
+                }
+            }
+        }
+
+        fn collectSSTableIterators(
+            allocator: std.mem.Allocator,
+            storage: *BinaryStorage,
+            range: BinaryDataRange,
+            sstable_list: *std.ArrayList(SSTableIteratorAdapter),
+            cache_list: *std.ArrayList(*SSTableCache.CacheRecord),
+        ) !void {
+            const max_level = storage.configurator.compactionMaxLevel();
+            for (0..max_level) |level| {
+                const file_list = storage.table_file_manager.acquireFilesAtLevel(@intCast(level)) orelse continue;
+                defer _ = file_list.release();
+
+                var file_curr = file_list.get().head;
+                while (file_curr) |file_node| : (file_curr = file_node.next) {
+                    const handle = FileHandle{ .level = @intCast(level), .file_id = file_node.entry };
+                    const cache_record = try storage.sstable_cache.get(handle, &storage.table_file_manager) orelse continue;
+
+                    if (!try cache_record.get().table.hasDataFromRange(range)) {
+                        _ = cache_record.release();
+                        continue;
+                    }
+
+                    var adapter = try SSTableIteratorAdapter.init(cache_record.get().table);
+                    errdefer adapter.sstable_iterator.deinit();
+
+                    try adapter.sstable_iterator.setRange(range);
+                    try cache_list.append(allocator, cache_record);
+                    try sstable_list.append(allocator, adapter);
+                }
+            }
+        }
+
+        fn initMergeIterator(self: *RangeQueryContext) !void {
+            const total_sources = self.memtable_adapters.len + self.sstable_adapters.len;
+            if (total_sources == 0) return;
+
+            var source_iterators = try self.allocator.alloc(StorageRecord.Iterator, total_sources);
+            defer self.allocator.free(source_iterators);
+
+            var idx: usize = 0;
+            for (self.memtable_adapters) |*adapter| {
+                source_iterators[idx] = adapter.iterator();
+                idx += 1;
+            }
+            for (self.sstable_adapters) |*adapter| {
+                source_iterators[idx] = adapter.iterator();
+                idx += 1;
+            }
+
+            self.merge_iterator = try MergeIterator.init(self.allocator, source_iterators);
+        }
+    };
+
     pub fn start(allocator: std.mem.Allocator, path: []const u8) !BinaryStorage {
         var deleted_files = std.AutoHashMap(FileHandle, void).init(allocator);
         defer deleted_files.deinit();
@@ -528,6 +688,17 @@ pub const BinaryStorage = struct {
         }
 
         return null;
+    }
+
+    pub fn findInRange(self: *BinaryStorage, start_key: []const u8, end_key: []const u8) !RangeQueryContext {
+        return RangeQueryContext.init(
+            self.allocator,
+            self,
+            .{
+                .start = start_key,
+                .end = end_key,
+            },
+        );
     }
 
     pub fn enqueueCompactionTask(self: *BinaryStorage, level: u8) void {
@@ -949,8 +1120,6 @@ test "BinaryStorage#delete when in sstable" {
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
 
-    const MemtableIteratorAdapter = @import("./memtable.zig").MemtableIteratorAdapter;
-
     const deleted_key = 4;
     {
         var test_memtable = try Memtable.init(testing.allocator, std.crypto.random, 4096, 8, "./");
@@ -1025,8 +1194,6 @@ test "BinaryStorage compaction and cleanup" {
     const block_size: u32 = 108;
     try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
     defer @import("./worker.zig").deinitWorkerContext();
-
-    const MemtableIteratorAdapter = @import("./memtable.zig").MemtableIteratorAdapter;
 
     for (0..5) |i| {
         var test_memtable = try Memtable.init(testing.allocator, std.crypto.random, 4096, 8, "./");
@@ -1159,6 +1326,84 @@ test "BinaryStorage compaction and cleanup" {
     try reader.seekTo(try storage.table_file_manager.manifest.file.getEndPos() - 16);
     const offset = try utils.readNumber(u64, &reader.interface);
     try testing.expect(offset == 0x5A);
+
+    try cleanup(&storage);
+}
+
+test "BinaryStorage#findInRange" {
+    global_context.setRootFolderForTests("./");
+    defer global_context.resetRootFolderForTests();
+
+    const block_size: u32 = 108;
+    try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
+    defer @import("./worker.zig").deinitWorkerContext();
+
+    for (0..5) |i| {
+        var test_memtable = try Memtable.init(testing.allocator, std.crypto.random, 4096, 8, "./");
+        defer test_memtable.destroy();
+
+        const test_value = utils.intToBytes(u8, 255);
+        var slot: ?Memtable.ReservedDataSlot = null;
+        for (0..10) |j| {
+            const record = StorageRecord.init(
+                &utils.intToBytes(usize, j + i * 10),
+                &test_value,
+                std.time.milliTimestamp(),
+                null,
+            );
+            slot = test_memtable.reserve(record.sizeInMemory());
+            try test_memtable.add(&record.key, &record.value, &slot.?);
+        }
+
+        var adapter = MemtableIteratorAdapter.init(&test_memtable);
+        var memtable_iterator = adapter.iterator();
+
+        var test_sstable = try SSTable.create(
+            testing.allocator,
+            &memtable_iterator,
+            test_memtable.size,
+            .{ .level = 0, .file_id = @as(u64, i) },
+            block_size,
+            20,
+        );
+        test_sstable.close(false);
+        try test_memtable.wal.deleteFile();
+    }
+
+    defer global_context.deinitConfigurationForTests();
+
+    var configurator = try testing.allocator.create(TestingConfigurator);
+    configurator.* = TestingConfigurator.init(4096, 2, block_size);
+    var conf = configurator.configurator();
+    global_context.loadConfiguration(&conf);
+
+    var storage = try BinaryStorage.start(testing.allocator, ".");
+    defer storage.stop();
+
+    for (0..10) |k| {
+        try storage.put(
+            &utils.intToBytes(usize, k),
+            &utils.intToBytes(u8, @as(u8, @intCast(k))),
+            std.time.milliTimestamp(),
+            null,
+        );
+    }
+
+    var ri1 = try storage.findInRange(&utils.intToBytes(usize, 5), &utils.intToBytes(usize, 15));
+    defer ri1.deinit();
+    var expected_key: usize = 5;
+    while (try ri1.next()) |record| {
+        try testing.expect(std.mem.eql(u8, record.key.data, &utils.intToBytes(usize, expected_key)));
+        expected_key += 1;
+    }
+
+    var ri2 = try storage.findInRange(&utils.intToBytes(usize, 0), &utils.intToBytes(usize, 59));
+    defer ri2.deinit();
+    expected_key = 0;
+    while (try ri2.next()) |record| {
+        try testing.expect(std.mem.eql(u8, record.key.data, &utils.intToBytes(usize, expected_key)));
+        expected_key += 1;
+    }
 
     try cleanup(&storage);
 }

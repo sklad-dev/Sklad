@@ -465,6 +465,12 @@ pub const SSTable = struct {
         return null;
     }
 
+    pub fn hasDataFromRange(self: *const SSTable, range: BinaryDataRange) !bool {
+        if (utils.compareBitwise(range.end, self.min_key.?) < 0) return false;
+        if (utils.compareBitwise(range.start, self.max_key.?) > 0) return false;
+        return true;
+    }
+
     pub fn iterator(self: *SSTable) !Iterator {
         return try Iterator.init(self.allocator, self);
     }

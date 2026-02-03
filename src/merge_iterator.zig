@@ -7,8 +7,6 @@ const EMPTY_VALUE = @import("data_types.zig").EMPTY_VALUE;
 const assert = std.debug.assert;
 
 pub const MergeIterator = struct {
-    const Self = @This();
-
     const RecordBuffer = struct {
         record: ?StorageRecord,
         key_value_data: std.ArrayList(u8),
@@ -65,7 +63,7 @@ pub const MergeIterator = struct {
     sources: []Source,
     current: RecordBuffer,
 
-    pub fn init(allocator: std.mem.Allocator, iterators: []StorageRecord.Iterator) !Self {
+    pub fn init(allocator: std.mem.Allocator, iterators: []StorageRecord.Iterator) !MergeIterator {
         assert(iterators.len > 0);
         assert(iterators.len < 128);
 
@@ -80,7 +78,7 @@ pub const MergeIterator = struct {
             };
         }
 
-        var self = Self{
+        var self = MergeIterator{
             .allocator = allocator,
             .tree = tree,
             .sources = sources,
@@ -90,7 +88,7 @@ pub const MergeIterator = struct {
         return self;
     }
 
-    pub fn deinit(self: *Self) void {
+    pub fn deinit(self: *MergeIterator) void {
         for (self.sources) |*source| {
             source.current.deinit(self.allocator);
         }
@@ -99,7 +97,7 @@ pub const MergeIterator = struct {
         self.current.deinit(self.allocator);
     }
 
-    pub fn next(self: *Self) !?StorageRecord {
+    pub fn next(self: *MergeIterator) !?StorageRecord {
         while (true) {
             if (self.tree[self.tree.len - 1] < 0) return null;
 
@@ -132,7 +130,7 @@ pub const MergeIterator = struct {
         return null;
     }
 
-    fn buildInitialTree(self: *Self) !void {
+    fn buildInitialTree(self: *MergeIterator) !void {
         for (self.sources) |*source| {
             try source.current.storeRecord(self.allocator, try source.iterator.next());
         }
@@ -142,7 +140,7 @@ pub const MergeIterator = struct {
         }
     }
 
-    fn replay(self: *Self, source_index: i8) void {
+    fn replay(self: *MergeIterator, source_index: i8) void {
         if (source_index < 0) return;
 
         var current_winner = source_index;
@@ -179,7 +177,7 @@ pub const MergeIterator = struct {
         }
     }
 
-    fn playMatch(self: *Self, idx1: i8, idx2: i8) i8 {
+    fn playMatch(self: *MergeIterator, idx1: i8, idx2: i8) i8 {
         const v1 = self.sources[@intCast(idx1)].current.record;
         const v2 = self.sources[@intCast(idx2)].current.record;
 
