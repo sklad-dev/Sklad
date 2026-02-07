@@ -1,6 +1,6 @@
 # Sklad.
 
-**Sklad** is a high-performance key-value store that uses an asynchronous, non-blocking design and lock-free data structures to efficiently handle concurrent workloads.
+**Sklad** is a lightweight key-value database that uses an asynchronous, non-blocking design and lock-free data structures to efficiently handle concurrent workloads.
 
 ## 👷‍♀️ Building Sklad
 Building Sklad is very straightforward. Install the Zig toolchain and run

@@ -135,8 +135,8 @@ const Executor = struct {
     fn executeGetExpression(self: *Executor, expression: *parse.GetExpression) !void {
         switch (expression.parameter) {
             .range => |range| {
-                const ctx_ptr = try self.allocator.create(RangeQueryContext);
-                errdefer self.allocator.destroy(ctx_ptr);
+                const ctx_ptr = try self.io_context.allocator.create(RangeQueryContext);
+                errdefer self.io_context.allocator.destroy(ctx_ptr);
 
                 ctx_ptr.* = try self.storage.getFromRange(range.start.value, range.end.value);
                 if (expression.batch_size) |size| {

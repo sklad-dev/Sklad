@@ -83,6 +83,9 @@ pub const RangeQueryContext = struct {
         if (self.cache_records.len > 0) self.allocator.free(self.cache_records);
         if (self.sstable_adapters.len > 0) self.allocator.free(self.sstable_adapters);
         if (self.memtable_adapters.len > 0) self.allocator.free(self.memtable_adapters);
+
+        self.allocator.free(self.range.start);
+        self.allocator.free(self.range.end);
     }
 
     pub fn next(self: *RangeQueryContext) !?StorageRecord {

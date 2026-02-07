@@ -53,8 +53,8 @@ pub const TypedStorage = struct {
         end_key: TypedBinaryData,
     ) !RangeQueryContext {
         return self.storage.findInRange(
-            try start_key.toBytes(self.allocator),
-            try end_key.toBytes(self.allocator),
+            try start_key.toBytes(self.storage.allocator),
+            try end_key.toBytes(self.storage.allocator),
         );
     }
 
