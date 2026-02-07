@@ -2,10 +2,12 @@ const std = @import("std");
 
 const global_context = @import("./global_context.zig");
 const utils = @import("./utils.zig");
+
 const BinaryStorage = @import("./binary_storage.zig").BinaryStorage;
-const ValueType = @import("./data_types.zig").ValueType;
 const BinaryData = @import("./data_types.zig").BinaryData;
+const RangeQueryContext = @import("./range_query_context.zig").RangeQueryContext;
 const TypedBinaryData = @import("./data_types.zig").TypedBinaryData;
+const ValueType = @import("./data_types.zig").ValueType;
 
 pub const TypedStorage = struct {
     allocator: std.mem.Allocator,
@@ -25,15 +27,15 @@ pub const TypedStorage = struct {
     }
 
     pub fn set(self: *TypedStorage, key: TypedBinaryData, value: TypedBinaryData, timestamp: i64, ttl: ?i64) !void {
-        const key_bytes = try key.toBytes();
+        const key_bytes = try key.toBytes(key.allocator);
         defer key.allocator.free(key_bytes);
-        const value_bytes = try value.toBytes();
+        const value_bytes = try value.toBytes(value.allocator);
         defer value.allocator.free(value_bytes);
         try self.storage.put(key_bytes, value_bytes, timestamp, ttl);
     }
 
     pub fn get(self: *TypedStorage, key: TypedBinaryData) !?TypedBinaryData {
-        const key_bytes = try key.toBytes();
+        const key_bytes = try key.toBytes(key.allocator);
         defer key.allocator.free(key_bytes);
 
         const result = try self.storage.find(key_bytes);
@@ -45,8 +47,19 @@ pub const TypedStorage = struct {
         return null;
     }
 
+    pub fn getFromRange(
+        self: *TypedStorage,
+        start_key: TypedBinaryData,
+        end_key: TypedBinaryData,
+    ) !RangeQueryContext {
+        return self.storage.findInRange(
+            try start_key.toBytes(self.allocator),
+            try end_key.toBytes(self.allocator),
+        );
+    }
+
     pub fn delete(self: *TypedStorage, key: TypedBinaryData, timestamp: i64) !void {
-        const key_bytes = try key.toBytes();
+        const key_bytes = try key.toBytes(key.allocator);
         defer key.allocator.free(key_bytes);
         try self.storage.delete(key_bytes, timestamp);
     }

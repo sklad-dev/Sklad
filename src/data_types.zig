@@ -28,6 +28,11 @@ pub const ValueType = enum(u8) {
     }
 };
 
+pub const KeyValuePair = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
 pub const BinaryData = []const u8;
 
 pub const BinaryDataRange = struct {
@@ -50,8 +55,8 @@ pub const TypedBinaryData = struct {
         };
     }
 
-    pub inline fn toBytes(self: *const TypedBinaryData) ![]u8 {
-        const buffer = try self.allocator.alloc(u8, 1 + self.data.len);
+    pub inline fn toBytes(self: *const TypedBinaryData, allocator: std.mem.Allocator) ![]u8 {
+        const buffer = try allocator.alloc(u8, 1 + self.data.len);
         buffer[0] = @intFromEnum(self.data_type);
         @memcpy(buffer[1..], self.data);
         return buffer;

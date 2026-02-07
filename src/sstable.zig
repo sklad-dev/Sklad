@@ -114,7 +114,13 @@ pub const SSTable = struct {
 
         pub fn setRange(self: *Iterator, range: BinaryDataRange) !void {
             self.key_range = range;
-            _ = try self.seekTo(range.start);
+            const found = try self.seekTo(range.start);
+            if (!found) {
+                self.current_block_num = self.num_blocks;
+                self.num_block_elements = 0;
+                self.current_block_offset = 0;
+                self.current_block_element_num = 0;
+            }
         }
 
         pub fn next(self: *Iterator) !?StorageRecord {
