@@ -34,6 +34,16 @@ Example: `set 'mykey' 'myvalue' expire '30s'`
 get <key>
 ```
 
+### 2a. Retrieving a range of key-value pairs:
+```
+get range <start_key> <end_key> batch <size>
+```
+
+Where `<start_key>` and `<end_key>` define the range boundaries, and `<size>` is a numeric value specifying the maximum number of results to return.
+
+**Note**: Both keys must be of the same data type.
+
+
 ### 3. Deleting data by key:
 ```
 delete <key>
@@ -119,7 +129,6 @@ For storage, Sklad uses an LSM-tree (Log-Structured Merge Tree) to optimize writ
 3) [MANIFEST file](docs/manifest.md)
 
 ## Todo
-* Range queries
 * Add io_uring option for Linux I/O
 * Add metrics: SSTable count per level
 * End SSTables with a predefined postfix to ensure creation completed
