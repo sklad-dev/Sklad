@@ -18,8 +18,8 @@ pub inline fn loadConfiguration(configurator: *Configurator) void {
     _ = CONFIGURATOR.cmpxchgStrong(null, configurator, .acq_rel, .monotonic);
 }
 
-pub inline fn init(graph_storage: *TypedStorage, task_queue: *TaskQueue, metrics_aggregator: *MetricsAggregator, worker_manager: *WorkerManager) void {
-    _ = TYPED_STORAGE.cmpxchgStrong(null, graph_storage, .acq_rel, .monotonic);
+pub inline fn init(typed_storage: *TypedStorage, task_queue: *TaskQueue, metrics_aggregator: *MetricsAggregator, worker_manager: *WorkerManager) void {
+    _ = TYPED_STORAGE.cmpxchgStrong(null, typed_storage, .acq_rel, .monotonic);
     _ = TASK_QUEUE.cmpxchgStrong(null, task_queue, .acq_rel, .monotonic);
     _ = METRICS_AGGREGATOR.cmpxchgStrong(null, metrics_aggregator, .acq_rel, .monotonic);
     _ = WORKER_MANAGER.cmpxchgStrong(null, worker_manager, .acq_rel, .monotonic);

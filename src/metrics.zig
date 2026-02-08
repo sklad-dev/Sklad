@@ -187,10 +187,10 @@ pub const SnapshotBuffer = struct {
     allocator: std.mem.Allocator,
     buffer: RingBuffer(MetricsSnapshot),
 
-    pub fn init(allocator: std.mem.Allocator, capacity: usize) !SnapshotBuffer {
+    pub fn init(allocator: std.mem.Allocator, buffer_capacity: usize) !SnapshotBuffer {
         return .{
             .allocator = allocator,
-            .buffer = try RingBuffer(MetricsSnapshot).init(allocator, capacity),
+            .buffer = try RingBuffer(MetricsSnapshot).init(allocator, buffer_capacity),
         };
     }
 
@@ -198,7 +198,7 @@ pub const SnapshotBuffer = struct {
         self.buffer.deinit();
     }
 
-    pub inline fn capasity(self: *SnapshotBuffer) usize {
+    pub inline fn capacity(self: *SnapshotBuffer) usize {
         return self.buffer.mask + 1;
     }
 
@@ -357,7 +357,7 @@ pub const MetricRequestTask = struct {
         const self: *MetricRequestTask = @ptrCast(@alignCast(ptr));
         const buffer: []MetricsSnapshot = self.allocator.alloc(
             MetricsSnapshot,
-            global_context.getMetricsAggregator().?.snapshot_buffer.capasity() / 2,
+            global_context.getMetricsAggregator().?.snapshot_buffer.capacity() / 2,
         ) catch |e| {
             std.log.err("Error! Failed to allocate metrics snapshot buffer: {any}", .{e});
             self.io_context.enqueueResponse(
