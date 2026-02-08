@@ -1232,16 +1232,22 @@ test "BinaryStorage#findInRange" {
         );
     }
 
-    var ri1 = try storage.findInRange(&utils.intToBytes(usize, 5), &utils.intToBytes(usize, 15));
+    const start1 = try testing.allocator.dupe(u8, &utils.intToBytes(usize, 5));
+    const end1 = try testing.allocator.dupe(u8, &utils.intToBytes(usize, 15));
+    var ri1 = try storage.findInRange(start1, end1);
     defer ri1.deinit();
+
     var expected_key: usize = 5;
     while (try ri1.next()) |record| {
         try testing.expect(std.mem.eql(u8, record.key.data, &utils.intToBytes(usize, expected_key)));
         expected_key += 1;
     }
 
-    var ri2 = try storage.findInRange(&utils.intToBytes(usize, 0), &utils.intToBytes(usize, 59));
+    const start2 = try testing.allocator.dupe(u8, &utils.intToBytes(usize, 0));
+    const end2 = try testing.allocator.dupe(u8, &utils.intToBytes(usize, 59));
+    var ri2 = try storage.findInRange(start2, end2);
     defer ri2.deinit();
+
     expected_key = 0;
     while (try ri2.next()) |record| {
         try testing.expect(std.mem.eql(u8, record.key.data, &utils.intToBytes(usize, expected_key)));
