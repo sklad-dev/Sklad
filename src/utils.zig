@@ -140,6 +140,11 @@ test "compareBitwise" {
     const a9 = [2]u8{ 0, 1 };
     try testing.expect(compareBitwise(&a9, &a6) > 0);
     try testing.expect(compareBitwise(&a4, &a7) < 0);
+
+    // Case 7: comparing strings
+    const s1 = "b";
+    const s2 = "abcd";
+    try testing.expect(compareBitwise(s1, s2) > 0);
 }
 
 test "numDigits" {

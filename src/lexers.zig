@@ -9,6 +9,8 @@ pub const KV_BUILTINS = [_]Builtin{
     .{ .name = "get", .kind = Token.Kind.keyword },
     .{ .name = "delete", .kind = Token.Kind.keyword },
     .{ .name = "expire", .kind = Token.Kind.keyword },
+    .{ .name = "range", .kind = Token.Kind.keyword },
+    .{ .name = "batch", .kind = Token.Kind.keyword },
 };
 
 pub inline fn kvLexer(allocator: std.mem.Allocator, source: []const u8, token_sequence: *std.ArrayList(Token)) lex.Lexer {

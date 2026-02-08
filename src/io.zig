@@ -3,13 +3,15 @@ const builtin = @import("builtin");
 const posix = std.posix;
 
 const global_context = @import("./global_context.zig");
+const recordMetric = @import("./metrics.zig").recordMetric;
 
 const ApplicationError = @import("./constants.zig").ApplicationError;
-const QueryProcessingTask = @import("./parse.zig").QueryProcessingTask;
+const ContinueRangeQueryTask = @import("./execute.zig").ContinueRangeQueryTask;
 const MetricKind = @import("./metrics.zig").MetricKind;
 const MetricRequestTask = @import("./metrics.zig").MetricRequestTask;
-const recordMetric = @import("./metrics.zig").recordMetric;
+const RangeQueryContext = @import("./range_query_context.zig").RangeQueryContext;
 const Task = @import("./task_queue.zig").Task;
+const QueryProcessingTask = @import("./parse.zig").QueryProcessingTask;
 
 pub const DEFAULT_PORT: u16 = 7733;
 
@@ -70,6 +72,7 @@ pub const IO = struct {
     const RequestKind = enum(u8) {
         metric,
         query,
+        continue_batch,
     };
 
     pub const IoContextState = enum(u8) {
@@ -88,6 +91,7 @@ pub const IO = struct {
         start_time: i64,
         response_buffer: ?[]u8 = null,
         bytes_written: usize = 0,
+        range_query_context: ?*RangeQueryContext = null,
 
         pub inline fn init(io: *IO, socket: std.posix.socket_t, start_time: i64) !IoContext {
             return .{
@@ -95,6 +99,7 @@ pub const IO = struct {
                 .io = io,
                 .socket = socket,
                 .start_time = start_time,
+                .range_query_context = null,
             };
         }
 
@@ -106,9 +111,18 @@ pub const IO = struct {
             self.bytes_written = 0;
         }
 
+        pub fn cleanupRangeQuery(self: *IoContext) void {
+            if (self.range_query_context) |context| {
+                context.deinit();
+                self.allocator.destroy(context);
+                self.range_query_context = null;
+            }
+        }
+
         pub fn closeSocket(self: *IoContext) void {
             std.posix.close(self.socket);
             self.cleanBuffer();
+            self.cleanupRangeQuery();
             self.state.store(@intFromEnum(IoContextState.closed), .release);
         }
 
@@ -263,6 +277,8 @@ pub const IO = struct {
                     };
                     global_context.getTaskQueue().?.enqueue(metric_task.task());
                 } else if (request.value.kind == .query) {
+                    self.io_context.cleanupRangeQuery();
+
                     var query_task = task_queue.?.allocator.create(QueryProcessingTask) catch |e| {
                         std.log.err("Error! Failed to allocate a task to process the query: {any}", .{e});
                         self.io_context.closeSocket();
@@ -281,6 +297,22 @@ pub const IO = struct {
                     @memcpy(query_task.query, request.value.query);
 
                     global_context.getTaskQueue().?.enqueue(query_task.task());
+                } else if (request.value.kind == .continue_batch) {
+                    if (self.io_context.range_query_context != null) {
+                        var continue_task = task_queue.?.allocator.create(ContinueRangeQueryTask) catch |e| {
+                            std.log.err("Error creating continue task: {any}", .{e});
+                            self.io_context.closeSocket();
+                            return;
+                        };
+                        continue_task.* = ContinueRangeQueryTask{
+                            .allocator = self.allocator,
+                            .io_context = self.io_context,
+                        };
+                        task_queue.?.enqueue(continue_task.task());
+                    } else {
+                        self.io_context.enqueueResponse(i8, IO.IoError, -1, IO.IoError.QueryMalformed);
+                    }
+                    return;
                 }
             } else {
                 std.log.err("Error! Request size {d} exceeds the maximum allowed size", .{bytes_read});

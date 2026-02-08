@@ -18,18 +18,18 @@ threadlocal var WORKER_CONTEXT: ?*WorkerContext = null;
 pub fn initWorkerContext(allocator: std.mem.Allocator, block_size: u32) !void {
     if (WORKER_CONTEXT != null) return;
 
-    const ctx = try allocator.create(WorkerContext);
-    ctx.* = .{
+    const context = try allocator.create(WorkerContext);
+    context.* = .{
         .allocator = allocator,
         .block_buffer = try allocator.alloc(u8, block_size),
     };
-    WORKER_CONTEXT = ctx;
+    WORKER_CONTEXT = context;
 }
 
 pub fn deinitWorkerContext() void {
-    if (WORKER_CONTEXT) |ctx| {
-        ctx.allocator.free(ctx.block_buffer);
-        ctx.allocator.destroy(ctx);
+    if (WORKER_CONTEXT) |context| {
+        context.allocator.free(context.block_buffer);
+        context.allocator.destroy(context);
         WORKER_CONTEXT = null;
     }
 }

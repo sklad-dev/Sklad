@@ -88,7 +88,7 @@ pub fn DestroyBuffer(E: type, comptime S: usize) type {
         }
 
         pub inline fn put(self: *Self, entry: *E) ?*E {
-            const old_index = @atomicRmw(u64, &self.head, .Add, 1, .monotonic);
+            const old_index = @atomicRmw(u64, &self.head, .Add, 1, .acq_rel);
             const slot = @as(usize, @intCast(old_index & (S - 1)));
             const to_delete = @atomicRmw(?*E, &self.buffer[slot], .Xchg, entry, .acq_rel);
             return to_delete;
@@ -414,23 +414,26 @@ pub fn BoundedQueue(comptime T: type) type {
         }
 
         pub fn dequeue(self: *Self) ?T {
-            const pos = @atomicLoad(usize, &self.head, .monotonic);
-            const slot = &self.buf[pos & self.mask];
+            while (true) {
+                const pos = @atomicLoad(usize, &self.head, .acquire);
+                const slot = &self.buf[pos & self.mask];
 
-            const seq = @atomicLoad(usize, &slot.seq, .acquire);
-            const expected = pos + 1;
+                const seq = @atomicLoad(usize, &slot.seq, .acquire);
+                const expected = pos + 1;
 
-            const diff = @as(isize, @intCast(seq)) - @as(isize, @intCast(expected));
-            if (diff == 0) {
-                const out = slot.value;
-                @atomicStore(usize, &self.head, pos + 1, .release);
-                @atomicStore(usize, &slot.seq, pos + 1 + self.mask, .release);
-                return out;
-            } else if (diff < 0) {
-                return null;
-            } else {
+                const diff = @as(isize, @intCast(seq)) - @as(isize, @intCast(expected));
+                if (diff == 0) {
+                    if (@cmpxchgWeak(usize, &self.head, pos, pos + 1, .acq_rel, .acquire)) |_| {
+                        continue;
+                    }
+                    const out = slot.value;
+                    @atomicStore(usize, &slot.seq, pos + 1 + self.mask, .release);
+                    return out;
+                } else if (diff < 0) {
+                    return null;
+                }
+
                 std.atomic.spinLoopHint();
-                return null;
             }
         }
     };
@@ -844,7 +847,7 @@ test "RingBuffer" {
 
 // fn queueTestJob(queue: *Queue(u64, 64), thread_number: usize) void {
 //     var operation: u8 = 0;
-//     const max_iteration = 625000;
+//     const max_iteration = 50000;
 //     for (0..max_iteration) |i| {
 //         if (i % 5000 == 0) {
 //             std.debug.print("[TEST] {d}: {d}\n", .{ std.Thread.getCurrentId(), i });
@@ -864,8 +867,8 @@ test "RingBuffer" {
 //     var queue = Queue(u64, 64).init(testing.allocator);
 //     defer queue.deinit();
 
-//     var threads: [16]std.Thread = undefined;
-//     for (0..16) |i| {
+//     var threads: [32]std.Thread = undefined;
+//     for (0..32) |i| {
 //         threads[i] = try std.Thread.spawn(.{}, queueTestJob, .{ &queue, i });
 //     }
 

@@ -10,36 +10,11 @@ const utils = @import("./utils.zig");
 const getWorkerContext = @import("./worker.zig").getWorkerContext;
 
 const FileHandle = data_types.FileHandle;
+const BinaryData = data_types.BinaryData;
+const BinaryDataRange = data_types.BinaryDataRange;
 const StorageRecord = data_types.StorageRecord;
 const RecordKey = data_types.RecordKey;
 const RecordValue = data_types.RecordValue;
-
-pub const MemtableIteratorAdapter = struct {
-    memtable_iterator: Memtable.Iterator,
-    memtable: *const Memtable,
-
-    pub fn init(memtable: *Memtable) MemtableIteratorAdapter {
-        return .{
-            .memtable_iterator = memtable.iterator(),
-            .memtable = memtable,
-        };
-    }
-
-    fn nextFn(ctx: *anyopaque) !?StorageRecord {
-        const self: *MemtableIteratorAdapter = @ptrCast(@alignCast(ctx));
-        if (self.memtable_iterator.next()) |node| {
-            return node.toStorageRecord(&self.memtable.arena);
-        }
-        return null;
-    }
-
-    pub fn iterator(self: *MemtableIteratorAdapter) StorageRecord.Iterator {
-        return .{
-            .context = self,
-            .next_fn = nextFn,
-        };
-    }
-};
 
 pub const SSTableIteratorAdapter = struct {
     sstable_iterator: SSTable.Iterator,
@@ -108,6 +83,12 @@ pub const SSTable = struct {
         num_block_elements: u32,
         current_block_offset: u32,
         current_block_element_num: u32,
+        key_range: ?BinaryDataRange,
+
+        const RecordPosition = struct {
+            element_index: u32,
+            record_offset: u32,
+        };
 
         pub fn init(allocator: std.mem.Allocator, sstable: *const SSTable) !Iterator {
             const block_buffer = try allocator.alloc(u8, sstable.block_size);
@@ -123,11 +104,23 @@ pub const SSTable = struct {
                 .num_block_elements = num_elements,
                 .current_block_offset = 0,
                 .current_block_element_num = 0,
+                .key_range = null,
             };
         }
 
         pub fn deinit(self: *Iterator) void {
             self.allocator.free(self.block_buffer);
+        }
+
+        pub fn setRange(self: *Iterator, range: BinaryDataRange) !void {
+            self.key_range = range;
+            const found = try self.seekTo(range.start);
+            if (!found) {
+                self.current_block_num = self.num_blocks;
+                self.num_block_elements = 0;
+                self.current_block_offset = 0;
+                self.current_block_element_num = 0;
+            }
         }
 
         pub fn next(self: *Iterator) !?StorageRecord {
@@ -155,10 +148,67 @@ pub const SSTable = struct {
             }
         }
 
-        inline fn readRecordAndAdvance(self: *Iterator) StorageRecord {
+        fn seekTo(self: *Iterator, key: BinaryData) !bool {
+            const block_offset = try self.sstable.findBlockOffset(key) orelse return false;
+            self.current_block_num = @intCast(block_offset / @as(u64, @intCast(self.sstable.block_size)));
+            _ = try self.sstable.file.pread(self.block_buffer, block_offset);
+            self.num_block_elements = utils.intFromBytes(u32, self.block_buffer, self.block_buffer.len - 4);
+            self.current_block_offset = 0;
+            self.current_block_element_num = 0;
+
+            if (seekToKeyOffset(self.block_buffer, self.num_block_elements, key)) |pos| {
+                self.current_block_offset = pos.record_offset;
+                self.current_block_element_num = pos.element_index;
+                return true;
+            }
+
+            return false;
+        }
+
+        fn seekToKeyOffset(block_buffer: []u8, num_elements: u32, key: BinaryData) ?RecordPosition {
+            if (num_elements == 0) return null;
+
+            var low: u32 = 0;
+            var high: u32 = num_elements;
+
+            while (low < high) {
+                const mid = low + (high - low) / 2;
+                const record_offset: u32 = utils.intFromBytes(
+                    u32,
+                    block_buffer,
+                    block_buffer.len - 4 - 4 * (num_elements - mid),
+                );
+                const record = StorageRecord.fromBytes(block_buffer, record_offset);
+                const compare_result = utils.compareBitwise(record.key.data, key);
+
+                if (compare_result < 0) {
+                    low = mid + 1;
+                } else {
+                    high = mid;
+                }
+            }
+
+            if (low >= num_elements) {
+                return null;
+            }
+
+            const record_offset: u32 = utils.intFromBytes(
+                u32,
+                block_buffer,
+                block_buffer.len - 4 - 4 * (num_elements - low),
+            );
+            return .{ .element_index = low, .record_offset = record_offset };
+        }
+
+        inline fn readRecordAndAdvance(self: *Iterator) ?StorageRecord {
             const record = StorageRecord.fromBytes(self.block_buffer, self.current_block_offset);
             self.current_block_offset += @as(u32, @intCast(record.sizeInMemory()));
             self.current_block_element_num += 1;
+            if (self.key_range) |range| {
+                if (utils.compareBitwise(record.key.data, range.end) > 0) {
+                    return null;
+                }
+            }
             return record;
         }
     };
@@ -409,7 +459,7 @@ pub const SSTable = struct {
         self.file.close();
     }
 
-    pub fn find(self: *const SSTable, key: data_types.BinaryData) !?data_types.BinaryData {
+    pub fn find(self: *const SSTable, key: BinaryData) !?BinaryData {
         if (self.bloom_filter.?.mayContain(key) == false) return null;
         if (utils.compareBitwise(key, self.min_key.?) < 0) return null;
         if (utils.compareBitwise(key, self.max_key.?) > 0) return null;
@@ -421,11 +471,17 @@ pub const SSTable = struct {
         return null;
     }
 
+    pub fn hasDataFromRange(self: *const SSTable, range: BinaryDataRange) !bool {
+        if (utils.compareBitwise(range.end, self.min_key.?) < 0) return false;
+        if (utils.compareBitwise(range.start, self.max_key.?) > 0) return false;
+        return true;
+    }
+
     pub fn iterator(self: *SSTable) !Iterator {
         return try Iterator.init(self.allocator, self);
     }
 
-    fn findBlockOffset(self: *const SSTable, key: data_types.BinaryData) !?u64 {
+    fn findBlockOffset(self: *const SSTable, key: BinaryData) !?u64 {
         var low: u32 = 0;
         var high: u32 = self.index_records_num - 1;
         while (low <= high) {
@@ -471,7 +527,7 @@ pub const SSTable = struct {
         return null;
     }
 
-    fn findInBlock(self: *const SSTable, key: data_types.BinaryData, block_offset: u64) !?data_types.BinaryData {
+    fn findInBlock(self: *const SSTable, key: BinaryData, block_offset: u64) !?BinaryData {
         const block_buffer: []u8 = getWorkerContext().?.block_buffer;
         _ = try self.file.pread(block_buffer, block_offset);
 
@@ -568,7 +624,7 @@ test "SSTable#create" {
         );
     }
 
-    var adapter = MemtableIteratorAdapter.init(&test_memtable);
+    var adapter = @import("./memtable.zig").MemtableIteratorAdapter.init(&test_memtable);
     var memtable_iterator = adapter.iterator();
 
     var test_sstable = try SSTable.create(
@@ -616,7 +672,7 @@ test "SSTable#open" {
         }, &slot.?);
     }
 
-    var adapter = MemtableIteratorAdapter.init(&test_memtable);
+    var adapter = @import("./memtable.zig").MemtableIteratorAdapter.init(&test_memtable);
     var memtable_iterator = adapter.iterator();
 
     var test_sstable = try SSTable.create(
@@ -674,7 +730,7 @@ test "SSTable#find" {
         );
     }
 
-    var adapter = MemtableIteratorAdapter.init(&test_memtable);
+    var adapter = @import("./memtable.zig").MemtableIteratorAdapter.init(&test_memtable);
     var memtable_iterator = adapter.iterator();
 
     var test_sstable = try SSTable.create(
@@ -740,7 +796,7 @@ test "SSTable#iterator" {
         );
     }
 
-    var adapter = MemtableIteratorAdapter.init(&test_memtable);
+    var adapter = @import("./memtable.zig").MemtableIteratorAdapter.init(&test_memtable);
     var memtable_iterator = adapter.iterator();
 
     var test_sstable = try SSTable.create(
@@ -763,6 +819,102 @@ test "SSTable#iterator" {
     while (try iterator.next()) |record| {
         try testing.expect(std.mem.eql(u8, record.key.data, &utils.intToBytes(usize, expected_key)));
         try testing.expect(std.mem.eql(u8, record.value.data, &utils.intToBytes(u8, 0)));
+        expected_key += 1;
+    }
+
+    try cleanup(test_sstable, test_memtable);
+}
+
+test "SSTable#iterator with range" {
+    global_context.setRootFolderForTests("./");
+    defer global_context.resetRootFolderForTests();
+
+    const block_size: u32 = 134;
+    try @import("./worker.zig").initWorkerContext(testing.allocator, block_size);
+    defer @import("./worker.zig").deinitWorkerContext();
+
+    var test_memtable = try Memtable.init(testing.allocator, std.crypto.random, 69632, 8, "./");
+    defer test_memtable.destroy();
+
+    const test_value = utils.intToBytes(u8, 0);
+    var slot: ?Memtable.ReservedDataSlot = null;
+    for (0..18) |i| {
+        slot = test_memtable.reserve(22);
+        try test_memtable.add(
+            &.{
+                .data = &utils.intToBytes(usize, i),
+                .timestamp = std.time.milliTimestamp(),
+            },
+            &.{
+                .data = &test_value,
+                .flags = 0,
+                .ttl = null,
+            },
+            &slot.?,
+        );
+    }
+
+    var adapter = @import("./memtable.zig").MemtableIteratorAdapter.init(&test_memtable);
+    var memtable_iterator = adapter.iterator();
+
+    var test_sstable = try SSTable.create(
+        testing.allocator,
+        &memtable_iterator,
+        test_memtable.size,
+        .{ .level = 0, .file_id = 0 },
+        block_size,
+        20,
+    );
+    test_sstable.close(false);
+
+    test_sstable = try SSTable.open(testing.allocator, .{ .level = 0, .file_id = 0 });
+    defer test_sstable.close(true);
+
+    var iterator = try test_sstable.iterator();
+    defer iterator.deinit();
+
+    var range = BinaryDataRange{
+        .start = &utils.intToBytes(usize, 5),
+        .end = &utils.intToBytes(usize, 12),
+    };
+
+    try iterator.setRange(range);
+    var expected_key: usize = 5;
+    while (try iterator.next()) |record| {
+        try testing.expect(std.mem.eql(u8, record.key.data, &utils.intToBytes(usize, expected_key)));
+        try testing.expect(std.mem.eql(u8, record.value.data, &utils.intToBytes(u8, 0)));
+        try testing.expect(utils.intFromBytes(usize, record.key.data, 0) >= 5);
+        try testing.expect(utils.intFromBytes(usize, record.key.data, 0) <= 12);
+        expected_key += 1;
+    }
+
+    range = BinaryDataRange{
+        .start = &utils.intToBytes(usize, 10),
+        .end = &utils.intToBytes(usize, 18),
+    };
+
+    try iterator.setRange(range);
+    expected_key = 10;
+    while (try iterator.next()) |record| {
+        try testing.expect(std.mem.eql(u8, record.key.data, &utils.intToBytes(usize, expected_key)));
+        try testing.expect(std.mem.eql(u8, record.value.data, &utils.intToBytes(u8, 0)));
+        try testing.expect(utils.intFromBytes(usize, record.key.data, 0) >= 10);
+        try testing.expect(utils.intFromBytes(usize, record.key.data, 0) <= 18);
+        expected_key += 1;
+    }
+
+    range = BinaryDataRange{
+        .start = &utils.intToBytes(usize, 7),
+        .end = &utils.intToBytes(usize, 16),
+    };
+
+    try iterator.setRange(range);
+    expected_key = 7;
+    while (try iterator.next()) |record| {
+        try testing.expect(std.mem.eql(u8, record.key.data, &utils.intToBytes(usize, expected_key)));
+        try testing.expect(std.mem.eql(u8, record.value.data, &utils.intToBytes(u8, 0)));
+        try testing.expect(utils.intFromBytes(usize, record.key.data, 0) >= 7);
+        try testing.expect(utils.intFromBytes(usize, record.key.data, 0) <= 16);
         expected_key += 1;
     }
 
