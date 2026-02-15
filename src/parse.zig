@@ -70,7 +70,7 @@ pub const SetExpression = struct {
         var pairs = try std.ArrayList(KeyValuePairNode).initCapacity(allocator, 4);
         while (query.peakNextToken()) |token| {
             switch (token.kind) {
-                .string_value, .numeric_value, .bool_value => try pairs.append(allocator, try KeyValuePairNode.parse(allocator, query)),
+                .stringValue, .numericValue, .boolValue => try pairs.append(allocator, try KeyValuePairNode.parse(allocator, query)),
                 .comma => {
                     _ = query.nextToken();
                     continue;
@@ -110,7 +110,7 @@ pub const GetExpression = struct {
                         return ParserError.UnexpectedToken;
                     }
                 },
-                .string_value, .numeric_value, .bool_value => {
+                .stringValue, .numericValue, .boolValue => {
                     parameter = .{ .value = try ValueNode.parse(allocator, query) };
                 },
                 else => return ParserError.UnexpectedToken,
@@ -128,7 +128,7 @@ pub const GetExpression = struct {
         if (query.peakNextToken()) |token| {
             if (token.kind == .keyword and std.mem.eql(u8, token.string(), lexers.KV_BUILTINS[5].name)) {
                 _ = query.nextToken();
-                const batch_token = try query.expectToken(&[_]Token.Kind{.numeric_value});
+                const batch_token = try query.expectToken(&[_]Token.Kind{.numericValue});
                 batch_size = std.fmt.parseInt(u64, batch_token.string(), 10) catch {
                     return ParserError.InvalidValue;
                 };
@@ -157,7 +157,7 @@ pub const DeleteExpression = struct {
     pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !DeleteExpression {
         if (query.peakNextToken()) |token| {
             switch (token.kind) {
-                .string_value, .numeric_value, .bool_value => return .{
+                .stringValue, .numericValue, .boolValue => return .{
                     .allocator = allocator,
                     .key = try ValueNode.parse(allocator, query),
                 },
@@ -203,7 +203,7 @@ pub const KeyValuePairNode = struct {
     }
 
     fn parseTtl(query: *TokenizedQuery) !i64 {
-        const token = try query.expectToken(&[_]Token.Kind{.string_value});
+        const token = try query.expectToken(&[_]Token.Kind{.stringValue});
         const time_str = token.string();
 
         if (time_str.len == 0) {
@@ -268,9 +268,9 @@ pub const ValueNode = struct {
     value: TypedBinaryData,
 
     pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !ValueNode {
-        const key_token = try query.expectToken(&[_]Token.Kind{ .string_value, .numeric_value, .bool_value });
+        const key_token = try query.expectToken(&[_]Token.Kind{ .stringValue, .numericValue, .boolValue });
         switch (key_token.kind) {
-            .string_value => {
+            .stringValue => {
                 return .{
                     .allocator = allocator,
                     .value = .{
@@ -280,7 +280,7 @@ pub const ValueNode = struct {
                     },
                 };
             },
-            .numeric_value => {
+            .numericValue => {
                 const value_string = key_token.string();
                 if (std.mem.containsAtLeast(u8, value_string, 1, ".")) {
                     return .{
@@ -365,7 +365,7 @@ pub const ValueNode = struct {
                     }
                 }
             },
-            .bool_value => {
+            .boolValue => {
                 return .{
                     .allocator = allocator,
                     .value = .{

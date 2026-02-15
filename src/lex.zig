@@ -17,9 +17,9 @@ pub const Token = struct {
     pub const Kind = enum {
         keyword,
         identifier,
-        bool_value,
-        numeric_value,
-        string_value,
+        boolValue,
+        numericValue,
+        stringValue,
         comma,
     };
 
@@ -34,8 +34,8 @@ pub const Builtin = struct {
 };
 
 var BOOLEAN_BUILTINS = [_]Builtin{
-    .{ .name = "true", .kind = Token.Kind.bool_value },
-    .{ .name = "false", .kind = Token.Kind.bool_value },
+    .{ .name = "true", .kind = Token.Kind.boolValue },
+    .{ .name = "false", .kind = Token.Kind.boolValue },
 };
 
 pub const Lexer = struct {
@@ -52,10 +52,10 @@ pub const Lexer = struct {
         whitespace,
         comma,
         keyword,
-        numeric_value,
-        string_value_start,
-        string_value,
-        string_value_end,
+        numericValue,
+        stringValueStart,
+        stringValue,
+        stringValueEnd,
         end,
     };
 
@@ -87,10 +87,10 @@ pub const Lexer = struct {
     fn updateState(self: *Lexer, char: u8, pos: u64) !void {
         switch (char) {
             ' ', '\n', '\t', '\r' => {
-                if (self.state != .string_value and self.state != .whitespace) {
+                if (self.state != .stringValue and self.state != .whitespace) {
                     try self.onStateChange(pos, .whitespace);
                     self.current_token_len = 0;
-                } else if (self.state == .string_value) {
+                } else if (self.state == .stringValue) {
                     self.buf[self.current_token_len] = char;
                     self.current_token_len += 1;
                 }
@@ -100,22 +100,22 @@ pub const Lexer = struct {
                 try self.handleSymbol(char, pos, .comma);
             },
             '\'' => {
-                if (self.state == .string_value) {
-                    try self.onStateChange(pos, .string_value_end);
+                if (self.state == .stringValue) {
+                    try self.onStateChange(pos, .stringValueEnd);
                 } else {
-                    try self.onStateChange(pos, .string_value_start);
+                    try self.onStateChange(pos, .stringValueStart);
                 }
             },
             else => {
-                if ((isNumeric(char) or char == '-') and self.state != .numeric_value and self.state != .keyword and self.state != .string_value_start and self.state != .string_value) {
-                    try self.onStateChange(pos, .numeric_value);
+                if ((isNumeric(char) or char == '-') and self.state != .numericValue and self.state != .keyword and self.state != .stringValueStart and self.state != .stringValue) {
+                    try self.onStateChange(pos, .numericValue);
                     self.buf[0] = char;
                     self.current_token_len = 1;
-                } else if (self.state == .string_value_start) {
-                    try self.onStateChange(pos, .string_value);
+                } else if (self.state == .stringValueStart) {
+                    try self.onStateChange(pos, .stringValue);
                     self.buf[0] = char;
                     self.current_token_len = 1;
-                } else if (isAlpha(char) and self.state != .keyword and self.state != .string_value_start and self.state != .string_value) {
+                } else if (isAlpha(char) and self.state != .keyword and self.state != .stringValueStart and self.state != .stringValue) {
                     try self.onStateChange(pos, .keyword);
                     self.buf[0] = char;
                     self.current_token_len = 1;
@@ -131,7 +131,7 @@ pub const Lexer = struct {
     }
 
     inline fn handleSymbol(self: *Lexer, char: u8, pos: u64, new_state: State) !void {
-        if (self.state == .string_value) {
+        if (self.state == .stringValue) {
             self.buf[self.current_token_len] = char;
             self.current_token_len += 1;
         } else {
@@ -142,7 +142,7 @@ pub const Lexer = struct {
     }
 
     inline fn onStateChange(self: *Lexer, pos: u64, new_state: State) !void {
-        if (self.state != .whitespace and self.state != .string_value_end and self.state != .string_value_start and pos > 0) {
+        if (self.state != .whitespace and self.state != .stringValueEnd and self.state != .stringValueStart and pos > 0) {
             try self.token_sequence.append(self.allocator, Token{
                 .start = pos - self.current_token_len,
                 .end = pos,
@@ -155,16 +155,16 @@ pub const Lexer = struct {
     }
 
     inline fn inferTokenKind(self: *Lexer) LexingError!Token.Kind {
-        if (self.state == .string_value) {
-            return Token.Kind.string_value;
-        } else if (self.state == .numeric_value) {
-            return Token.Kind.numeric_value;
+        if (self.state == .stringValue) {
+            return Token.Kind.stringValue;
+        } else if (self.state == .numericValue) {
+            return Token.Kind.numericValue;
         } else if (self.state == .comma) {
             return Token.Kind.comma;
         } else if (self.state == .keyword) {
             for (BOOLEAN_BUILTINS) |builtin| {
                 if (isEqualStringIgnoreCase(builtin.name, self.buf[0..self.current_token_len])) {
-                    return .bool_value;
+                    return .boolValue;
                 }
             }
 
@@ -270,23 +270,23 @@ test "kvLexer" {
     lexer = Lexer.init(testing.allocator, &test_builtins, query3, &tokens);
     try testing.expect(lexer.lex() == 0);
     try testing.expect(tokens.items.len == 2);
-    try testing.expect(tokens.items[0].kind == .numeric_value);
-    try testing.expect(tokens.items[1].kind == .numeric_value);
+    try testing.expect(tokens.items[0].kind == .numericValue);
+    try testing.expect(tokens.items[1].kind == .numericValue);
     tokens.clearAndFree(testing.allocator);
 
     const query4 = "'test'";
     lexer = Lexer.init(testing.allocator, &test_builtins, query4, &tokens);
     try testing.expect(lexer.lex() == 0);
     try testing.expect(tokens.items.len == 1);
-    try testing.expect(tokens.items[0].kind == .string_value);
+    try testing.expect(tokens.items[0].kind == .stringValue);
     tokens.clearAndFree(testing.allocator);
 
     const query5 = "true false";
     lexer = Lexer.init(testing.allocator, &test_builtins, query5, &tokens);
     try testing.expect(lexer.lex() == 0);
     try testing.expect(tokens.items.len == 2);
-    try testing.expect(tokens.items[0].kind == .bool_value);
-    try testing.expect(tokens.items[1].kind == .bool_value);
+    try testing.expect(tokens.items[0].kind == .boolValue);
+    try testing.expect(tokens.items[1].kind == .boolValue);
     tokens.clearAndFree(testing.allocator);
 
     const query6 = "test 'test', 1234 foo bar, set key 'value', -12.23 -5, true";
