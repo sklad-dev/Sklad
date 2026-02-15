@@ -511,6 +511,58 @@ pub fn RingBuffer(comptime T: type) type {
     };
 }
 
+pub const Arena = struct {
+    allocator: std.mem.Allocator,
+    arena: []u8,
+    current_offset: u64 = 0,
+
+    const ALIGNMENT: u64 = @alignOf(usize);
+    const assert = std.debug.assert;
+
+    pub const StorageError = error{
+        ArenaIsFull,
+    };
+
+    pub fn init(allocator: std.mem.Allocator, arena_size: u64) !Arena {
+        return .{
+            .allocator = allocator,
+            .arena = try allocator.alloc(u8, arena_size),
+        };
+    }
+
+    pub fn reserve(self: *Arena, data_size: u64) !u64 {
+        assert(data_size > 0);
+        assert(data_size < self.arena.len);
+
+        var current_offset: u64 = undefined;
+        var new_offset: u64 = undefined;
+
+        while (true) {
+            current_offset = @atomicLoad(u64, &self.current_offset, .seq_cst);
+            new_offset = ((current_offset + data_size) + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
+            if (new_offset > self.arena.len) {
+                return StorageError.ArenaIsFull;
+            }
+
+            if (@cmpxchgWeak(u64, &self.current_offset, current_offset, new_offset, .seq_cst, .seq_cst) != null) {
+                continue;
+            }
+            break;
+        }
+
+        assert(current_offset + data_size <= self.arena.len);
+        return current_offset;
+    }
+
+    pub inline fn currentOffset(self: *const Arena) u64 {
+        return @atomicLoad(u64, &self.current_offset, .seq_cst);
+    }
+
+    pub fn deinit(self: *Arena) void {
+        self.allocator.free(self.arena);
+    }
+};
+
 // Testing
 const testing = std.testing;
 
@@ -843,6 +895,30 @@ test "RingBuffer" {
     for (0..4) |i| {
         try testing.expect(ring_buffer.readLatestOffset(i).? == ring_buffer.buf.len * 2 - 1 - i);
     }
+}
+
+test "Arena" {
+    var arena = try Arena.init(testing.allocator, 104);
+    defer arena.deinit();
+
+    var o: u64 = try arena.reserve(@sizeOf(u64));
+    try testing.expect(o == 0);
+    o = try arena.reserve(@sizeOf(u128));
+    try testing.expect(o == 8);
+    o = try arena.reserve(@sizeOf(u64));
+    try testing.expect(o == 24);
+    o = try arena.reserve(@sizeOf(u128));
+    try testing.expect(o == 32);
+    o = try arena.reserve(@sizeOf(u64));
+    try testing.expect(o == 48);
+    o = try arena.reserve(@sizeOf(u128));
+    try testing.expect(o == 56);
+    o = try arena.reserve(@sizeOf(u64));
+    try testing.expect(o == 72);
+    o = try arena.reserve(@sizeOf(u64));
+    try testing.expect(o == 80);
+    o = try arena.reserve(@sizeOf(u128));
+    try testing.expect(o == 88);
 }
 
 // fn queueTestJob(queue: *Queue(u64, 64), thread_number: usize) void {
