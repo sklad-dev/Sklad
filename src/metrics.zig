@@ -360,23 +360,13 @@ pub const MetricRequestTask = struct {
             global_context.getMetricsAggregator().?.snapshot_buffer.capacity() / 2,
         ) catch |e| {
             std.log.err("Error! Failed to allocate metrics snapshot buffer: {any}", .{e});
-            self.io_context.enqueueResponse(
-                i8,
-                MetricRequestError,
-                -1,
-                MetricRequestError.MetricRequestFailed,
-            );
+            self.io_context.enqueueResponse(?i8, MetricRequestError, null, MetricRequestError.MetricRequestFailed);
             return;
         };
         defer self.allocator.free(buffer);
 
         const num_snapshpts = global_context.getMetricsAggregator().?.snapshot_buffer.readUntil(self.timestamp, buffer);
-        self.io_context.enqueueResponse(
-            []MetricsSnapshot,
-            MetricRequestError,
-            buffer[0..num_snapshpts],
-            null,
-        );
+        self.io_context.enqueueResponse([]MetricsSnapshot, MetricRequestError, buffer[0..num_snapshpts], null);
     }
 
     fn destroy(ptr: *anyopaque, allocator: std.mem.Allocator) void {

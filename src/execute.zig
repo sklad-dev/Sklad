@@ -48,7 +48,7 @@ pub const ExecuteTask = struct {
         const self: *ExecuteTask = @ptrCast(@alignCast(ptr));
         self.executor.execute(&self.expression) catch |e| {
             std.log.err("Error! Query execution failed: {any}, query: \"{s}\"", .{ e, self.query });
-            self.io_context.enqueueResponse(i8, ExecutionError, -1, ExecutionError.ExecutionFailed);
+            self.io_context.enqueueResponse(?i8, ExecutionError, null, ExecutionError.ExecutionFailed);
         };
     }
 
@@ -152,7 +152,7 @@ const Executor = struct {
                     defer r.allocator.free(r.data);
                     self.sendGetResult(r);
                 } else {
-                    self.io_context.enqueueResponse(i8, ExecutionError, -1, null);
+                    self.io_context.enqueueResponse(?i8, ExecutionError, null, null);
                 }
             },
         }
@@ -165,13 +165,13 @@ const Executor = struct {
 
     fn sendGetRangeResult(self: *const Executor) void {
         const range_context = self.io_context.range_query_context orelse {
-            self.io_context.enqueueResponse(i8, ExecutionError, -1, ExecutionError.ExecutionFailed);
+            self.io_context.enqueueResponse(?i8, ExecutionError, null, ExecutionError.ExecutionFailed);
             return;
         };
 
         var results = std.ArrayList(KeyValuePair).initCapacity(self.allocator, range_context.batch_size) catch |e| {
             std.log.err("Error! Cannot allocate results array: {any}", .{e});
-            self.io_context.enqueueResponse(i8, ExecutionError, -1, ExecutionError.ExecutionFailed);
+            self.io_context.enqueueResponse(?i8, ExecutionError, null, ExecutionError.ExecutionFailed);
             return;
         };
         errdefer {
@@ -184,7 +184,7 @@ const Executor = struct {
 
         range_context.fetchResults(&results) catch |e| {
             std.log.err("Error! Range query result fetching failed: {any}", .{e});
-            self.io_context.enqueueResponse(i8, ExecutionError, -1, ExecutionError.ExecutionFailed);
+            self.io_context.enqueueResponse(?i8, ExecutionError, null, ExecutionError.ExecutionFailed);
             return;
         };
 

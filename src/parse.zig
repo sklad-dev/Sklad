@@ -457,7 +457,7 @@ pub const QueryProcessingTask = struct {
         var tokens = std.ArrayList(Token).initCapacity(self.allocator, 16) catch |e| {
             std.log.err("Error! Failed to allocate a parser task: {any}", .{e});
             self.allocator.free(self.query);
-            self.io_context.enqueueResponse(i8, ApplicationError, -1, ApplicationError.InternalError);
+            self.io_context.enqueueResponse(?i8, ApplicationError, null, ApplicationError.InternalError);
             return;
         };
         defer tokens.deinit(self.allocator);
@@ -474,7 +474,7 @@ pub const QueryProcessingTask = struct {
         var expression = Expression.parse(self.allocator, &tokenized_query) catch |e| {
             std.log.err("Error! Query parsing failed: {any}, query: \"{s}\"", .{ e, self.query });
             self.allocator.free(self.query);
-            self.io_context.enqueueResponse(i8, ParserError, -1, ParserError.InvalidQuery);
+            self.io_context.enqueueResponse(?i8, ParserError, null, ParserError.InvalidQuery);
             return;
         };
 
@@ -511,7 +511,7 @@ pub const QueryProcessingTask = struct {
             .get => expression.get.destroy(),
             .delete => expression.delete.destroy(),
         }
-        self.io_context.enqueueResponse(i8, ApplicationError, -1, ApplicationError.InternalError);
+        self.io_context.enqueueResponse(?i8, ApplicationError, null, ApplicationError.InternalError);
     }
 };
 

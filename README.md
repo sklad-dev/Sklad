@@ -3,13 +3,13 @@
 **Sklad** is a lightweight key-value database that uses an asynchronous, non-blocking design and lock-free data structures to efficiently handle concurrent workloads.
 
 ## 👷‍♀️ Building Sklad
-Building Sklad is very straightforward. Install the Zig toolchain and run
+Building Sklad is very straightforward. Install Zig toolchain and run
 ```
 zig build --release=safe
 ```
 
 ## 🧑‍💻 Using Sklad
-There is a simple Python client: [sklient](https://github.com/sklad-db/sklient). Currently, the storage implements three operations:
+There is a terminal client: [sklient](https://github.com/sklad-db/sklient). Currently, the storage implements three operations:
 
 ### 1. Adding a new key-value pair:
 ```

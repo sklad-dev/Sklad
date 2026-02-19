@@ -236,7 +236,7 @@ pub const IO = struct {
 
             const bytes_read = posix.read(self.io_context.socket, &buffer) catch |e| {
                 std.log.err("Error! Failed to read a message: {any}", .{e});
-                self.io_context.enqueueResponse(i8, IoError, -1, IoError.RequestReadingError);
+                self.io_context.enqueueResponse(?i8, IoError, null, IoError.RequestReadingError);
                 return;
             };
 
@@ -253,7 +253,7 @@ pub const IO = struct {
                     .{},
                 ) catch |e| {
                     std.log.err("Error! Failed to parse a request: {any}", .{e});
-                    self.io_context.enqueueResponse(i8, IoError, -1, IoError.RequestProcessingError);
+                    self.io_context.enqueueResponse(?i8, IoError, null, IoError.RequestProcessingError);
                     return;
                 };
                 defer request.deinit();
@@ -310,13 +310,13 @@ pub const IO = struct {
                         };
                         task_queue.?.enqueue(continue_task.task());
                     } else {
-                        self.io_context.enqueueResponse(i8, IO.IoError, -1, IO.IoError.QueryMalformed);
+                        self.io_context.enqueueResponse(?i8, IO.IoError, null, IO.IoError.QueryMalformed);
                     }
                     return;
                 }
             } else {
                 std.log.err("Error! Request size {d} exceeds the maximum allowed size", .{bytes_read});
-                self.io_context.enqueueResponse(i8, IoError, -1, IoError.RequestTooLarge);
+                self.io_context.enqueueResponse(?i8, IoError, null, IoError.RequestTooLarge);
             }
         }
 
