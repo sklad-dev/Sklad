@@ -13,16 +13,25 @@ pub const Wal = struct {
     allocator: std.mem.Allocator,
     path: []const u8,
     file: std.fs.File,
-    lock: std.Thread.Mutex = .{},
+    eof_offset: std.atomic.Value(u64),
+    synced_offset: std.atomic.Value(u64),
+    is_flushing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    sync_mutex: std.Thread.Mutex = .{},
+    sync_cond: std.Thread.Condition = .{},
 
     pub fn open(allocator: std.mem.Allocator, wal_file_path: []const u8) !Wal {
+        const file = try std.fs.cwd().createFile(wal_file_path, .{
+            .read = true,
+            .truncate = false,
+        });
+        const eof_offset = try file.getEndPos();
+
         return .{
             .allocator = allocator,
             .path = wal_file_path,
-            .file = try std.fs.cwd().createFile(wal_file_path, .{
-                .read = true,
-                .truncate = false,
-            }),
+            .file = file,
+            .eof_offset = std.atomic.Value(u64).init(eof_offset),
+            .synced_offset = std.atomic.Value(u64).init(eof_offset),
         };
     }
 
@@ -32,20 +41,64 @@ pub const Wal = struct {
     }
 
     pub inline fn isEmpty(self: *const Wal) !bool {
-        const info = try self.file.stat();
-        return info.size == 0;
+        return self.eof_offset.load(.acquire) == 0;
     }
 
     pub fn writeRecord(self: *Wal, record: *const StorageRecord) !void {
-        if (!tryLockFor(&self.lock, 200)) return ApplicationError.ExecutionTimeout;
-        defer self.lock.unlock();
+        const record_size = record.sizeInMemory();
 
-        const max_position = try self.file.getEndPos();
-        var writer = self.file.writer(&[0]u8{});
+        var buffer: [1024]u8 = undefined;
+        const slice = if (record_size <= 1024) buffer[0..record_size] else try self.allocator.alloc(u8, record_size);
+        defer if (record_size > 1024) self.allocator.free(slice);
 
-        try writer.seekTo(max_position);
-        try record.write(&writer);
+        record.writeToBuffer(slice, 0);
+
+        const offset = self.eof_offset.fetchAdd(record_size, .seq_cst);
+        const my_end_offset = offset + record_size;
+        try self.file.pwriteAll(slice, offset);
+
+        self.sync_mutex.lock();
+        defer self.sync_mutex.unlock();
+
+        while (self.synced_offset.load(.acquire) < my_end_offset) {
+            if (!self.is_flushing.swap(true, .acq_rel)) {
+                self.sync_mutex.unlock();
+
+                self.file.sync() catch |err| {
+                    self.is_flushing.store(false, .release);
+                    return err;
+                };
+
+                self.sync_mutex.lock();
+                self.synced_offset.store(self.eof_offset.load(.acquire), .release);
+                self.is_flushing.store(false, .release);
+                self.sync_cond.broadcast();
+            } else {
+                self.sync_cond.wait(&self.sync_mutex);
+            }
+        }
     }
+
+    // V2
+    // pub fn writeRecord(self: *Wal, record: *const StorageRecord) !void {
+    //     const record_size = record.sizeInMemory();
+    //     const offset = self.eof_offset.fetchAdd(record_size, .seq_cst);
+
+    //     const buffer = try self.allocator.alloc(u8, record_size);
+    //     defer self.allocator.free(buffer);
+
+    //     record.writeToBuffer(buffer, 0);
+    //     try self.file.pwriteAll(buffer, offset);
+
+    //     const my_end_offset = offset + record_size;
+    //     if (self.synced_offset.load(.acquire) <= my_end_offset) {
+    //         if (!self.is_flushing.swap(true, .acq_rel)) {
+    //             defer self.is_flushing.store(false, .release);
+    //             try self.file.sync();
+    //             self.synced_offset.store(self.eof_offset.load(.acquire), .release);
+    //         }
+    //     }
+    // }
 
     pub fn readRecord(self: *const Wal, allocator: std.mem.Allocator, offset: u32) !StorageRecord {
         var reader = self.file.reader(getWorkerContext().?.reader_buffer[0..]);

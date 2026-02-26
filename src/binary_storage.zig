@@ -659,7 +659,7 @@ pub const BinaryStorage = struct {
         var it = dir.iterate();
         while (try it.next()) |entry| {
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".wal") and !std.mem.eql(u8, memtable.wal.name(), entry.name)) {
-                const wal_name = try table_file_manager.allocator.alloc(u8, table_file_manager.path.len + 9);
+                const wal_name = try table_file_manager.allocator.alloc(u8, table_file_manager.path.len + entry.name.len + 1);
                 const wal = try Wal.open(
                     table_file_manager.allocator,
                     try std.fmt.bufPrint(
