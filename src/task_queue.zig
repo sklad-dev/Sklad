@@ -36,7 +36,7 @@ pub const Task = struct {
     }
 };
 
-pub const TaskQueue = Queue(Task, 64);
+pub const TaskQueue = Queue(Task, 1024);
 
 // Tests
 const testing = std.testing;
