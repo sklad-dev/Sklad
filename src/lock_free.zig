@@ -109,8 +109,7 @@ pub fn Queue(E: type, S: u64) type {
             entry: ?E,
             next: ?*Node,
             prev: ?*Node,
-            use_counter: u32,
-            _padding: u8 align(std.atomic.cache_line) = 0,
+            use_counter: u32 align(std.atomic.cache_line),
         };
 
         pub fn init(allocator: std.mem.Allocator) Self {
@@ -251,8 +250,7 @@ pub fn AppendOnlyQueue(E: type, nodeCleanupFn: ?*const fn (allocator: std.mem.Al
 
         const Node = struct {
             entry: ?E,
-            next: ?*Node,
-            _padding: u8 align(std.atomic.cache_line) = 0,
+            next: ?*Node align(std.atomic.cache_line),
         };
 
         pub fn init(allocator: std.mem.Allocator) Self {
@@ -301,8 +299,7 @@ pub fn AddOnlyStack(E: type, nodeCleanupFn: ?*const fn (allocator: std.mem.Alloc
 
         const Node = struct {
             entry: E,
-            next: ?*Node,
-            _padding: u8 align(std.atomic.cache_line) = 0,
+            next: ?*Node align(std.atomic.cache_line),
         };
 
         pub fn init(allocator: std.mem.Allocator) Self {
@@ -359,10 +356,8 @@ pub fn BoundedQueue(comptime T: type) type {
         allocator: std.mem.Allocator,
         buf: []Slot, // Note for later, should it be SoA instead?
         mask: usize, // capacity - 1
-        head: usize,
-        _pad1: [std.atomic.cache_line - @sizeOf(usize)]u8 = undefined,
-        tail: usize,
-        _pad2: [std.atomic.cache_line - @sizeOf(usize)]u8 = undefined,
+        head: usize align(std.atomic.cache_line),
+        tail: usize align(std.atomic.cache_line),
 
         // capacity must be a power of two
         pub fn init(allocator: std.mem.Allocator, capacity: usize) !Self {

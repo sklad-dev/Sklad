@@ -42,10 +42,8 @@ pub const Manifest = struct {
     path: []const u8,
     file: std.fs.File,
     last_synced_pos: std.atomic.Value(u64),
-    buffer: std.atomic.Value(*EntryBuffer),
-    _padding1: u8 align(std.atomic.cache_line) = 0,
-    is_flushing: std.atomic.Value(bool),
-    _padding2: u8 align(std.atomic.cache_line) = 0,
+    buffer: std.atomic.Value(*EntryBuffer) align(std.atomic.cache_line),
+    is_flushing: std.atomic.Value(bool) align(std.atomic.cache_line),
 
     pub const RemovedFileEntriesIterator = struct {
         file: *std.fs.File,

@@ -17,12 +17,12 @@ pub const Wal = struct {
     allocator: std.mem.Allocator,
     path: []const u8,
     file: std.fs.File,
-    eof_offset: std.atomic.Value(u64),
-    synced_offset: std.atomic.Value(u64),
-    written_offset: std.atomic.Value(u64),
-    is_flushing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    sync_mutex: std.Thread.Mutex = .{},
-    sync_cond: std.Thread.Condition = .{},
+    eof_offset: std.atomic.Value(u64) align(std.atomic.cache_line),
+    synced_offset: std.atomic.Value(u64) align(std.atomic.cache_line),
+    written_offset: std.atomic.Value(u64) align(std.atomic.cache_line),
+    is_flushing: std.atomic.Value(bool) align(std.atomic.cache_line) = std.atomic.Value(bool).init(false),
+    sync_mutex: std.Thread.Mutex align(std.atomic.cache_line) = .{},
+    sync_cond: std.Thread.Condition align(std.atomic.cache_line) = .{},
 
     pub fn open(allocator: std.mem.Allocator, wal_file_path: []const u8) !Wal {
         const file = try std.fs.cwd().createFile(wal_file_path, .{
