@@ -9,7 +9,7 @@ zig build --release=safe
 ```
 
 ## 🧑‍💻 Using Sklad
-There is a terminal client: [sklient](https://github.com/sklad-db/sklient). Currently, the storage implements three operations:
+There is a terminal client: [sklient](https://github.com/sklad-dev/sklient). Currently, the storage implements three operations:
 
 ### 1. Adding a new key-value pair:
 ```
