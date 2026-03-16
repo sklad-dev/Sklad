@@ -1,12 +1,15 @@
 const std = @import("std");
 
 const data_types = @import("./data_types.zig");
+const utils = @import("./utils.zig");
+const Arena = @import("./lock_free.zig").Arena;
 const BinaryStorage = @import("./binary_storage.zig").BinaryStorage;
 const KeyValuePair = @import("./data_types.zig").KeyValuePair;
 const MergeIterator = @import("./merge_iterator.zig").MergeIterator;
 const MemtableIteratorAdapter = @import("./memtable.zig").MemtableIteratorAdapter;
 const SSTableCache = @import("./sstable_cache.zig").SSTableCache;
 const SSTableIteratorAdapter = @import("./sstable.zig").SSTableIteratorAdapter;
+const ValueType = @import("./data_types.zig").ValueType;
 
 const BinaryDataRange = data_types.BinaryDataRange;
 const FileHandle = data_types.FileHandle;
@@ -15,7 +18,9 @@ const StorageRecord = data_types.StorageRecord;
 
 pub const RangeQueryContext = struct {
     allocator: std.mem.Allocator,
-    batch_size: usize = 100,
+    arenas: [2]Arena,
+    active_arena_idx: usize,
+    max_response_bytes: u64,
     range: BinaryDataRange,
     memtable_adapters: []MemtableIteratorAdapter,
     sstable_adapters: []SSTableIteratorAdapter,
@@ -52,8 +57,15 @@ pub const RangeQueryContext = struct {
         try collectMemtableIterators(allocator, storage, range, &memtable_list, &pending_ref);
         try collectSSTableIterators(allocator, storage, range, &sstable_list, &cache_list);
 
+        const response_size_limit = 1024;
         var context = RangeQueryContext{
             .allocator = allocator,
+            .arenas = .{
+                try Arena.init(allocator, response_size_limit),
+                try Arena.init(allocator, response_size_limit),
+            },
+            .active_arena_idx = 0,
+            .max_response_bytes = response_size_limit,
             .memtable_adapters = try memtable_list.toOwnedSlice(allocator),
             .sstable_adapters = try sstable_list.toOwnedSlice(allocator),
             .cache_records = try cache_list.toOwnedSlice(allocator),
@@ -68,17 +80,14 @@ pub const RangeQueryContext = struct {
     }
 
     pub fn deinit(self: *RangeQueryContext) void {
+        self.arenas[0].deinit();
+        self.arenas[1].deinit();
+
         if (self.merge_iterator) |*it| it.deinit();
 
-        for (self.sstable_adapters) |*adapter| {
-            adapter.sstable_iterator.deinit();
-        }
-        for (self.cache_records) |record| {
-            _ = record.release();
-        }
-        if (self.pending_list_ref) |ref| {
-            _ = ref.release();
-        }
+        for (self.sstable_adapters) |*adapter| adapter.sstable_iterator.deinit();
+        for (self.cache_records) |record| _ = record.release();
+        if (self.pending_list_ref) |ref| _ = ref.release();
 
         if (self.cache_records.len > 0) self.allocator.free(self.cache_records);
         if (self.sstable_adapters.len > 0) self.allocator.free(self.sstable_adapters);
@@ -89,33 +98,91 @@ pub const RangeQueryContext = struct {
     }
 
     pub fn next(self: *RangeQueryContext) !?StorageRecord {
-        if (self.merge_iterator) |*it| {
-            return it.next();
-        }
+        if (self.merge_iterator) |*it| return it.next();
+
         return null;
     }
 
     pub fn fetchResults(self: *RangeQueryContext, results: *std.ArrayList(KeyValuePair)) !void {
-        var count: u64 = 0;
-        while (count < self.batch_size) : (count += 1) {
+        var is_spilling = false;
+        while (true) {
             const record = try self.next() orelse break;
 
             if (record.isTombstone()) continue;
             if (record.isExpired()) continue;
 
-            const key_copy = try self.allocator.alloc(u8, record.key.data.len);
-            errdefer self.allocator.free(key_copy);
-            @memcpy(key_copy, record.key.data);
+            const key_extra_size = getExtraStringAllocationSize(record.key.data);
+            const value_extra_size = getExtraStringAllocationSize(record.value.data);
+            const size_needed = record.key.data.len + key_extra_size + record.value.data.len + value_extra_size;
+            var active_arena = &self.arenas[self.active_arena_idx];
 
-            const value_copy = try self.allocator.alloc(u8, record.value.data.len);
-            errdefer self.allocator.free(value_copy);
-            @memcpy(value_copy, record.value.data);
+            // TODO: through an error if the record doesn't fit into arena
+            if (size_needed + active_arena.currentOffset() > self.max_response_bytes) {
+                self.active_arena_idx = 1 - self.active_arena_idx;
+                active_arena = &self.arenas[self.active_arena_idx];
+                active_arena.reset();
+                is_spilling = true;
+            }
+
+            const key_offset = try active_arena.reserve(record.key.data.len);
+            const key_slice = active_arena.arena[key_offset .. key_offset + record.key.data.len];
+            @memcpy(key_slice, record.key.data);
+
+            const value_offset = try active_arena.reserve(record.value.data.len);
+            const value_slice = active_arena.arena[value_offset .. value_offset + record.value.data.len];
+            @memcpy(value_slice, record.value.data);
 
             try results.append(self.allocator, .{
-                .key = key_copy,
-                .value = value_copy,
+                .key = try self.toJsonValue(key_slice),
+                .value = try self.toJsonValue(value_slice),
             });
+
+            if (is_spilling) {
+                break;
+            }
         }
+    }
+
+    fn toJsonValue(self: *RangeQueryContext, data: []const u8) !std.json.Value {
+        const data_type = ValueType.fromBytes(data);
+        const raw_data = data[1..];
+        return switch (data_type) {
+            .boolean => .{ .bool = utils.intFromBytes(u8, raw_data, 0) == 1 },
+            .smallint => .{ .integer = @as(i64, @intCast(utils.intFromBytes(i8, raw_data, 0))) },
+            .int => .{ .integer = @as(i64, @intCast(utils.intFromBytes(i32, raw_data, 0))) },
+            .bigint => .{ .integer = utils.intFromBytes(i64, raw_data, 0) },
+            .smallserial => .{ .integer = @as(i64, @intCast(utils.intFromBytes(u8, raw_data, 0))) },
+            .serial => .{ .integer = @as(i64, @intCast(utils.intFromBytes(u32, raw_data, 0))) },
+            .bigserial => blk: {
+                const val = utils.intFromBytes(u64, raw_data, 0);
+                if (val <= std.math.maxInt(i64)) {
+                    break :blk .{ .integer = @as(i64, @intCast(val)) };
+                } else {
+                    const digits = utils.numDigits(u64, val);
+                    const active_arena = &self.arenas[self.active_arena_idx];
+                    const offset = try active_arena.reserve(digits);
+                    const slice = active_arena.arena[offset .. offset + digits];
+                    _ = try std.fmt.bufPrint(slice, "{d}", .{val});
+                    break :blk .{ .number_string = slice };
+                }
+            },
+            .float => .{ .float = @as(f64, @floatCast(@as(f32, @bitCast(utils.intFromBytes(u32, raw_data, 0))))) },
+            .bigfloat => .{ .float = @as(f64, @floatCast(@as(f64, @bitCast(utils.intFromBytes(u64, raw_data, 0))))) },
+            .string => .{ .string = raw_data },
+        };
+    }
+
+    fn getExtraStringAllocationSize(data: []const u8) usize {
+        if (data.len == 0) return 0;
+        const data_type = ValueType.fromBytes(data);
+        if (data_type == .bigserial) {
+            const raw_data = data[1..];
+            const val = utils.intFromBytes(u64, raw_data, 0);
+            if (val > std.math.maxInt(i64)) {
+                return utils.numDigits(u64, val);
+            }
+        }
+        return 0;
     }
 
     fn collectMemtableIterators(

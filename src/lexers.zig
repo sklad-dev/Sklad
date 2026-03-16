@@ -10,7 +10,6 @@ pub const KV_BUILTINS = [_]Builtin{
     .{ .name = "delete", .kind = Token.Kind.keyword },
     .{ .name = "expire", .kind = Token.Kind.keyword },
     .{ .name = "range", .kind = Token.Kind.keyword },
-    .{ .name = "batch", .kind = Token.Kind.keyword },
 };
 
 pub inline fn kvLexer(allocator: std.mem.Allocator, source: []const u8, token_sequence: *std.ArrayList(Token)) lex.Lexer {
@@ -44,6 +43,17 @@ test "kvLexer get query" {
     var l1 = kvLexer(testing.allocator, get_query, &tokens);
     try testing.expect(l1.lex() == 0);
     try testing.expect(tokens.items.len == 2);
+    tokens.clearAndFree(testing.allocator);
+}
+
+test "kvLexer get range query" {
+    var tokens = try std.ArrayList(Token).initCapacity(testing.allocator, 16);
+    defer tokens.deinit(testing.allocator);
+
+    const get_query = "get 1 99";
+    var l1 = kvLexer(testing.allocator, get_query, &tokens);
+    try testing.expect(l1.lex() == 0);
+    try testing.expect(tokens.items.len == 3);
     tokens.clearAndFree(testing.allocator);
 }
 

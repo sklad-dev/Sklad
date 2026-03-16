@@ -95,7 +95,6 @@ pub const SetExpression = struct {
 pub const GetExpression = struct {
     allocator: std.mem.Allocator,
     parameter: GetParameterNode,
-    batch_size: ?u64,
 
     pub fn parse(allocator: std.mem.Allocator, query: *TokenizedQuery) !GetExpression {
         var parameter: GetParameterNode = undefined;
@@ -119,26 +118,9 @@ pub const GetExpression = struct {
             return ParserError.InvalidQuery;
         }
 
-        errdefer switch (parameter) {
-            .range => |*r| r.deinit(),
-            .value => |*v| v.deinit(),
-        };
-
-        var batch_size: ?u64 = null;
-        if (query.peakNextToken()) |token| {
-            if (token.kind == .keyword and std.mem.eql(u8, token.string(), lexers.KV_BUILTINS[5].name)) {
-                _ = query.nextToken();
-                const batch_token = try query.expectToken(&[_]Token.Kind{.numericValue});
-                batch_size = std.fmt.parseInt(u64, batch_token.string(), 10) catch {
-                    return ParserError.InvalidValue;
-                };
-            }
-        }
-
         return .{
             .allocator = allocator,
             .parameter = parameter,
-            .batch_size = batch_size,
         };
     }
 
@@ -636,35 +618,6 @@ test "Parse get range query with mismatching value types" {
     var query = TokenizedQuery.init(testing.allocator, &tokens);
     const parse_result = Expression.parse(testing.allocator, &query);
     try testing.expect(parse_result == ParserError.InvalidValue);
-}
-
-test "Parse get range query with batch size" {
-    var tokens = try std.ArrayList(Token).initCapacity(testing.allocator, 16);
-    defer tokens.deinit(testing.allocator);
-
-    const insert_node_query = "get range 'a' 'z' batch 100";
-    var lexer = lexers.kvLexer(testing.allocator, insert_node_query, &tokens);
-    try testing.expect(lexer.lex() == 0);
-
-    var query = TokenizedQuery.init(testing.allocator, &tokens);
-    var expression = try Expression.parse(testing.allocator, &query);
-    defer expression.get.destroy();
-    try testing.expect(std.mem.eql(u8, expression.get.parameter.range.start.value.data, "a"));
-    try testing.expect(std.mem.eql(u8, expression.get.parameter.range.end.value.data, "z"));
-    try testing.expect(expression.get.batch_size.? == 100);
-}
-
-test "Parse get range query with incorrect batch size type" {
-    var tokens = try std.ArrayList(Token).initCapacity(testing.allocator, 16);
-    defer tokens.deinit(testing.allocator);
-
-    const insert_node_query = "get range 'a' 'z' batch 'invalid_size'";
-    var lexer = lexers.kvLexer(testing.allocator, insert_node_query, &tokens);
-    try testing.expect(lexer.lex() == 0);
-
-    var query = TokenizedQuery.init(testing.allocator, &tokens);
-    const parse_result = Expression.parse(testing.allocator, &query);
-    try testing.expect(parse_result == ParserError.UnexpectedToken);
 }
 
 test "Parse delete query" {

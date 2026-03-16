@@ -553,6 +553,10 @@ pub const Arena = struct {
         return @atomicLoad(u64, &self.current_offset, .seq_cst);
     }
 
+    pub inline fn reset(self: *Arena) void {
+        @atomicStore(u64, &self.current_offset, 0, .release);
+    }
+
     pub fn deinit(self: *Arena) void {
         self.allocator.free(self.arena);
     }

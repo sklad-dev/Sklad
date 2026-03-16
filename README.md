@@ -36,10 +36,10 @@ get <key>
 
 ### 2a. Retrieving a range of key-value pairs:
 ```
-get range <start_key> <end_key> batch <size>
+get range <start_key> <end_key>
 ```
 
-Where `<start_key>` and `<end_key>` define the range boundaries, and `<size>` is a numeric value specifying the maximum number of results to return.
+Where `<start_key>` and `<end_key>` define the range boundaries.
 
 **Note**: Both keys must be of the same data type.
 
