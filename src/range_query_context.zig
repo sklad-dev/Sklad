@@ -20,7 +20,6 @@ pub const RangeQueryContext = struct {
     allocator: std.mem.Allocator,
     arenas: [2]Arena,
     active_arena_idx: usize,
-    max_response_bytes: u64,
     range: BinaryDataRange,
     memtable_adapters: []MemtableIteratorAdapter,
     sstable_adapters: []SSTableIteratorAdapter,
@@ -28,7 +27,7 @@ pub const RangeQueryContext = struct {
     pending_list_ref: ?*PendingMemtableList,
     merge_iterator: ?MergeIterator,
 
-    pub fn init(allocator: std.mem.Allocator, storage: *BinaryStorage, range: BinaryDataRange) !RangeQueryContext {
+    pub fn init(allocator: std.mem.Allocator, storage: *BinaryStorage, range: BinaryDataRange, response_limit: u64) !RangeQueryContext {
         var memtable_list = try std.ArrayList(MemtableIteratorAdapter).initCapacity(allocator, 2);
         defer memtable_list.deinit(allocator);
 
@@ -57,15 +56,13 @@ pub const RangeQueryContext = struct {
         try collectMemtableIterators(allocator, storage, range, &memtable_list, &pending_ref);
         try collectSSTableIterators(allocator, storage, range, &sstable_list, &cache_list);
 
-        const response_size_limit = 1024;
         var context = RangeQueryContext{
             .allocator = allocator,
             .arenas = .{
-                try Arena.init(allocator, response_size_limit),
-                try Arena.init(allocator, response_size_limit),
+                try Arena.init(allocator, response_limit),
+                try Arena.init(allocator, response_limit),
             },
             .active_arena_idx = 0,
-            .max_response_bytes = response_size_limit,
             .memtable_adapters = try memtable_list.toOwnedSlice(allocator),
             .sstable_adapters = try sstable_list.toOwnedSlice(allocator),
             .cache_records = try cache_list.toOwnedSlice(allocator),
@@ -117,7 +114,7 @@ pub const RangeQueryContext = struct {
             var active_arena = &self.arenas[self.active_arena_idx];
 
             // TODO: through an error if the record doesn't fit into arena
-            if (size_needed + active_arena.currentOffset() > self.max_response_bytes) {
+            if (size_needed + active_arena.currentOffset() > self.arenas[0].arena.len) {
                 self.active_arena_idx = 1 - self.active_arena_idx;
                 active_arena = &self.arenas[self.active_arena_idx];
                 active_arena.reset();

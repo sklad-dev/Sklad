@@ -15,6 +15,7 @@ pub const Configurator = struct {
     cleanup_interval_seconds_fn: *const fn (ptr: *anyopaque) i64,
     cleanup_file_count_threshold_fn: *const fn (ptr: *anyopaque) u16,
     max_connections_fn: *const fn (ptr: *anyopaque) u16,
+    batch_response_limit_fn: *const fn (ptr: *anyopaque) u64,
 
     pub fn memtableMaxSize(self: *const Configurator) u64 {
         return self.memtable_max_size_fn(self.ptr);
@@ -75,6 +76,10 @@ pub const Configurator = struct {
     pub fn maxConnections(self: *const Configurator) u16 {
         return self.max_connections_fn(self.ptr);
     }
+
+    pub fn batchResponseLimit(self: *const Configurator) u64 {
+        return self.batch_response_limit_fn(self.ptr);
+    }
 };
 
 pub const TestingConfigurator = struct {
@@ -93,6 +98,7 @@ pub const TestingConfigurator = struct {
     cleanup_interval_seconds: i64,
     cleanup_file_count_threshold: u16,
     max_connections: u16,
+    batch_response_limit: u64,
 
     pub fn init(max_size: u64, max_level: u8, block_size: u32) TestingConfigurator {
         return .{
@@ -111,6 +117,7 @@ pub const TestingConfigurator = struct {
             .cleanup_interval_seconds = 60,
             .cleanup_file_count_threshold = 4,
             .max_connections = 1,
+            .batch_response_limit = 512,
         };
     }
 
@@ -132,6 +139,7 @@ pub const TestingConfigurator = struct {
             .cleanup_interval_seconds_fn = cleanupIntervalSeconds,
             .cleanup_file_count_threshold_fn = cleanupFileCountThreshold,
             .max_connections_fn = maxConnections,
+            .batch_response_limit_fn = batchResponseLimit,
         };
     }
 
@@ -208,5 +216,10 @@ pub const TestingConfigurator = struct {
     pub fn maxConnections(ptr: *anyopaque) u16 {
         const self: *TestingConfigurator = @ptrCast(@alignCast(ptr));
         return self.max_connections;
+    }
+
+    pub fn batchResponseLimit(ptr: *anyopaque) u64 {
+        const self: *TestingConfigurator = @ptrCast(@alignCast(ptr));
+        return self.batch_response_limit;
     }
 };

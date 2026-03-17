@@ -115,6 +115,7 @@ Configuration file example:
 * `cleanup.interval_seconds` - (i64) minimum time between cleanup runs (seconds)
 * `cleanup.file_count_threshold` - (u16) minimum number of deleted files required to run cleanup
 * `max_connections` - (u16) maximum concurrent client connections
+* `batch_response_limit` - (u64) maximum number of bytes returned by `get range` query
 
 ## 🏗️ Architecture
 Sklad is built around an asynchronous task queue with a small pool of worker threads. This design allows the system to efficiently handle a large number of concurrent requests without overloading resources.

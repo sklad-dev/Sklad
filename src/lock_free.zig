@@ -354,7 +354,7 @@ pub fn BoundedQueue(comptime T: type) type {
         };
 
         allocator: std.mem.Allocator,
-        buf: []Slot, // Note for later, should it be SoA instead?
+        buf: []Slot,
         mask: usize, // capacity - 1
         head: usize align(std.atomic.cache_line),
         tail: usize align(std.atomic.cache_line),
