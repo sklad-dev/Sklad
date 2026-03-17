@@ -9,7 +9,9 @@ zig build --release=safe
 ```
 
 ## 🧑‍💻 Using Sklad
-There is a terminal client: [sklient](https://github.com/sklad-dev/sklient). Currently, the storage implements three operations:
+There is a terminal client: [sklient](https://github.com/sklad-dev/sklient). You can follow the instructions to build it, you'll need Zig 0.15.2.
+
+Currently, the storage implements three operations:
 
 ### 1. Adding a new key-value pair:
 ```
@@ -49,7 +51,7 @@ Where `<start_key>` and `<end_key>` define the range boundaries.
 delete <key>
 ```
 
-**Note**: Strings currently have to be surrounded with single quotes (e.g., `get 'test'`). Unquoted single-word strings like `get test` will fail to parse.
+**Note**: Strings currently have to be surrounded with single quotes (e.g., `get 'test'`). Unquoted single-word strings like `get test` will fail to be parsed.
 
 Sklad listens on TCP port 7733, awaiting incoming messages formatted as JSON strings with the following structure:
 ```
