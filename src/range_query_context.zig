@@ -100,7 +100,7 @@ pub const RangeQueryContext = struct {
         return null;
     }
 
-    pub fn fetchResults(self: *RangeQueryContext, results: *std.ArrayList(KeyValuePair)) !void {
+    pub fn fetchResults(self: *RangeQueryContext, results: *std.ArrayList(KeyValuePair), results_allocator: std.mem.Allocator) !void {
         var is_spilling = false;
         while (true) {
             const record = try self.next() orelse break;
@@ -129,7 +129,7 @@ pub const RangeQueryContext = struct {
             const value_slice = active_arena.arena[value_offset .. value_offset + record.value.data.len];
             @memcpy(value_slice, record.value.data);
 
-            try results.append(self.allocator, .{
+            try results.append(results_allocator, .{
                 .key = try self.toJsonValue(key_slice),
                 .value = try self.toJsonValue(value_slice),
             });

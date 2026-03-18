@@ -173,7 +173,7 @@ const Executor = struct {
         };
         defer results.deinit(self.allocator);
 
-        range_context.fetchResults(&results) catch |e| {
+        range_context.fetchResults(&results, self.allocator) catch |e| {
             std.log.err("Error! Range query result fetching failed: {any}", .{e});
             self.io_context.enqueueResponse(?i8, ExecutionError, null, ExecutionError.ExecutionFailed);
             return;
