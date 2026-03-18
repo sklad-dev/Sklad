@@ -29,8 +29,8 @@ pub const ValueType = enum(u8) {
 };
 
 pub const KeyValuePair = struct {
-    key: []const u8,
-    value: []const u8,
+    key: std.json.Value,
+    value: std.json.Value,
 };
 
 pub const BinaryData = []const u8;

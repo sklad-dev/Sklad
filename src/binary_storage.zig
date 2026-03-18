@@ -541,6 +541,7 @@ pub const BinaryStorage = struct {
                 .start = start_key,
                 .end = end_key,
             },
+            global_context.getConfigurator().?.batchResponseLimit(),
         );
     }
 

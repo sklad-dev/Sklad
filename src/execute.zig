@@ -11,7 +11,6 @@ const RangeQueryContext = @import("./range_query_context.zig").RangeQueryContext
 const Task = @import("./task_queue.zig").Task;
 const TypedBinaryData = @import("./data_types.zig").TypedBinaryData;
 const TypedStorage = @import("./typed_storage.zig").TypedStorage;
-const ValueType = @import("./data_types.zig").ValueType;
 
 pub const ExecutionError = error{
     ExecutionFailed,
@@ -139,9 +138,6 @@ const Executor = struct {
                 errdefer self.io_context.allocator.destroy(ctx_ptr);
 
                 ctx_ptr.* = try self.storage.getFromRange(range.start.value, range.end.value);
-                if (expression.batch_size) |size| {
-                    ctx_ptr.batch_size = size;
-                }
 
                 self.io_context.range_query_context = ctx_ptr;
                 self.sendGetRangeResult();
@@ -169,32 +165,19 @@ const Executor = struct {
             return;
         };
 
-        var results = std.ArrayList(KeyValuePair).initCapacity(self.allocator, range_context.batch_size) catch |e| {
+        // TODO: pick the right initial capacity
+        var results = std.ArrayList(KeyValuePair).initCapacity(self.allocator, 16) catch |e| {
             std.log.err("Error! Cannot allocate results array: {any}", .{e});
             self.io_context.enqueueResponse(?i8, ExecutionError, null, ExecutionError.ExecutionFailed);
             return;
         };
-        errdefer {
-            for (results.items) |item| {
-                range_context.allocator.free(item.key);
-                range_context.allocator.free(item.value);
-            }
-            results.deinit(self.allocator);
-        }
+        defer results.deinit(self.allocator);
 
-        range_context.fetchResults(&results) catch |e| {
+        range_context.fetchResults(&results, self.allocator) catch |e| {
             std.log.err("Error! Range query result fetching failed: {any}", .{e});
             self.io_context.enqueueResponse(?i8, ExecutionError, null, ExecutionError.ExecutionFailed);
             return;
         };
-
-        defer {
-            for (results.items) |item| {
-                range_context.allocator.free(item.key);
-                range_context.allocator.free(item.value);
-            }
-            results.deinit(self.allocator);
-        }
 
         self.io_context.enqueueResponse([]KeyValuePair, ExecutionError, results.items, null);
     }

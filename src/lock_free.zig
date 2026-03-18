@@ -354,7 +354,7 @@ pub fn BoundedQueue(comptime T: type) type {
         };
 
         allocator: std.mem.Allocator,
-        buf: []Slot, // Note for later, should it be SoA instead?
+        buf: []Slot,
         mask: usize, // capacity - 1
         head: usize align(std.atomic.cache_line),
         tail: usize align(std.atomic.cache_line),
@@ -551,6 +551,10 @@ pub const Arena = struct {
 
     pub inline fn currentOffset(self: *const Arena) u64 {
         return @atomicLoad(u64, &self.current_offset, .seq_cst);
+    }
+
+    pub inline fn reset(self: *Arena) void {
+        @atomicStore(u64, &self.current_offset, 0, .release);
     }
 
     pub fn deinit(self: *Arena) void {

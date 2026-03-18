@@ -9,7 +9,9 @@ zig build --release=safe
 ```
 
 ## 🧑‍💻 Using Sklad
-There is a terminal client: [sklient](https://github.com/sklad-dev/sklient). Currently, the storage implements three operations:
+There is a terminal client: [sklient](https://github.com/sklad-dev/sklient). You can follow the instructions to build it, you'll need Zig 0.15.2.
+
+Currently, the storage implements three operations:
 
 ### 1. Adding a new key-value pair:
 ```
@@ -36,10 +38,10 @@ get <key>
 
 ### 2a. Retrieving a range of key-value pairs:
 ```
-get range <start_key> <end_key> batch <size>
+get range <start_key> <end_key>
 ```
 
-Where `<start_key>` and `<end_key>` define the range boundaries, and `<size>` is a numeric value specifying the maximum number of results to return.
+Where `<start_key>` and `<end_key>` define the range boundaries.
 
 **Note**: Both keys must be of the same data type.
 
@@ -49,7 +51,7 @@ Where `<start_key>` and `<end_key>` define the range boundaries, and `<size>` is
 delete <key>
 ```
 
-**Note**: Strings currently have to be surrounded with single quotes (e.g., `get 'test'`). Unquoted single-word strings like `get test` will fail to parse.
+**Note**: Strings currently have to be surrounded with single quotes (e.g., `get 'test'`). Unquoted single-word strings like `get test` will fail to be parsed.
 
 Sklad listens on TCP port 7733, awaiting incoming messages formatted as JSON strings with the following structure:
 ```
@@ -115,6 +117,7 @@ Configuration file example:
 * `cleanup.interval_seconds` - (i64) minimum time between cleanup runs (seconds)
 * `cleanup.file_count_threshold` - (u16) minimum number of deleted files required to run cleanup
 * `max_connections` - (u16) maximum concurrent client connections
+* `batch_response_limit` - (u64) maximum number of bytes returned by `get range` query
 
 ## 🏗️ Architecture
 Sklad is built around an asynchronous task queue with a small pool of worker threads. This design allows the system to efficiently handle a large number of concurrent requests without overloading resources.
