@@ -113,7 +113,7 @@ pub const RangeQueryContext = struct {
             const size_needed = record.key.data.len + key_extra_size + record.value.data.len + value_extra_size;
             var active_arena = &self.arenas[self.active_arena_idx];
 
-            // TODO: through an error if the record doesn't fit into arena
+            // TODO: throw an error if the record doesn't fit into arena
             if (size_needed + active_arena.currentOffset() > self.arenas[0].arena.len) {
                 self.active_arena_idx = 1 - self.active_arena_idx;
                 active_arena = &self.arenas[self.active_arena_idx];
