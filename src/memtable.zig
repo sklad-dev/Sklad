@@ -158,7 +158,7 @@ pub const Memtable = struct {
             ),
         );
 
-        var arena = try Arena.init(allocator, max_size);
+        var arena = try Arena.init(allocator, max_size, null);
 
         const node_and_tower_size: u64 = @sizeOf(Node) + (max_level + 1) * @sizeOf(u64);
         _ = try arena.reserve(node_and_tower_size);
@@ -701,7 +701,7 @@ test "Memtable.Iterator with range wider than data" {
 // }
 
 // test "Arena concurrency" {
-//     var arena = try Arena.init(testing.allocator, 69632);
+//     var arena = try Arena.init(testing.allocator, 69632, null);
 //     defer arena.deinit();
 
 //     var threads: [16]std.Thread = undefined;

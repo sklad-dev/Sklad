@@ -508,19 +508,21 @@ pub fn RingBuffer(comptime T: type) type {
 
 pub const Arena = struct {
     allocator: std.mem.Allocator,
+    alignment: u64,
     arena: []u8,
     current_offset: u64 = 0,
 
-    const ALIGNMENT: u64 = @alignOf(usize);
+    const DEFAULT_ALIGNMENT: u64 = @alignOf(usize);
     const assert = std.debug.assert;
 
     pub const StorageError = error{
         ArenaIsFull,
     };
 
-    pub fn init(allocator: std.mem.Allocator, arena_size: u64) !Arena {
+    pub fn init(allocator: std.mem.Allocator, arena_size: u64, alignment: ?u64) !Arena {
         return .{
             .allocator = allocator,
+            .alignment = alignment orelse DEFAULT_ALIGNMENT,
             .arena = try allocator.alloc(u8, arena_size),
         };
     }
@@ -534,7 +536,7 @@ pub const Arena = struct {
 
         while (true) {
             current_offset = @atomicLoad(u64, &self.current_offset, .seq_cst);
-            new_offset = ((current_offset + data_size) + ALIGNMENT - 1) & ~(ALIGNMENT - 1);
+            new_offset = ((current_offset + data_size) + self.alignment - 1) & ~(self.alignment - 1);
             if (new_offset > self.arena.len) {
                 return StorageError.ArenaIsFull;
             }
@@ -897,7 +899,7 @@ test "RingBuffer" {
 }
 
 test "Arena" {
-    var arena = try Arena.init(testing.allocator, 104);
+    var arena = try Arena.init(testing.allocator, 104, null);
     defer arena.deinit();
 
     var o: u64 = try arena.reserve(@sizeOf(u64));
