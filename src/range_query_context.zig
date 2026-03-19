@@ -59,8 +59,8 @@ pub const RangeQueryContext = struct {
         var context = RangeQueryContext{
             .allocator = allocator,
             .arenas = .{
-                try Arena.init(allocator, response_limit),
-                try Arena.init(allocator, response_limit),
+                try Arena.init(allocator, response_limit, @alignOf(u8)),
+                try Arena.init(allocator, response_limit, @alignOf(u8)),
             },
             .active_arena_idx = 0,
             .memtable_adapters = try memtable_list.toOwnedSlice(allocator),
@@ -102,6 +102,7 @@ pub const RangeQueryContext = struct {
 
     pub fn fetchResults(self: *RangeQueryContext, results: *std.ArrayList(KeyValuePair), results_allocator: std.mem.Allocator) !void {
         var is_spilling = false;
+        var total_extra_space: u64 = 0;
         while (true) {
             const record = try self.next() orelse break;
 
@@ -110,11 +111,12 @@ pub const RangeQueryContext = struct {
 
             const key_extra_size = getExtraStringAllocationSize(record.key.data);
             const value_extra_size = getExtraStringAllocationSize(record.value.data);
+            total_extra_space += key_extra_size + value_extra_size;
             const size_needed = record.key.data.len + key_extra_size + record.value.data.len + value_extra_size;
             var active_arena = &self.arenas[self.active_arena_idx];
 
             // TODO: throw an error if the record doesn't fit into arena
-            if (size_needed + active_arena.currentOffset() > self.arenas[0].arena.len) {
+            if (size_needed + active_arena.currentOffset() + total_extra_space > self.arenas[self.active_arena_idx].arena.len) {
                 self.active_arena_idx = 1 - self.active_arena_idx;
                 active_arena = &self.arenas[self.active_arena_idx];
                 active_arena.reset();

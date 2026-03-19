@@ -90,6 +90,8 @@ pub const IO = struct {
         socket: std.posix.socket_t,
         start_time: i64,
         response_buffer: ?[]u8 = null,
+        request_buffer: [4096]u8 = [_]u8{0} ** 4096,
+        request_bytes_read: usize = 0,
         bytes_written: usize = 0,
         range_query_context: ?*RangeQueryContext = null,
 
@@ -232,9 +234,11 @@ pub const IO = struct {
 
         fn run(ptr: *anyopaque) void {
             const self: *ReadRequestTask = @ptrCast(@alignCast(ptr));
-            var buffer: [4096]u8 = [_]u8{0} ** 4096; // TODO: move the buffer to the worker
 
-            const bytes_read = posix.read(self.io_context.socket, &buffer) catch |e| {
+            const bytes_read = posix.read(
+                self.io_context.socket,
+                self.io_context.request_buffer[self.io_context.request_bytes_read..],
+            ) catch |e| {
                 std.log.err("Error! Failed to read a message: {any}", .{e});
                 self.io_context.enqueueResponse(?i8, IoError, null, IoError.RequestReadingError);
                 return;
@@ -245,18 +249,23 @@ pub const IO = struct {
                 return;
             }
 
-            if (bytes_read > 0 and bytes_read <= buffer.len) {
+            self.io_context.request_bytes_read += bytes_read;
+
+            if (std.mem.indexOfScalar(u8, self.io_context.request_buffer[0..self.io_context.request_bytes_read], '\n') != null) {
                 const request = std.json.parseFromSlice(
                     Request,
                     self.allocator,
-                    buffer[0..bytes_read],
-                    .{},
+                    self.io_context.request_buffer[0..self.io_context.request_bytes_read],
+                    .{ .ignore_unknown_fields = true },
                 ) catch |e| {
                     std.log.err("Error! Failed to parse a request: {any}", .{e});
+                    self.io_context.request_bytes_read = 0;
                     self.io_context.enqueueResponse(?i8, IoError, null, IoError.RequestProcessingError);
                     return;
                 };
                 defer request.deinit();
+
+                self.io_context.request_bytes_read = 0;
 
                 const task_queue = global_context.getTaskQueue();
 
@@ -315,8 +324,8 @@ pub const IO = struct {
                     return;
                 }
             } else {
-                std.log.err("Error! Request size {d} exceeds the maximum allowed size", .{bytes_read});
-                self.io_context.enqueueResponse(?i8, IoError, null, IoError.RequestTooLarge);
+                self.io_context.state.store(@intFromEnum(IoContextState.idle), .release);
+                return;
             }
         }
 
