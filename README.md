@@ -62,6 +62,9 @@ Sklad listens on TCP port 7733, awaiting incoming messages formatted as JSON str
 }
 ```
 
+More on the Sklad communication protocol:
+* [Sklad protocol](docs/protocol.md)
+
 ## 🔧 Configuration
 Currently, Sklad expects a `config/configuration.json` file next to the executable (i.e., `./config/configuration.json`).
 
