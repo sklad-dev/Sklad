@@ -16,7 +16,13 @@ const DEFAULT_CONFIGURATION_FILE_PATH = @import("./json_configurator.zig").DEFAU
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
-    var json_conf = try JsonConfigurator.init(allocator, DEFAULT_CONFIGURATION_FILE_PATH);
+    const bin_dir = try std.fs.selfExeDirPathAlloc(allocator);
+    defer allocator.free(bin_dir);
+
+    const config_path = try std.fs.path.join(allocator, &[_][]const u8{ bin_dir, DEFAULT_CONFIGURATION_FILE_PATH });
+    defer allocator.free(config_path);
+
+    var json_conf = try JsonConfigurator.init(allocator, config_path);
 
     var conf = json_conf.configurator();
     global_context.loadConfiguration(&conf);
