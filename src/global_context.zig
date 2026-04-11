@@ -11,7 +11,9 @@ var TYPED_STORAGE = std.atomic.Value(?*TypedStorage).init(null);
 var TASK_QUEUE = std.atomic.Value(?*TaskQueue).init(null);
 var METRICS_AGGREGATOR = std.atomic.Value(?*MetricsAggregator).init(null);
 var WORKER_MANAGER = std.atomic.Value(?*WorkerManager).init(null);
-const ROOT_FOLDER: []const u8 = ".sklad";
+
+pub const ROOT_FOLDER: []const u8 = ".sklad";
+var ROOT_FOLDER_PATH: []const u8 = ROOT_FOLDER;
 threadlocal var TEST_ROOT_FOLDER: ?[]const u8 = null;
 
 pub inline fn loadConfiguration(configurator: *Configurator) void {
@@ -25,11 +27,15 @@ pub inline fn init(typed_storage: *TypedStorage, task_queue: *TaskQueue, metrics
     _ = WORKER_MANAGER.cmpxchgStrong(null, worker_manager, .acq_rel, .monotonic);
 }
 
+pub fn setRootFolderPath(path: []const u8) void {
+    ROOT_FOLDER_PATH = path;
+}
+
 pub fn getRootFolder() []const u8 {
     if (TEST_ROOT_FOLDER) |test_path| {
         return test_path;
     }
-    return ROOT_FOLDER;
+    return ROOT_FOLDER_PATH;
 }
 
 pub inline fn getConfigurator() ?*Configurator {

@@ -1,5 +1,6 @@
 pub const Configurator = struct {
     ptr: *anyopaque,
+    data_folder_fn: *const fn (ptr: *anyopaque) ?[]const u8,
     memtable_max_size_fn: *const fn (ptr: *anyopaque) u64,
     memtable_max_level_fn: *const fn (ptr: *anyopaque) u8,
     sstable_block_size_fn: *const fn (ptr: *anyopaque) u32,
@@ -16,6 +17,10 @@ pub const Configurator = struct {
     cleanup_file_count_threshold_fn: *const fn (ptr: *anyopaque) u16,
     max_connections_fn: *const fn (ptr: *anyopaque) u16,
     batch_response_limit_fn: *const fn (ptr: *anyopaque) u64,
+
+    pub fn dataFolder(self: *const Configurator) ?[]const u8 {
+        return self.data_folder_fn(self.ptr);
+    }
 
     pub fn memtableMaxSize(self: *const Configurator) u64 {
         return self.memtable_max_size_fn(self.ptr);
@@ -83,6 +88,7 @@ pub const Configurator = struct {
 };
 
 pub const TestingConfigurator = struct {
+    data_folder: ?[]const u8 = null,
     max_size: u64,
     max_level: u8,
     block_size: u32,
@@ -102,6 +108,7 @@ pub const TestingConfigurator = struct {
 
     pub fn init(max_size: u64, max_level: u8, block_size: u32) TestingConfigurator {
         return .{
+            .data_folder = null,
             .max_size = max_size,
             .max_level = max_level,
             .block_size = block_size,
@@ -124,6 +131,7 @@ pub const TestingConfigurator = struct {
     pub fn configurator(self: *TestingConfigurator) Configurator {
         return .{
             .ptr = self,
+            .data_folder_fn = dataFolder,
             .memtable_max_size_fn = memtableMaxSize,
             .memtable_max_level_fn = memtableMaxLevel,
             .sstable_block_size_fn = sstableBlockSize,
@@ -141,6 +149,11 @@ pub const TestingConfigurator = struct {
             .max_connections_fn = maxConnections,
             .batch_response_limit_fn = batchResponseLimit,
         };
+    }
+
+    pub fn dataFolder(ptr: *anyopaque) ?[]const u8 {
+        const self: *TestingConfigurator = @ptrCast(@alignCast(ptr));
+        return self.data_folder;
     }
 
     pub fn memtableMaxSize(ptr: *anyopaque) u64 {

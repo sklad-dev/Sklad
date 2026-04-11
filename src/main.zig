@@ -16,11 +16,23 @@ const DEFAULT_CONFIGURATION_FILE_PATH = @import("./json_configurator.zig").DEFAU
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
-    var json_conf = try JsonConfigurator.init(allocator, DEFAULT_CONFIGURATION_FILE_PATH);
+    const bin_dir = try std.fs.selfExeDirPathAlloc(allocator);
+    defer allocator.free(bin_dir);
+
+    const config_path = try std.fs.path.join(allocator, &[_][]const u8{ bin_dir, DEFAULT_CONFIGURATION_FILE_PATH });
+    defer allocator.free(config_path);
+
+    var json_conf = try JsonConfigurator.init(allocator, config_path);
 
     var conf = json_conf.configurator();
     global_context.loadConfiguration(&conf);
     std.log.info("Configuration is loaded", .{});
+
+    const base_dir = conf.dataFolder() orelse bin_dir;
+    const root_folder_path = try std.fs.path.join(allocator, &[_][]const u8{ base_dir, global_context.ROOT_FOLDER });
+    defer allocator.free(root_folder_path);
+    global_context.setRootFolderPath(root_folder_path);
+    std.log.info("Data folder: {s}", .{root_folder_path});
 
     worker.initWorkerContext(allocator, conf.sstableBlockSize()) catch |e| {
         std.log.err("Failed to initialize worker context: {any}", .{e});

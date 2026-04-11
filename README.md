@@ -2,6 +2,9 @@
 
 **Sklad** is a lightweight key-value database that uses an asynchronous, non-blocking design and lock-free data structures to efficiently handle concurrent workloads.
 
+**⚠️ Status: v0.1.0 Prototype**
+This initial 0.1.0 release is a functioning prototype. It is designed to get the ball rolling and demonstrate the core architecture. Please note that there are still known limitations, missing features, and likely a few bugs. It is not yet recommended for production use.
+
 ## 👷‍♀️ Building Sklad
 Building Sklad is very straightforward. Install Zig toolchain and run
 ```
@@ -66,7 +69,7 @@ More on the Sklad communication protocol:
 * [Sklad protocol](docs/protocol.md)
 
 ## 🔧 Configuration
-Currently, Sklad expects a `config/configuration.json` file next to the executable (i.e., `./config/configuration.json`).
+Sklad currently requires the configuration file to be located at `./config/configuration.json` **relative to the Sklad binary**. If you move the binary, you must ensure the `config/` folder is placed right next to it.
 
 Configuration file example:
 
@@ -105,6 +108,7 @@ Configuration file example:
 ```
 
 ### Parameters:
+* `data_folder` - (string, optional) parent directory for the `.sklad` data folder containing database files (WAL, SSTables, manifest). Defaults to the binary's directory if not specified
 * `worker_pool.min_workers` - (u8) minimum number of worker threads that will be kept alive
 * `worker_pool.max_workers` - (u8) maximum number of worker threads
 * `worker_pool.idle_timeout_seconds` - (i64) a timeout in seconds after which an idle worker thread is terminated
