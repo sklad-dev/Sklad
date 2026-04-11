@@ -108,6 +108,7 @@ Configuration file example:
 ```
 
 ### Parameters:
+* `data_folder` - (string, optional) parent directory for the `.sklad` data folder containing database files (WAL, SSTables, manifest). Defaults to the binary's directory if not specified
 * `worker_pool.min_workers` - (u8) minimum number of worker threads that will be kept alive
 * `worker_pool.max_workers` - (u8) maximum number of worker threads
 * `worker_pool.idle_timeout_seconds` - (i64) a timeout in seconds after which an idle worker thread is terminated
