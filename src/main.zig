@@ -28,6 +28,12 @@ pub fn main() !void {
     global_context.loadConfiguration(&conf);
     std.log.info("Configuration is loaded", .{});
 
+    const base_dir = conf.dataFolder() orelse bin_dir;
+    const root_folder_path = try std.fs.path.join(allocator, &[_][]const u8{ base_dir, global_context.ROOT_FOLDER });
+    defer allocator.free(root_folder_path);
+    global_context.setRootFolderPath(root_folder_path);
+    std.log.info("Data folder: {s}", .{root_folder_path});
+
     worker.initWorkerContext(allocator, conf.sstableBlockSize()) catch |e| {
         std.log.err("Failed to initialize worker context: {any}", .{e});
         return;

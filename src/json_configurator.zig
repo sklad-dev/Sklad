@@ -7,6 +7,7 @@ pub const JsonConfigurator = struct {
     config: Configuration,
 
     const Configuration = struct {
+        data_folder: ?[]const u8 = null,
         memtable: MemtableConfiguration,
         sstable: SSTableConfiguration,
         sstable_cache: SSTableCacheConfiguration,
@@ -71,6 +72,7 @@ pub const JsonConfigurator = struct {
     pub fn configurator(self: *JsonConfigurator) Configurator {
         return .{
             .ptr = self,
+            .data_folder_fn = dataFolder,
             .memtable_max_size_fn = memtableMaxSize,
             .memtable_max_level_fn = memtableMaxLevel,
             .sstable_block_size_fn = sstableBlockSize,
@@ -88,6 +90,11 @@ pub const JsonConfigurator = struct {
             .max_connections_fn = maxConnections,
             .batch_response_limit_fn = batchResponseLimit,
         };
+    }
+
+    pub fn dataFolder(ptr: *anyopaque) ?[]const u8 {
+        const self: *JsonConfigurator = @ptrCast(@alignCast(ptr));
+        return self.config.data_folder;
     }
 
     pub fn memtableMaxSize(ptr: *anyopaque) u64 {
