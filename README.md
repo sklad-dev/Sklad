@@ -1,6 +1,6 @@
 # Sklad.
 
-**Sklad** is a lightweight key-value database that uses an asynchronous, non-blocking design and lock-free data structures to efficiently handle concurrent workloads.
+**Sklad** is a lightweight, asynchronous key-value database engine built in Zig. Designed for concurrent, write-heavy workloads, it targets IoT and edge environments by utilizing a lock-free, non-blocking architecture to maintain predictable throughput and suppress tail-latency jitter under high stress.
 
 **⚠️ Status: v0.1.0 Prototype**
 This initial 0.1.0 release is a functioning prototype. It is designed to get the ball rolling and demonstrate the core architecture. Please note that there are still known limitations, missing features, and likely a few bugs. It is not yet recommended for production use.
